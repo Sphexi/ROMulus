@@ -387,3 +387,100 @@ class TestGameGrouping:
             "SELECT COUNT(*) FROM games WHERE system_id = 'snes'"
         ).fetchone()[0]
         assert games == 2
+
+
+# ---------------------------------------------------------------------------
+# match_confidence is monotonic across rescans
+# ---------------------------------------------------------------------------
+
+
+class TestRescanPreservesMatchConfidence:
+    """A Quick rescan must never downgrade a stronger prior match.
+
+    The upsert in `queries.upsert_rom` re-runs with `match_confidence='fuzzy'`,
+    so without protection a previous Heavy Scan result of `dat_verified` would
+    regress. The CASE expression in `upsert_rom` enforces monotonic upgrades.
+    """
+
+    def test_rescan_does_not_downgrade_dat_verified(self, seeded_db, tmp_path):
+        from romulus.db import queries
+
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        rom = snes / "Game.sfc"
+        rom.write_bytes(b"\x00" * 1024)
+
+        scan_library(seeded_db, tmp_path)
+        rom_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Game.sfc'"
+        ).fetchone()[0]
+
+        # Simulate the Heavy Scan stamping the ROM as DAT-verified.
+        queries.update_rom_match(seeded_db, rom_id, "Game (USA)", "dat_verified")
+        seeded_db.commit()
+
+        # User runs Quick Scan again — confidence must stay dat_verified.
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT match_confidence, dat_match FROM roms WHERE id = ?",
+            (rom_id,),
+        ).fetchone()
+        assert row["match_confidence"] == "dat_verified"
+        assert row["dat_match"] == "Game (USA)"
+
+    def test_rescan_does_not_downgrade_header_to_fuzzy(self, seeded_db, tmp_path):
+        from romulus.db import queries
+
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Game.sfc").write_bytes(b"\x00" * 1024)
+
+        scan_library(seeded_db, tmp_path)
+        rom_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Game.sfc'"
+        ).fetchone()[0]
+        queries.update_rom_match(seeded_db, rom_id, "HeaderTitle", "header")
+        seeded_db.commit()
+
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT match_confidence FROM roms WHERE id = ?",
+            (rom_id,),
+        ).fetchone()
+        assert row["match_confidence"] == "header"
+
+    def test_upgrades_still_work(self, seeded_db):
+        # Direct unit test of upsert_rom — going fuzzy -> dat_verified must apply.
+        from romulus.db import queries
+
+        rom_id = queries.upsert_rom(
+            seeded_db,
+            {
+                "path": "/fake/Game.sfc",
+                "filename": "Game.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": 1000.0,
+                "system_id": "snes",
+                "fuzzy_key": "game",
+                "match_confidence": "fuzzy",
+            },
+        )
+        # Same path, now claiming dat_verified — should upgrade.
+        queries.upsert_rom(
+            seeded_db,
+            {
+                "path": "/fake/Game.sfc",
+                "filename": "Game.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": 1000.0,
+                "system_id": "snes",
+                "fuzzy_key": "game",
+                "match_confidence": "dat_verified",
+            },
+        )
+        row = seeded_db.execute(
+            "SELECT match_confidence FROM roms WHERE id = ?", (rom_id,)
+        ).fetchone()
+        assert row["match_confidence"] == "dat_verified"

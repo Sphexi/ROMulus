@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -470,7 +471,7 @@ def generate_fuzzy_key(clean_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def group_into_games(conn, system_id: str) -> int:
+def group_into_games(conn: sqlite3.Connection, system_id: str) -> int:
     """Group ROMs in `system_id` into logical games by their fuzzy_key.
 
     For each unique non-empty fuzzy_key, either reuse an existing game (linked
@@ -536,11 +537,12 @@ class ScanResult:
     files_found: int
     files_with_system: int
     files_skipped: int
+    errors: int
     systems_seen: set[str]
 
 
 def scan_library(
-    conn,
+    conn: sqlite3.Connection,
     library_path: str | os.PathLike[str],
     progress_callback: Callable[[int, str], None] | None = None,
 ) -> ScanResult:
@@ -550,7 +552,11 @@ def scan_library(
     enrolled ROM. The callback is optional; in tests we usually leave it None.
 
     Returns a `ScanResult` summarizing the run. A `scan_history` row is also
-    written and finalized before returning.
+    written and finalized before returning. `errors` counts files that were
+    skipped specifically because their `stat()` call raised `OSError`
+    (typically permission denied or a vanished symlink); files skipped because
+    their extension didn't belong to any known system are counted under
+    `files_skipped` but NOT as errors.
     """
     library_root = Path(library_path)
     alias_map = get_systems_by_alias(conn)
@@ -569,8 +575,12 @@ def scan_library(
     files_found = 0
     files_with_system = 0
     files_skipped = 0
+    errors = 0
     systems_seen: set[str] = set()
 
+    # os.walk defaults to followlinks=False — we deliberately do NOT follow
+    # symlinks. This prevents a symlinked subdirectory inside the library
+    # from being used to traverse outside library_root.
     for root, _dirs, files in os.walk(library_root):
         root_path = Path(root)
         # Resolve the system context from the directory tree once per directory.
@@ -592,7 +602,11 @@ def scan_library(
             try:
                 stat = file_path.stat()
             except OSError:
-                files_skipped += 1
+                # Real failure to read file metadata — permission denied,
+                # broken symlink, file vanished between listing and stat.
+                # Count separately from "wrong extension" skips so the scan
+                # history surfaces partial failures to the UI.
+                errors += 1
                 continue
 
             parsed = parse_filename(filename)
@@ -632,7 +646,7 @@ def scan_library(
             "files_found": files_found,
             "files_matched": files_with_system,
             "files_new": files_with_system,
-            "errors": 0,
+            "errors": errors,
         },
     )
     conn.commit()
@@ -642,5 +656,6 @@ def scan_library(
         files_found=files_found,
         files_with_system=files_with_system,
         files_skipped=files_skipped,
+        errors=errors,
         systems_seen=systems_seen,
     )

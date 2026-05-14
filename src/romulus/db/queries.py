@@ -14,6 +14,15 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from romulus.core.dat_parser import DatEntry
 
+# Ordering of match_confidence values. Used in upsert_rom so a re-scan never
+# downgrades a stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
+_CONFIDENCE_RANK: dict[str, int] = {
+    "unmatched": 0,
+    "fuzzy": 1,
+    "header": 2,
+    "dat_verified": 3,
+}
+
 # ---------------------------------------------------------------------------
 # ROMs
 # ---------------------------------------------------------------------------
@@ -26,9 +35,14 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: dict[str, Any]) -> int:
     the surrounding transaction; this function does not commit on its own so
     bulk scans can batch many upserts.
 
+    `match_confidence` is monotonic — a rescan never downgrades a previously
+    stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
+
     Required keys: path, filename, extension, size_bytes, mtime, system_id.
     Optional keys: fuzzy_key, header_title, scan_id, dat_match, match_confidence.
     """
+    incoming_confidence = rom_data.get("match_confidence", "unmatched")
+    incoming_rank = _CONFIDENCE_RANK.get(incoming_confidence, 0)
     cursor = conn.execute(
         """
         INSERT INTO roms (
@@ -46,7 +60,17 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: dict[str, Any]) -> int:
             fuzzy_key = excluded.fuzzy_key,
             header_title = COALESCE(excluded.header_title, roms.header_title),
             dat_match = COALESCE(excluded.dat_match, roms.dat_match),
-            match_confidence = excluded.match_confidence
+            match_confidence = CASE
+                WHEN ? >= CASE roms.match_confidence
+                    WHEN 'unmatched' THEN 0
+                    WHEN 'fuzzy' THEN 1
+                    WHEN 'header' THEN 2
+                    WHEN 'dat_verified' THEN 3
+                    ELSE 0
+                END
+                THEN excluded.match_confidence
+                ELSE roms.match_confidence
+            END
         """,
         (
             rom_data["path"],
@@ -59,7 +83,8 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: dict[str, Any]) -> int:
             rom_data.get("fuzzy_key"),
             rom_data.get("header_title"),
             rom_data.get("dat_match"),
-            rom_data.get("match_confidence", "unmatched"),
+            incoming_confidence,
+            incoming_rank,
         ),
     )
     if cursor.lastrowid:
@@ -184,7 +209,12 @@ def insert_scan_history(conn: sqlite3.Connection, scan_data: dict[str, Any]) -> 
 def update_scan_history(
     conn: sqlite3.Connection, scan_id: int, updates: dict[str, Any]
 ) -> None:
-    """Update a scan_history row in place with arbitrary fields."""
+    """Update a scan_history row in place with arbitrary fields.
+
+    The SQL SET clause is built dynamically, but column names are checked
+    against the hard-coded `allowed` whitelist before interpolation, so this
+    is not an injection vector — values are still passed as `?` parameters.
+    """
     if not updates:
         return
     allowed = {
@@ -197,6 +227,7 @@ def update_scan_history(
     fields = [k for k in updates if k in allowed]
     if not fields:
         return
+    # Safe: each name in `fields` is guaranteed to be in the `allowed` whitelist.
     set_clause = ", ".join(f"{f} = ?" for f in fields)
     values = [updates[f] for f in fields] + [scan_id]
     conn.execute(f"UPDATE scan_history SET {set_clause} WHERE id = ?", values)
@@ -299,8 +330,12 @@ def insert_dat_entry(conn: sqlite3.Connection, entry: DatEntry) -> int:
     return cursor.lastrowid
 
 
-def get_dat_by_sha1(conn: sqlite3.Connection, sha1: str) -> sqlite3.Row | None:
-    """Authoritative DAT lookup by SHA-1."""
+def get_dat_by_sha1(
+    conn: sqlite3.Connection, sha1: str | None
+) -> sqlite3.Row | None:
+    """Authoritative DAT lookup by SHA-1. Returns None if `sha1` is falsy."""
+    if not sha1:
+        return None
     return conn.execute(
         "SELECT * FROM dat_entries WHERE sha1 = ? LIMIT 1",
         (sha1.lower(),),
@@ -308,10 +343,15 @@ def get_dat_by_sha1(conn: sqlite3.Connection, sha1: str) -> sqlite3.Row | None:
 
 
 def get_dat_by_crc_size(
-    conn: sqlite3.Connection, crc32: str, size_bytes: int
+    conn: sqlite3.Connection, crc32: str | None, size_bytes: int | None
 ) -> sqlite3.Row | None:
-    """Fallback DAT lookup by (CRC32, size). Returns None if more than one
-    entry matches — ambiguous CRC32s shouldn't be auto-applied (ROM-DEDUP §5.4)."""
+    """Fallback DAT lookup by (CRC32, size).
+
+    Returns None if either argument is missing OR if more than one entry
+    matches — ambiguous CRC32s shouldn't be auto-applied (ROM-DEDUP §5.4).
+    """
+    if not crc32 or size_bytes is None:
+        return None
     rows = conn.execute(
         "SELECT * FROM dat_entries WHERE crc32 = ? AND size_bytes = ? LIMIT 2",
         (crc32.lower(), size_bytes),
