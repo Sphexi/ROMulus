@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 
 import pytest
 
 from romulus.db import create_tables
 from romulus.models import seed_systems
+
+# Force Qt to use the offscreen platform plugin in tests so headless CI works.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
 @pytest.fixture
@@ -33,3 +37,12 @@ def seeded_db(db):
     """A SQLite connection with schema created AND the system registry seeded."""
     seed_systems(db)
     return db
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    """Session-wide QApplication so widgets can be instantiated headlessly."""
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    yield app

@@ -21,42 +21,42 @@ Quick Scan button triggers a scan in a QThread worker, with progress dialog. Aft
 
 **Tasks:**
 
-- [ ] Update `src/romulus/__main__.py`:
+- [x] Update `src/romulus/__main__.py`:
   - Create QApplication
   - Initialize database (create_tables, seed_systems, seed_defaults)
   - Check config for library_path — if empty, show folder picker
   - Show MainWindow
-- [ ] Create `src/romulus/app.py`:
+- [x] Create `src/romulus/app.py`:
   - App initialization logic (DB setup, config loading)
-- [ ] Create `src/romulus/ui/main_window.py`:
+- [x] Create `src/romulus/ui/main_window.py`:
   - MainWindow(QMainWindow) with menu bar, toolbar, status bar
   - Three-panel layout using QSplitter: sidebar | game table | detail placeholder
   - Connect toolbar buttons to actions
-- [ ] Create `src/romulus/ui/system_sidebar.py`:
+- [x] Create `src/romulus/ui/system_sidebar.py`:
   - SystemSidebar(QTreeView) backed by a QStandardItemModel
   - "All" entry at top showing total ROM count
   - One entry per system that has ROMs, showing count
   - "Favorites" and collections section at bottom
   - Signal: system_selected(system_id) — filters the game table
-- [ ] Create `src/romulus/ui/game_table.py`:
+- [x] Create `src/romulus/ui/game_table.py`:
   - GameTable(QTableView) backed by QAbstractTableModel subclass (GameTableModel)
   - Columns: Name, System, Region, Size, Match Status
   - Sortable by clicking column headers
   - Search bar (QLineEdit) above table — filters by game name in real time
   - Lazy-load rows from SQLite (paginate if >5000 games)
-- [ ] Create `src/romulus/ui/workers.py`:
+- [x] Create `src/romulus/ui/workers.py`:
   - ScanWorker(QThread) — runs scan_library in background, emits progress/finished signals
   - Connect to ScanProgressDialog
-- [ ] Create `src/romulus/ui/scan_progress.py`:
+- [x] Create `src/romulus/ui/scan_progress.py`:
   - ScanProgressDialog(QProgressDialog) — shows file count, current file, cancel button
-- [ ] Create `src/romulus/ui/settings_dialog.py`:
+- [x] Create `src/romulus/ui/settings_dialog.py`:
   - SettingsDialog(QDialog) with tabs:
     - General: library path (folder picker), theme selector
     - DATs: DAT folder paths (list + add/remove buttons)
     - Metadata: ScreenScraper credentials (username/password fields, test button)
     - Scan: thread count spinner
   - Save all settings to config table
-- [ ] Write tests:
+- [x] Write tests:
   - `tests/test_ui.py`: test GameTableModel data loading, sorting, filtering (can test model without showing UI)
 
 **Acceptance criteria:**
@@ -69,3 +69,12 @@ Quick Scan button triggers a scan in a QThread worker, with progress dialog. Aft
 - All tests pass, ruff clean
 
 STOP. Commit with message "Session 5: UI shell, system sidebar, game table". Do not proceed to Session 6.
+
+## Completion Summary
+**Status:** COMPLETE
+**Date:** 2026-05-14
+**What was built/changed:** Wired up the PySide6 desktop shell — `__main__` boots a QApplication via `app.run()` which initializes the DB (create_tables + seed_systems + seed_defaults), prompts for a library folder if none is configured, and shows `MainWindow`. Built `MainWindow` with menu bar, toolbar, status bar, and a three-pane QSplitter (system sidebar / game table / detail placeholder). `SystemSidebar` is a `QTreeView` over a `QStandardItemModel` with an "All" node, per-system ROM counts, and a Collections section; emits `system_selected` to filter the table. `GameTable` is a `QTableView` + `QLineEdit` search backed by a `QAbstractTableModel` (`GameTableModel`) plus a `QSortFilterProxyModel` (`GameTableProxy`) that uses `Qt.UserRole` for numeric size sorting and case-insensitive name filtering. `ScanWorker` (`QThread`) opens its own thread-local sqlite3 connection, runs `scan_library`, and emits `progress` / `finished_ok` / `failed` signals; cancellation is cooperative via the progress callback. `ScanProgressDialog` is a `QProgressDialog` wired to the worker's signals. `SettingsDialog` ships four tabs (General, DATs, Metadata, Scan) and writes every change back through `set_config`.
+**Tests:** 276 passing (was 243; +33 new UI tests in `tests/test_ui.py`). conftest sets `QT_QPA_PLATFORM=offscreen` and adds a session-scoped `qapp` fixture so widgets can be exercised headlessly without pytest-qt. ruff clean on `src/` and `tests/`.
+**Config changes:** None — existing config keys are reused (`library_path`, `theme`, `dat_paths`, `screenscraper_username`, `screenscraper_password`, `scan_threads`).
+**Breaking changes:** `python -m romulus` no longer prints a version banner — it launches the Qt main window. The CLI banner is now reachable only via `from romulus import __version__`.
+**Carry-forward notes:** Heavy Scan, Organize, Enrich, and Export menu/toolbar entries exist but are disabled until later sessions wire them. The detail panel is a placeholder `QLabel`; Session 7 builds the real one. The settings dialog's ScreenScraper "Test connection" button is disabled — Session 6 should wire it. Workers must always open per-thread DB connections (sqlite3 is thread-bound); `ScanWorker` is the reference pattern. Tests rely on `QT_QPA_PLATFORM=offscreen`; on machines without offscreen support, set `QT_QPA_PLATFORM=minimal` instead.

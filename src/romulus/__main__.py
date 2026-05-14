@@ -1,15 +1,15 @@
 """Romulus — entry point."""
 
-from romulus import __version__
+from __future__ import annotations
+
+import sys
 
 
 def main() -> None:
-    """Print the Romulus version banner.
+    """Launch the Romulus desktop application."""
+    from romulus.app import run
 
-    Placeholder entry point used until the PySide6 main window is wired up
-    in a later session.
-    """
-    print(f"Romulus v{__version__}")
+    sys.exit(run())
 
 
 if __name__ == "__main__":
