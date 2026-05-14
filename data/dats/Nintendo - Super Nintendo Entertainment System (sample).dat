@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+    <header>
+        <name>Nintendo - Super Nintendo Entertainment System</name>
+        <description>Nintendo - Super Nintendo Entertainment System (sample)</description>
+        <version>romulus-sample-1</version>
+        <author>romulus-dev</author>
+    </header>
+    <game name="Sample SNES Game (USA)">
+        <description>Sample SNES Game (USA)</description>
+        <rom name="Sample SNES Game (USA).sfc" size="64" crc="3610a686" md5="00000000000000000000000000000000" sha1="0000000000000000000000000000000000000001"/>
+    </game>
+</datafile>

@@ -8,7 +8,11 @@ rather than constructing their own queries.
 from __future__ import annotations
 
 import sqlite3
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from romulus.core.dat_parser import DatEntry
 
 # ---------------------------------------------------------------------------
 # ROMs
@@ -196,3 +200,135 @@ def update_scan_history(
     set_clause = ", ".join(f"{f} = ?" for f in fields)
     values = [updates[f] for f in fields] + [scan_id]
     conn.execute(f"UPDATE scan_history SET {set_clause} WHERE id = ?", values)
+
+
+# ---------------------------------------------------------------------------
+# Hashes
+# ---------------------------------------------------------------------------
+
+
+def upsert_hash(
+    conn: sqlite3.Connection,
+    rom_id: int,
+    crc32: str | None,
+    sha1: str | None,
+    md5: str | None,
+) -> None:
+    """Insert or replace the hash row for a ROM.
+
+    `hashed_at` is stamped to the current wall-clock time; the heavy-scan
+    pipeline compares this against `roms.mtime` to detect stale entries.
+    """
+    conn.execute(
+        """
+        INSERT INTO hashes (rom_id, crc32, sha1, md5, hashed_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(rom_id) DO UPDATE SET
+            crc32 = excluded.crc32,
+            sha1  = excluded.sha1,
+            md5   = excluded.md5,
+            hashed_at = excluded.hashed_at
+        """,
+        (rom_id, crc32, sha1, md5, time.time()),
+    )
+
+
+def get_hash(conn: sqlite3.Connection, rom_id: int) -> sqlite3.Row | None:
+    """Return the hash row for a ROM, or None if it hasn't been hashed yet."""
+    return conn.execute(
+        "SELECT * FROM hashes WHERE rom_id = ?", (rom_id,)
+    ).fetchone()
+
+
+def get_unhashed_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """ROMs that have no row in the hashes table at all."""
+    rows = conn.execute(
+        """
+        SELECT r.*
+        FROM roms r
+        LEFT JOIN hashes h ON h.rom_id = r.id
+        WHERE h.rom_id IS NULL
+        ORDER BY r.id
+        """
+    ).fetchall()
+    return list(rows)
+
+
+def get_stale_hashes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """ROMs whose recorded mtime is newer than their last hash timestamp."""
+    rows = conn.execute(
+        """
+        SELECT r.*
+        FROM roms r
+        JOIN hashes h ON h.rom_id = r.id
+        WHERE h.hashed_at < r.mtime
+        ORDER BY r.id
+        """
+    ).fetchall()
+    return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# DAT entries
+# ---------------------------------------------------------------------------
+
+
+def insert_dat_entry(conn: sqlite3.Connection, entry: DatEntry) -> int:
+    """Insert one parsed DAT row; return its new id."""
+    cursor = conn.execute(
+        """
+        INSERT INTO dat_entries (
+            dat_file, system_id, game_name, rom_name, size_bytes,
+            crc32, md5, sha1, region, revision, is_bios
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            entry.dat_file,
+            entry.system_id,
+            entry.game_name,
+            entry.rom_name,
+            entry.size_bytes,
+            entry.crc32,
+            entry.md5,
+            entry.sha1,
+            entry.region,
+            entry.revision,
+            int(bool(entry.is_bios)),
+        ),
+    )
+    return cursor.lastrowid
+
+
+def get_dat_by_sha1(conn: sqlite3.Connection, sha1: str) -> sqlite3.Row | None:
+    """Authoritative DAT lookup by SHA-1."""
+    return conn.execute(
+        "SELECT * FROM dat_entries WHERE sha1 = ? LIMIT 1",
+        (sha1.lower(),),
+    ).fetchone()
+
+
+def get_dat_by_crc_size(
+    conn: sqlite3.Connection, crc32: str, size_bytes: int
+) -> sqlite3.Row | None:
+    """Fallback DAT lookup by (CRC32, size). Returns None if more than one
+    entry matches — ambiguous CRC32s shouldn't be auto-applied (ROM-DEDUP §5.4)."""
+    rows = conn.execute(
+        "SELECT * FROM dat_entries WHERE crc32 = ? AND size_bytes = ? LIMIT 2",
+        (crc32.lower(), size_bytes),
+    ).fetchall()
+    if len(rows) == 1:
+        return rows[0]
+    return None
+
+
+def update_rom_match(
+    conn: sqlite3.Connection,
+    rom_id: int,
+    dat_match: str,
+    confidence: str,
+) -> None:
+    """Stamp a ROM with the canonical name and upgrade its match confidence."""
+    conn.execute(
+        "UPDATE roms SET dat_match = ?, match_confidence = ? WHERE id = ?",
+        (dat_match, confidence, rom_id),
+    )

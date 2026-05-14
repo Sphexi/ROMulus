@@ -1,1 +1,272 @@
-"""Logiqx XML DAT parser — parses bundled and user DAT files."""
+"""Logiqx XML DAT parser — bundled and user DAT files.
+
+Parses No-Intro / Redump / TOSEC style XML into `DatEntry` records, loads them
+into the `dat_entries` table, and matches hashed ROMs back to canonical games.
+Uses `xml.etree.ElementTree` from stdlib — no lxml dependency.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sqlite3
+import xml.etree.ElementTree as ET
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path
+
+from romulus.db import queries
+from romulus.models.system import SYSTEM_REGISTRY
+
+# Region tokens we recognize inside parenthesized DAT name groups. Subset of the
+# scanner's list — DAT canonical names only carry country/super-region names,
+# not language codes.
+_DAT_REGION_TOKENS: frozenset[str] = frozenset(
+    {
+        "usa",
+        "europe",
+        "japan",
+        "world",
+        "asia",
+        "australia",
+        "brazil",
+        "canada",
+        "china",
+        "france",
+        "germany",
+        "italy",
+        "korea",
+        "netherlands",
+        "spain",
+        "sweden",
+        "taiwan",
+        "uk",
+        "unknown",
+        "latin america",
+        "scandinavia",
+        "russia",
+        "hong kong",
+    }
+)
+
+_TAG_GROUP_RE = re.compile(r"\(([^()]*)\)")
+_REVISION_RE = re.compile(r"^(rev\s+\S+|v\d+(\.\d+[a-z]?)?|\d+\.\d+[a-z]?)$", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class DatEntry:
+    """A single DAT row: a canonical game + its primary ROM file's hashes."""
+
+    dat_file: str
+    system_id: str | None
+    game_name: str
+    rom_name: str
+    size_bytes: int | None
+    crc32: str | None
+    md5: str | None
+    sha1: str | None
+    region: str | None
+    revision: str | None
+    is_bios: bool
+
+
+# ---------------------------------------------------------------------------
+# Region / revision parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_region_from_name(game_name: str) -> str | None:
+    """Pull a region tag out of a canonical DAT name like 'Foo (USA, Europe)'.
+
+    Returns the first parenthesized group whose comma-separated tokens are all
+    known region names (case-insensitive). The raw group text is returned so
+    callers see exactly what the DAT wrote.
+    """
+    for match in _TAG_GROUP_RE.finditer(game_name):
+        body = match.group(1).strip()
+        parts = [p.strip().lower() for p in body.split(",") if p.strip()]
+        if parts and all(p in _DAT_REGION_TOKENS for p in parts):
+            return body
+    return None
+
+
+def _parse_revision_from_name(game_name: str) -> str | None:
+    for match in _TAG_GROUP_RE.finditer(game_name):
+        body = match.group(1).strip()
+        if _REVISION_RE.match(body):
+            return body
+    return None
+
+
+# ---------------------------------------------------------------------------
+# system_id resolution from DAT header name
+# ---------------------------------------------------------------------------
+
+
+def _system_id_from_dat_name(dat_name: str | None) -> str | None:
+    """Match a DAT `<header><name>` against the registry's `dat_name` field."""
+    if not dat_name:
+        return None
+    target = dat_name.strip().lower()
+    for sys_def in SYSTEM_REGISTRY:
+        if sys_def.dat_name and sys_def.dat_name.lower() == target:
+            return sys_def.id
+    return None
+
+
+# ---------------------------------------------------------------------------
+# XML parsing
+# ---------------------------------------------------------------------------
+
+
+def _coerce_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _normalize_hash(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.strip().lower() or None
+
+
+def parse_dat_file(filepath: str | os.PathLike[str]) -> list[DatEntry]:
+    """Parse a single Logiqx XML DAT file into a list of DatEntry records.
+
+    Returns an empty list on parse errors so a single bad file doesn't break a
+    bulk load. Each `<rom>` element produces one entry; multi-rom games (rare in
+    No-Intro, common in MAME) produce one row per rom.
+    """
+    path = Path(filepath)
+    try:
+        tree = ET.parse(path)
+    except (ET.ParseError, OSError):
+        return []
+
+    root = tree.getroot()
+    header_name = None
+    header = root.find("header")
+    if header is not None:
+        name_el = header.find("name")
+        if name_el is not None:
+            header_name = (name_el.text or "").strip()
+    system_id = _system_id_from_dat_name(header_name)
+
+    entries: list[DatEntry] = []
+    for game in root.iter("game"):
+        game_name = (game.get("name") or "").strip()
+        if not game_name:
+            continue
+        is_bios = (game.get("isbios") or "no").lower() == "yes"
+        region = parse_region_from_name(game_name)
+        revision = _parse_revision_from_name(game_name)
+        for rom in game.findall("rom"):
+            rom_name = (rom.get("name") or "").strip()
+            if not rom_name:
+                continue
+            entries.append(
+                DatEntry(
+                    dat_file=path.name,
+                    system_id=system_id,
+                    game_name=game_name,
+                    rom_name=rom_name,
+                    size_bytes=_coerce_int(rom.get("size")),
+                    crc32=_normalize_hash(rom.get("crc")),
+                    md5=_normalize_hash(rom.get("md5")),
+                    sha1=_normalize_hash(rom.get("sha1")),
+                    region=region,
+                    revision=revision,
+                    is_bios=is_bios,
+                )
+            )
+    return entries
+
+
+# ---------------------------------------------------------------------------
+# Bulk load + match
+# ---------------------------------------------------------------------------
+
+
+def _iter_dat_files(paths: Iterable[str | os.PathLike[str]]) -> list[Path]:
+    """Flatten a mix of dat file paths and directories into a deduped file list."""
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for raw in paths:
+        p = Path(raw)
+        if p.is_dir():
+            files = sorted(p.rglob("*.dat")) + sorted(p.rglob("*.xml"))
+        elif p.is_file():
+            files = [p]
+        else:
+            continue
+        for f in files:
+            resolved = f.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            found.append(f)
+    return found
+
+
+def load_all_dats(
+    conn: sqlite3.Connection,
+    dat_paths: Iterable[str | os.PathLike[str]],
+) -> int:
+    """Parse every DAT under `dat_paths` and insert rows into `dat_entries`.
+
+    Accepts a mix of file paths and directory roots; directories are scanned for
+    .dat and .xml files recursively. Returns the number of inserted entries.
+    Callers can pass both bundled (`data/dats/`) and user (`~/.romulus/dats/`)
+    roots in a single call.
+    """
+    inserted = 0
+    for dat_path in _iter_dat_files(dat_paths):
+        entries = parse_dat_file(dat_path)
+        for entry in entries:
+            queries.insert_dat_entry(conn, entry)
+            inserted += 1
+    conn.commit()
+    return inserted
+
+
+def match_hashes(conn: sqlite3.Connection) -> int:
+    """Resolve hashed ROMs against `dat_entries` and stamp them as DAT-verified.
+
+    For every (rom, hash) pair, look up by SHA-1 first, then CRC32+size as
+    fallback. On hit, update `roms.dat_match` to the canonical game name and
+    upgrade `match_confidence` to `dat_verified`. Returns the number of ROMs
+    newly matched.
+    """
+    rows = conn.execute(
+        """
+        SELECT r.id, r.size_bytes, h.sha1, h.crc32
+        FROM roms r
+        JOIN hashes h ON h.rom_id = r.id
+        WHERE r.match_confidence != 'dat_verified'
+        """
+    ).fetchall()
+
+    matched = 0
+    for row in rows:
+        rom_id = row["id"]
+        sha1 = row["sha1"]
+        crc32 = row["crc32"]
+        size_bytes = row["size_bytes"]
+
+        entry = None
+        if sha1:
+            entry = queries.get_dat_by_sha1(conn, sha1)
+        if entry is None and crc32 and size_bytes is not None:
+            entry = queries.get_dat_by_crc_size(conn, crc32, size_bytes)
+
+        if entry is None:
+            continue
+        queries.update_rom_match(conn, rom_id, entry["game_name"], "dat_verified")
+        matched += 1
+
+    conn.commit()
+    return matched
