@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"docs/sessions\" \"src/romulus\" \"src/romulus/db\" \"src/romulus/core\" \"src/romulus/metadata\" \"src/romulus/models\" \"src/romulus/ui\" \"data/dats\" \"data/profiles\" \"tests\" \".claude\")"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\ben\\Documents\\GitHub\\ROMulous\\.claude"
+    ]
+  }
+}

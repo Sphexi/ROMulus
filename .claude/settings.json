@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Bash(*)", "Read(*)", "Write(*)", "Edit(*)", "MultiEdit(*)"],
+    "deny": [
+      "Bash(rm -rf /*)", "Bash(rm -rf C:\\*)", "Bash(rd /s /q C:\\*)",
+      "Bash(format *)", "Bash(sudo *)", "Bash(runas *)",
+      "Bash(git push *)", "Bash(git push)",
+      "Bash(git reset --hard *)", "Bash(* --force)",
+      "Bash(Remove-Item -Recurse -Force C:\\*)",
+      "Bash(dd *)", "Bash(mkfs *)"
+    ]
+  }
+}

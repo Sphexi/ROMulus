@@ -1,0 +1,75 @@
+# Session 9: Library Organizer
+
+**Type:** Build
+
+**Context for this session:**
+
+You are building the library organization system — the workflow where users can reorganize their ROM folder in place with a preview/commit model.
+
+Organizer workflow (from TECHNICAL_PLAN.md §9 — Library Organizer):
+1. Analyze library state from SQLite
+2. Generate organize_plan with actions: merge_folder, rename, delete_duplicate, collision
+3. Display in OrganizePreviewDialog with before/after view
+4. User reviews, approves/rejects individual actions
+5. Execute approved actions, update SQLite paths, record plan status
+
+Organize rules:
+- Folder merges: only confirmed aliases (validated against system.folder_aliases)
+- Renames: only DAT-matched ROMs (L3 confidence). Never rename unmatched files.
+- Duplicate removal: only byte-identical (same SHA-1). Prefer canonical extension (.sfc over .smc), then smaller filename.
+- Hacks: never merge or deduplicate against originals
+- Collisions: same name but different content → flag for manual review, never overwrite
+
+Action types:
+- `merge_folder`: move all files from source folder to target folder (source is an alias of target)
+- `rename`: rename file to canonical No-Intro name
+- `delete_duplicate`: remove redundant copy (same SHA-1 as another file being kept)
+- `collision`: source and target have same filename but different sizes/hashes — needs manual resolution
+
+**Tasks:**
+
+- [ ] Create `src/romulus/core/organizer.py`:
+  - `analyze_library(conn)` — scan for organizeable actions, return OrganizePlan
+  - `find_alias_merges(conn)` — identify folders that are aliases of the same system and have overlapping content
+  - `find_renameable_roms(conn)` — ROMs with dat_match that differ from current filename
+  - `find_duplicates(conn)` — ROMs with same SHA-1 in same or alias folders
+  - `find_cross_extension_dupes(conn)` — same game, same folder, different extensions (.smc + .sfc)
+  - `detect_collisions(merge_pairs)` — files that would collide during a folder merge
+  - `execute_plan(conn, approved_actions, progress_callback)` — execute filesystem changes and update DB
+  - Rollback per-action on failure: if rename/move fails, skip it, log error, continue
+- [ ] Add organize queries to `db/queries.py`:
+  - `get_alias_folder_pairs(conn)` — folders sharing a system_id that aren't the canonical folder
+  - `get_duplicate_groups(conn)` — groups of ROMs with identical SHA-1
+  - `update_rom_path(conn, rom_id, new_path)` — after rename/move
+  - `delete_rom(conn, rom_id)` — after duplicate removal
+  - `insert_organize_plan(conn, plan_json)`, `update_plan_status(conn, plan_id, status)`
+- [ ] Create `src/romulus/ui/organize_preview.py`:
+  - OrganizePreviewDialog(QDialog):
+    - Summary header: "X files to rename, Y folders to merge, Z duplicates to remove"
+    - QTreeView showing proposed changes grouped by action type
+    - Checkbox per action (all checked by default)
+    - Collision section with side-by-side comparison (filename, size, hash)
+    - "Select All" / "Deselect All" buttons
+    - "Apply" button (executes checked actions)
+    - "Cancel" button
+    - Progress bar during execution
+- [ ] Wire "Organize" toolbar button to open the preview dialog
+- [ ] Write tests:
+  - `tests/test_organizer.py`:
+    - Test alias merge detection
+    - Test duplicate finding (same hash)
+    - Test cross-extension dedup (.smc + .sfc)
+    - Test collision detection
+    - Test plan execution with mock filesystem (use tmp_path)
+    - Test rollback on failure
+
+**Acceptance criteria:**
+- Organize button opens preview dialog with proposed changes
+- Before/after view shows what will change
+- User can approve/reject individual actions
+- Apply executes changes and updates SQLite
+- Collisions flagged for manual review
+- Hacks never merged with originals
+- All tests pass, ruff clean
+
+STOP. Commit with message "Session 9: Library organizer with preview/commit". Do not proceed to Session 10.

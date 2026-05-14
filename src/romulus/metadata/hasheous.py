@@ -1,0 +1,1 @@
+"""Hasheous metadata client."""

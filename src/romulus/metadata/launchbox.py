@@ -1,0 +1,1 @@
+"""LaunchBox XML metadata client."""
