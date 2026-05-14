@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from romulus.db import create_tables
+from romulus.models import seed_systems
 
 
 @pytest.fixture
@@ -25,3 +26,10 @@ def db(tmp_path):
     create_tables(conn)
     yield conn
     conn.close()
+
+
+@pytest.fixture
+def seeded_db(db):
+    """A SQLite connection with schema created AND the system registry seeded."""
+    seed_systems(db)
+    return db
