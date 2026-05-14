@@ -372,3 +372,115 @@ def update_rom_match(
         "UPDATE roms SET dat_match = ?, match_confidence = ? WHERE id = ?",
         (dat_match, confidence, rom_id),
     )
+
+
+# ---------------------------------------------------------------------------
+# Metadata & covers
+# ---------------------------------------------------------------------------
+
+_METADATA_FIELDS: tuple[str, ...] = (
+    "description",
+    "genre",
+    "developer",
+    "publisher",
+    "release_date",
+    "players",
+    "rating",
+)
+
+
+def upsert_metadata(
+    conn: sqlite3.Connection,
+    game_id: int,
+    metadata: dict[str, Any],
+    source: str,
+) -> None:
+    """Insert or replace a game's metadata row.
+
+    Unknown keys are ignored; missing keys are stored as NULL. `source` records
+    which provider (hasheous / launchbox / screenscraper) supplied the row.
+    """
+    values = [metadata.get(field) for field in _METADATA_FIELDS]
+    conn.execute(
+        """
+        INSERT INTO metadata (
+            game_id, description, genre, developer, publisher,
+            release_date, players, rating, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(game_id) DO UPDATE SET
+            description  = excluded.description,
+            genre        = excluded.genre,
+            developer    = excluded.developer,
+            publisher    = excluded.publisher,
+            release_date = excluded.release_date,
+            players      = excluded.players,
+            rating       = excluded.rating,
+            source       = excluded.source
+        """,
+        (game_id, *values, source),
+    )
+
+
+def get_metadata(conn: sqlite3.Connection, game_id: int) -> sqlite3.Row | None:
+    """Return the metadata row for a game, or None if unenriched."""
+    return conn.execute(
+        "SELECT * FROM metadata WHERE game_id = ?", (game_id,)
+    ).fetchone()
+
+
+def insert_cover(
+    conn: sqlite3.Connection,
+    game_id: int,
+    cover_type: str,
+    source_url: str | None,
+    local_path: str | None,
+    width: int | None = None,
+    height: int | None = None,
+) -> int:
+    """Insert a covers row and return its id."""
+    cursor = conn.execute(
+        """
+        INSERT INTO covers (game_id, cover_type, source_url, local_path, width, height)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (game_id, cover_type, source_url, local_path, width, height),
+    )
+    return cursor.lastrowid
+
+
+def get_covers(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
+    """Return all cover rows for a game, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM covers WHERE game_id = ? ORDER BY id", (game_id,)
+    ).fetchall()
+    return list(rows)
+
+
+def has_cover(conn: sqlite3.Connection, game_id: int, cover_type: str) -> bool:
+    """True if a cover row of the given type already exists for this game."""
+    row = conn.execute(
+        "SELECT 1 FROM covers WHERE game_id = ? AND cover_type = ? LIMIT 1",
+        (game_id, cover_type),
+    ).fetchone()
+    return row is not None
+
+
+def get_games_needing_enrichment(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return games with DAT-verified ROMs but no metadata row yet.
+
+    Joins games -> roms (filtered to dat_verified matches) -> LEFT JOIN metadata
+    so we only surface games that have a canonical hit but haven't been enriched.
+    """
+    rows = conn.execute(
+        """
+        SELECT DISTINCT g.id, g.title, g.system_id, g.canonical_name,
+               r.dat_match AS dat_match
+        FROM games g
+        JOIN roms r ON r.game_id = g.id
+        LEFT JOIN metadata m ON m.game_id = g.id
+        WHERE r.match_confidence = 'dat_verified'
+          AND m.game_id IS NULL
+        ORDER BY g.system_id, g.title
+        """
+    ).fetchall()
+    return list(rows)

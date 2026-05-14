@@ -16,11 +16,12 @@ from PySide6.QtWidgets import (
 )
 
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
+from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
 from romulus.ui.scan_progress import ScanProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
 from romulus.ui.system_sidebar import SystemSidebar
-from romulus.ui.workers import ScanWorker
+from romulus.ui.workers import EnrichWorker, ScanWorker
 
 
 class MainWindow(QMainWindow):
@@ -34,6 +35,8 @@ class MainWindow(QMainWindow):
         self._selected_system: str | None = None
         self._scan_worker: ScanWorker | None = None
         self._scan_dialog: ScanProgressDialog | None = None
+        self._enrich_worker: EnrichWorker | None = None
+        self._enrich_dialog: EnrichProgressDialog | None = None
 
         self.sidebar = SystemSidebar(self)
         self.game_table = GameTable(self)
@@ -94,7 +97,11 @@ class MainWindow(QMainWindow):
         heavy_scan.setToolTip("Available in a later session.")
         tools_menu.addAction(heavy_scan)
         tools_menu.addSeparator()
-        for label in ("Organize", "Enrich", "Export"):
+        enrich_action = QAction("&Enrich", self)
+        enrich_action.setToolTip("Fetch cover art and metadata for matched games.")
+        enrich_action.triggered.connect(self._on_enrich)
+        tools_menu.addAction(enrich_action)
+        for label in ("Organize", "Export"):
             placeholder = QAction(label, self, enabled=False)
             placeholder.setToolTip("Available in a later session.")
             tools_menu.addAction(placeholder)
@@ -118,10 +125,15 @@ class MainWindow(QMainWindow):
         toolbar.addAction(heavy)
 
         toolbar.addSeparator()
-        for label in ("Organize", "Enrich", "Export"):
-            action = QAction(label, self)
-            action.setEnabled(False)
-            toolbar.addAction(action)
+        organize = QAction("Organize", self)
+        organize.setEnabled(False)
+        toolbar.addAction(organize)
+        enrich = QAction("Enrich", self)
+        enrich.triggered.connect(self._on_enrich)
+        toolbar.addAction(enrich)
+        export = QAction("Export", self)
+        export.setEnabled(False)
+        toolbar.addAction(export)
 
         toolbar.addSeparator()
         settings = QAction("Settings", self)
@@ -213,4 +225,32 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def _on_scan_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    def _on_enrich(self) -> None:
+        cover_cache = get_config(self._conn, "cover_cache_path") or None
+
+        self._enrich_dialog = EnrichProgressDialog(self)
+        self._enrich_worker = EnrichWorker(DEFAULT_DB_PATH, cover_cache)
+
+        self._enrich_worker.progress.connect(self._enrich_dialog.on_progress)
+        self._enrich_worker.finished_ok.connect(self._enrich_dialog.on_finished)
+        self._enrich_worker.failed.connect(self._enrich_dialog.on_failed)
+        self._enrich_worker.finished_ok.connect(self._on_enrich_finished_ok)
+        self._enrich_worker.failed.connect(self._on_enrich_failed)
+        self._enrich_dialog.canceled.connect(self._enrich_worker.cancel)
+        self._enrich_worker.finished.connect(self._enrich_worker.deleteLater)
+
+        self._enrich_worker.start()
+        self._enrich_dialog.exec()
+
+    def _on_enrich_finished_ok(
+        self,
+        _games_processed: int,
+        _metadata_added: int,
+        _covers_added: int,
+    ) -> None:
+        self.refresh_all()
+
+    def _on_enrich_failed(self, message: str) -> None:
         self.status_label.setText(message)

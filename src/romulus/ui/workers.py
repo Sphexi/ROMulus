@@ -14,6 +14,7 @@ from PySide6.QtCore import QThread, Signal
 
 from romulus.core import scan_library
 from romulus.db import get_connection
+from romulus.metadata import enrich_library
 
 
 class ScanWorker(QThread):
@@ -69,3 +70,67 @@ class ScanWorker(QThread):
 
 class _ScanCancelledError(Exception):
     """Internal marker exception raised from the progress callback on cancel."""
+
+
+class EnrichWorker(QThread):
+    """Run `enrich_library` against the configured DB on a worker thread."""
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int, int)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        cache_dir: Path | str | None = None,
+        launchbox_xml_path: Path | str | None = None,
+    ) -> None:
+        super().__init__()
+        self._db_path = db_path
+        self._cache_dir = cache_dir
+        self._launchbox_xml_path = launchbox_xml_path
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation; checked on every progress tick."""
+        self._cancel_requested = True
+
+    def run(self) -> None:  # noqa: D401 - QThread API
+        """Open a thread-local DB connection, run enrichment, emit results."""
+        try:
+            conn = get_connection(self._db_path)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"Failed to open database: {exc}")
+            return
+
+        def _progress(idx: int, total: int, title: str) -> None:
+            if self._cancel_requested:
+                raise _EnrichCancelledError
+            self.progress.emit(idx, total, title)
+
+        try:
+            stats = enrich_library(
+                conn,
+                cache_dir=self._cache_dir,
+                progress_callback=_progress,
+                launchbox_xml_path=self._launchbox_xml_path,
+            )
+        except _EnrichCancelledError:
+            conn.close()
+            self.failed.emit("Enrichment cancelled")
+            return
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            self.failed.emit(f"Enrichment failed: {exc}")
+            return
+
+        conn.close()
+        self.finished_ok.emit(
+            stats["games_processed"],
+            stats["metadata_added"],
+            stats["covers_added"],
+        )
+
+
+class _EnrichCancelledError(Exception):
+    """Internal marker exception raised from enrich progress on cancel."""

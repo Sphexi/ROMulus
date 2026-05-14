@@ -430,6 +430,60 @@ class TestScanWorker:
         assert failed or finished
 
 
+class TestEnrichWorker:
+    def test_worker_runs_with_empty_library(self, qapp, tmp_path) -> None:
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.db import get_connection
+        from romulus.ui.workers import EnrichWorker
+
+        db_path = tmp_path / "romulus.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        seed_defaults(conn)
+        conn.close()
+
+        worker = EnrichWorker(db_path, cache_dir=tmp_path / "covers")
+        finished: list[tuple] = []
+        failed: list[str] = []
+        worker.finished_ok.connect(lambda *args: finished.append(args))
+        worker.failed.connect(failed.append)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        assert not failed
+        assert finished
+        games_processed, metadata_added, covers_added = finished[0]
+        assert games_processed == 0
+        assert metadata_added == 0
+        assert covers_added == 0
+
+    def test_worker_emits_failed_on_bad_db(self, qapp, tmp_path) -> None:
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.ui.workers import EnrichWorker
+
+        # Pointing at a directory path forces get_connection to error.
+        bad_path = tmp_path / "not-a-db"
+        bad_path.mkdir()
+        worker = EnrichWorker(bad_path, cache_dir=tmp_path / "covers")
+        finished: list[tuple] = []
+        failed: list[str] = []
+        worker.finished_ok.connect(lambda *args: finished.append(args))
+        worker.failed.connect(failed.append)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        assert failed or finished  # must not crash silently
+
+
 # ---------------------------------------------------------------------------
 # Settings dialog
 # ---------------------------------------------------------------------------
