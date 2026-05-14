@@ -8,6 +8,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QTreeView, QWidget
 
+from romulus.db import queries as q
+
 SYSTEM_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 NODE_KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 
@@ -37,17 +39,14 @@ def get_total_rom_count(conn: sqlite3.Connection) -> int:
 
 
 def get_collections(conn: sqlite3.Connection) -> list[tuple[int, str, int]]:
-    """Return [(collection_id, name, game_count)] across every collection."""
-    rows = conn.execute(
-        """
-        SELECT c.id, c.name, COUNT(cg.game_id) AS n
-        FROM collections c
-        LEFT JOIN collection_games cg ON cg.collection_id = c.id
-        GROUP BY c.id, c.name
-        ORDER BY c.name
-        """
-    ).fetchall()
-    return [(row[0], row[1], row[2]) for row in rows]
+    """Return [(collection_id, name, game_count)] across every collection.
+
+    Thin compatibility shim around `queries.get_collections` so the sidebar
+    tests can keep using positional tuples. System collections (Favorites)
+    appear first in the list.
+    """
+    rows = q.get_collections(conn)
+    return [(int(row["id"]), str(row["name"]), int(row["game_count"])) for row in rows]
 
 
 class SystemSidebar(QTreeView):

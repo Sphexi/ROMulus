@@ -176,16 +176,16 @@ class TestGameTableProxy:
         )
         proxy = GameTableProxy()
         proxy.setSourceModel(model)
-        proxy.setFilterFixedString("mario")
+        proxy.set_name_filter("mario")
         assert proxy.rowCount() == 2
 
     def test_filter_clears(self, qapp) -> None:
         model = GameTableModel([_row("A.sfc", 1), _row("B.sfc", 2)])
         proxy = GameTableProxy()
         proxy.setSourceModel(model)
-        proxy.setFilterFixedString("a")
+        proxy.set_name_filter("a")
         assert proxy.rowCount() == 1
-        proxy.setFilterFixedString("")
+        proxy.set_name_filter("")
         assert proxy.rowCount() == 2
 
     def test_sort_by_size_numerically(self, qapp) -> None:
@@ -578,3 +578,393 @@ class TestMainWindow:
         window._selected_system = system_id
         window.refresh_game_table()
         assert window.game_table.proxy.rowCount() == 1
+
+
+# ---------------------------------------------------------------------------
+# GameTableProxy — region + match-status filters
+# ---------------------------------------------------------------------------
+
+
+def _row_full(
+    name: str,
+    region: str = "USA",
+    match: str = "fuzzy",
+    game_id: int | None = 1,
+) -> GameRow:
+    return GameRow(
+        rom_id=hash(name) & 0xFFFFFFFF,
+        name=name,
+        system_id="snes",
+        system_name="SNES",
+        region=region,
+        size_bytes=1024,
+        match_confidence=match,
+        game_id=game_id,
+    )
+
+
+class TestRegionAndMatchFilters:
+    def test_region_filter_narrows_to_usa(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("USA Game", region="USA"),
+                _row_full("Euro Game", region="Europe"),
+                _row_full("JP Game", region="Japan"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_region_filter("USA")
+        assert proxy.rowCount() == 1
+
+    def test_region_filter_other_excludes_known_regions(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("USA", region="USA"),
+                _row_full("Korea", region="Korea"),
+                _row_full("Brazil", region="Brazil"),
+                _row_full("Blank", region=""),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_region_filter("Other")
+        # USA is excluded; blank is excluded; Korea + Brazil pass.
+        assert proxy.rowCount() == 2
+
+    def test_match_filter_verified(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("v1", match="dat_verified"),
+                _row_full("v2", match="header"),
+                _row_full("v3", match="fuzzy"),
+                _row_full("v4", match="unmatched"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_match_filter("Verified")
+        assert proxy.rowCount() == 2
+
+    def test_match_filter_unmatched(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("v1", match="dat_verified"),
+                _row_full("v2", match="fuzzy"),
+                _row_full("v3", match="unmatched"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_match_filter("Unmatched")
+        assert proxy.rowCount() == 2
+
+    def test_filters_compose_with_name_search(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("Mario USA", region="USA"),
+                _row_full("Mario JP", region="Japan"),
+                _row_full("Zelda USA", region="USA"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_name_filter("mario")
+        proxy.set_region_filter("USA")
+        assert proxy.rowCount() == 1
+
+
+# ---------------------------------------------------------------------------
+# GameTable widget — selection signal + context-menu collection plumbing
+# ---------------------------------------------------------------------------
+
+
+class TestGameTableSelection:
+    def test_selecting_row_emits_game_selected(self, qapp) -> None:
+        from romulus.ui.game_table import GameTable
+
+        widget = GameTable()
+        widget.set_rows(
+            [
+                _row_full("A", game_id=7),
+                _row_full("B", game_id=8),
+            ]
+        )
+        # Look up each proxy row's game_id directly so we are not coupled to
+        # any default sort order; assert one of them fires the signal.
+        received: list[object] = []
+        widget.game_selected.connect(received.append)
+
+        target_index = widget.proxy.index(0, 0)
+        target_source = widget.proxy.mapToSource(target_index)
+        expected_game_id = widget.model.row_at(target_source.row()).game_id
+
+        widget.view.selectionModel().setCurrentIndex(
+            target_index,
+            widget.view.selectionModel().SelectionFlag.ClearAndSelect
+            | widget.view.selectionModel().SelectionFlag.Rows,
+        )
+        assert received and received[-1] == expected_game_id
+
+    def test_set_available_collections_round_trips(self, qapp) -> None:
+        from romulus.ui.game_table import GameTable
+
+        widget = GameTable()
+        widget.set_available_collections([(1, "Favorites"), (2, "RPGs")])
+        assert widget._available_collections == [
+            (1, "Favorites"),
+            (2, "RPGs"),
+        ]
+
+    def test_set_collection_context_round_trips(self, qapp) -> None:
+        from romulus.ui.game_table import GameTable
+
+        widget = GameTable()
+        assert widget._collection_context is False
+        widget.set_collection_context(True)
+        assert widget._collection_context is True
+
+
+# ---------------------------------------------------------------------------
+# DetailPanel — rendering against real DB rows
+# ---------------------------------------------------------------------------
+
+
+class TestDetailPanel:
+    def _seed_game_with_metadata(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        title: str = "Chrono Trigger",
+        with_metadata: bool = True,
+    ) -> int:
+        from romulus.db import queries as queries_mod
+
+        game_id = queries_mod.upsert_game(
+            conn, {"title": title, "system_id": "snes", "region": "USA"}
+        )
+        rom_id = _insert_rom(conn, f"{title}.sfc", "snes", match_confidence="dat_verified")
+        queries_mod.link_rom_to_game(conn, rom_id, game_id)
+        if with_metadata:
+            queries_mod.upsert_metadata(
+                conn,
+                game_id,
+                {
+                    "description": "Time-traveling JRPG.",
+                    "genre": "RPG",
+                    "developer": "Square",
+                    "publisher": "Square",
+                },
+                source="launchbox",
+            )
+        conn.commit()
+        return game_id
+
+    def test_blank_when_no_game_selected(self, qapp, seeded_db) -> None:
+        from romulus.ui.detail_panel import DetailPanel
+
+        panel = DetailPanel(seeded_db)
+        panel.update_game(None)
+        assert panel.current_game_id is None
+        assert "Select a game" in panel.title_label.text()
+        assert not panel.favorite_button.isEnabled()
+        assert not panel.collection_button.isEnabled()
+
+    def test_renders_game_with_metadata(self, qapp, seeded_db) -> None:
+        from romulus.ui.detail_panel import DetailPanel
+
+        game_id = self._seed_game_with_metadata(seeded_db)
+        panel = DetailPanel(seeded_db)
+        panel.update_game(game_id)
+
+        assert panel.current_game_id == game_id
+        assert panel.title_label.text() == "Chrono Trigger"
+        assert "RPG" in panel.genre_label.text()
+        assert "Square" in panel.developer_label.text()
+        assert "Time-traveling" in panel.description.toPlainText()
+        # DAT-verified ROM means the badge label says "DAT verified".
+        assert "DAT verified" in panel.match_badge.text()
+        assert panel.favorite_button.isEnabled()
+        assert panel.collection_button.isEnabled()
+
+    def test_renders_game_without_metadata(self, qapp, seeded_db) -> None:
+        from romulus.ui.detail_panel import DetailPanel
+
+        game_id = self._seed_game_with_metadata(
+            seeded_db, title="Obscure Title", with_metadata=False
+        )
+        panel = DetailPanel(seeded_db)
+        panel.update_game(game_id)
+        assert panel.title_label.text() == "Obscure Title"
+        # Metadata fields should be cleared but the panel itself is enabled.
+        assert panel.genre_label.text() == ""
+        assert panel.publisher_label.text() == ""
+        assert panel.description.toPlainText() == ""
+        assert panel.favorite_button.isEnabled()
+
+    def test_missing_cover_renders_placeholder(self, qapp, seeded_db) -> None:
+        from romulus.db import queries as queries_mod
+        from romulus.ui.detail_panel import PLACEHOLDER_TEXT, DetailPanel
+
+        game_id = self._seed_game_with_metadata(seeded_db)
+        # Insert a cover row pointing at a path that does not exist on disk.
+        queries_mod.insert_cover(
+            seeded_db,
+            game_id,
+            "Named_Boxarts",
+            "https://example.com/missing.png",
+            local_path=str(seeded_db.execute("SELECT 'no-such-file'").fetchone()[0]),
+        )
+        seeded_db.commit()
+        panel = DetailPanel(seeded_db)
+        panel.update_game(game_id)
+        # No pixmap loaded; placeholder text shown.
+        assert panel.cover_label.text() == PLACEHOLDER_TEXT
+        assert panel.cover_label.pixmap().isNull()
+
+    def test_loads_cover_from_disk_when_present(
+        self, qapp, seeded_db, tmp_path
+    ) -> None:
+        from PySide6.QtGui import QImage
+
+        from romulus.db import queries as queries_mod
+        from romulus.ui.detail_panel import DetailPanel
+
+        game_id = self._seed_game_with_metadata(seeded_db)
+        cover_path = tmp_path / "cover.png"
+        # 4x4 transparent PNG so QPixmap definitely loads it.
+        QImage(4, 4, QImage.Format.Format_RGBA8888).save(str(cover_path), "PNG")
+        queries_mod.insert_cover(
+            seeded_db,
+            game_id,
+            "Named_Boxarts",
+            "https://example.com/cover.png",
+            local_path=str(cover_path),
+        )
+        seeded_db.commit()
+        panel = DetailPanel(seeded_db)
+        panel.update_game(game_id)
+        # Pixmap is now set, no placeholder text.
+        assert not panel.cover_label.pixmap().isNull()
+        assert panel.cover_label.text() == ""
+
+    def test_favorite_toggle_round_trip(self, qapp, seeded_db) -> None:
+        from romulus.db import queries as queries_mod
+        from romulus.ui.detail_panel import DetailPanel
+
+        game_id = self._seed_game_with_metadata(seeded_db)
+        panel = DetailPanel(seeded_db)
+        panel.update_game(game_id)
+        favorites_id = queries_mod.ensure_favorites_collection(seeded_db)
+
+        # Click → adds to favorites.
+        panel.favorite_button.setChecked(True)
+        panel._on_favorite_clicked()
+        assert queries_mod.is_game_in_collection(
+            seeded_db, favorites_id, game_id
+        )
+
+        # Click again → removes from favorites.
+        panel.favorite_button.setChecked(False)
+        panel._on_favorite_clicked()
+        assert not queries_mod.is_game_in_collection(
+            seeded_db, favorites_id, game_id
+        )
+
+
+# ---------------------------------------------------------------------------
+# MainWindow — collection sidebar wiring + DetailPanel selection
+# ---------------------------------------------------------------------------
+
+
+class TestMainWindowCollections:
+    def test_detail_panel_updates_on_game_selection(
+        self, qapp, seeded_db
+    ) -> None:
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        game_id = queries_mod.upsert_game(
+            seeded_db, {"title": "Mario", "system_id": "snes"}
+        )
+        rom_id = _insert_rom(seeded_db, "Mario.sfc", "snes")
+        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+        window.refresh_all()
+        window._on_game_selected(game_id)
+        assert window.detail_panel.current_game_id == game_id
+
+    def test_collection_selection_filters_game_table(
+        self, qapp, seeded_db
+    ) -> None:
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        # Two games on the same system; only one belongs to the collection.
+        gid_in = queries_mod.upsert_game(
+            seeded_db, {"title": "Mario", "system_id": "snes"}
+        )
+        rom_in = _insert_rom(seeded_db, "Mario.sfc", "snes")
+        queries_mod.link_rom_to_game(seeded_db, rom_in, gid_in)
+
+        gid_out = queries_mod.upsert_game(
+            seeded_db, {"title": "Zelda", "system_id": "snes"}
+        )
+        rom_out = _insert_rom(seeded_db, "Zelda.sfc", "snes")
+        queries_mod.link_rom_to_game(seeded_db, rom_out, gid_out)
+
+        cid = queries_mod.create_collection(seeded_db, "Mario Pack")
+        queries_mod.add_game_to_collection(seeded_db, cid, gid_in)
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+        window.refresh_all()
+        window._on_collection_selected(cid)
+        assert window.game_table.proxy.rowCount() == 1
+        assert window.game_table.model.row_at(0).game_id == gid_in
+
+    def test_add_to_favorites_request_through_main_window(
+        self, qapp, seeded_db
+    ) -> None:
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        game_id = queries_mod.upsert_game(
+            seeded_db, {"title": "Metroid", "system_id": "snes"}
+        )
+        rom_id = _insert_rom(seeded_db, "Metroid.sfc", "snes")
+        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+        window.refresh_all()
+        window._on_add_to_favorites(game_id)
+
+        favorites_id = queries_mod.ensure_favorites_collection(seeded_db)
+        assert queries_mod.is_game_in_collection(
+            seeded_db, favorites_id, game_id
+        )
+
+    def test_remove_from_collection_through_main_window(
+        self, qapp, seeded_db
+    ) -> None:
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        game_id = queries_mod.upsert_game(
+            seeded_db, {"title": "Kirby", "system_id": "snes"}
+        )
+        rom_id = _insert_rom(seeded_db, "Kirby.sfc", "snes")
+        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
+        cid = queries_mod.create_collection(seeded_db, "Easy Mode")
+        queries_mod.add_game_to_collection(seeded_db, cid, game_id)
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+        window.refresh_all()
+        window._on_collection_selected(cid)
+        window._on_remove_from_collection(game_id)
+
+        assert not queries_mod.is_game_in_collection(seeded_db, cid, game_id)

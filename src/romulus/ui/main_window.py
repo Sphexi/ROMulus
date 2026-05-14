@@ -12,10 +12,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSplitter,
     QToolBar,
-    QWidget,
 )
 
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
+from romulus.db import queries as q
+from romulus.ui.detail_panel import DetailPanel
 from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
 from romulus.ui.scan_progress import ScanProgressDialog
@@ -33,21 +34,22 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._conn = conn
         self._selected_system: str | None = None
+        self._selected_collection: int | None = None
         self._scan_worker: ScanWorker | None = None
         self._scan_dialog: ScanProgressDialog | None = None
         self._enrich_worker: EnrichWorker | None = None
         self._enrich_dialog: EnrichProgressDialog | None = None
 
+        q.ensure_favorites_collection(conn)
+
         self.sidebar = SystemSidebar(self)
         self.game_table = GameTable(self)
-        self.detail_panel = QLabel("Select a game to see details", self)
-        self.detail_panel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.detail_panel.setWordWrap(True)
+        self.detail_panel = DetailPanel(conn, self)
 
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.addWidget(self.sidebar)
         splitter.addWidget(self.game_table)
-        splitter.addWidget(self._wrap_detail())
+        splitter.addWidget(self.detail_panel)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
         splitter.setStretchFactor(2, 2)
@@ -60,15 +62,21 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
 
         self.sidebar.system_selected.connect(self._on_system_selected)
-
-    def _wrap_detail(self) -> QWidget:
-        wrapper = QWidget(self)
-        from PySide6.QtWidgets import QVBoxLayout
-
-        layout = QVBoxLayout(wrapper)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.addWidget(self.detail_panel)
-        return wrapper
+        self.sidebar.collection_selected.connect(self._on_collection_selected)
+        self.game_table.game_selected.connect(self._on_game_selected)
+        self.game_table.add_to_favorites_requested.connect(
+            self._on_add_to_favorites
+        )
+        self.game_table.add_to_collection_requested.connect(
+            self._on_add_to_collection
+        )
+        self.game_table.new_collection_requested.connect(
+            self._on_new_collection
+        )
+        self.game_table.remove_from_collection_requested.connect(
+            self._on_remove_from_collection
+        )
+        self.detail_panel.favorite_toggled.connect(self._on_favorite_toggled)
 
     def _build_menu(self) -> None:
         menu = self.menuBar()
@@ -149,11 +157,30 @@ class MainWindow(QMainWindow):
         self.sidebar.populate(self._conn)
 
     def refresh_game_table(self) -> None:
-        """Reload visible games for the currently-selected system filter."""
-        rows = load_rom_rows(self._conn, self._selected_system)
+        """Reload visible games for the active system/collection filter."""
+        game_ids: list[int] | None = None
+        if self._selected_collection is not None:
+            game_ids = q.get_collection_games(
+                self._conn, self._selected_collection
+            )
+        rows = load_rom_rows(
+            self._conn, self._selected_system, game_ids=game_ids
+        )
         self.game_table.set_rows(rows)
+        self.game_table.set_collection_context(
+            self._selected_collection is not None
+        )
+        # Provide collection list to the table for the right-click submenu.
+        user_collections = [
+            (int(r["id"]), str(r["name"]))
+            for r in q.get_collections(self._conn)
+            if not int(r["is_system"])
+        ]
+        self.game_table.set_available_collections(user_collections)
         total = self._conn.execute("SELECT COUNT(*) FROM roms").fetchone()[0]
         self.status_label.setText(f"{total} ROMs")
+        # Reset the detail panel whenever the row set changes.
+        self.detail_panel.update_game(None)
 
     def refresh_all(self) -> None:
         """Repaint both the sidebar and the game table."""
@@ -166,7 +193,65 @@ class MainWindow(QMainWindow):
 
     def _on_system_selected(self, system_id: object) -> None:
         self._selected_system = system_id if isinstance(system_id, str) else None
+        self._selected_collection = None
         self.refresh_game_table()
+
+    def _on_collection_selected(self, collection_id: int) -> None:
+        """Filter the game table to the games in a specific collection."""
+        self._selected_collection = int(collection_id)
+        self._selected_system = None
+        self.refresh_game_table()
+
+    def _on_game_selected(self, game_id: object) -> None:
+        """Forward a game-table row selection to the detail panel."""
+        if isinstance(game_id, int):
+            self.detail_panel.update_game(game_id)
+        else:
+            self.detail_panel.update_game(None)
+
+    def _on_add_to_favorites(self, game_id: int) -> None:
+        favorites_id = q.ensure_favorites_collection(self._conn)
+        q.add_game_to_collection(self._conn, favorites_id, game_id)
+        # If the detail panel is showing this game, refresh its toggle state.
+        if self.detail_panel.current_game_id == game_id:
+            self.detail_panel.update_game(game_id)
+
+    def _on_add_to_collection(self, collection_id: int) -> None:
+        game_id = self.detail_panel.current_game_id
+        if game_id is None:
+            # Fall back to the game-table selection if the panel is blank.
+            game_id = self.game_table._selected_game_id()
+        if game_id is None:
+            return
+        q.add_game_to_collection(self._conn, collection_id, game_id)
+        self.refresh_sidebar()
+
+    def _on_new_collection(self, name: str) -> None:
+        game_id = self.detail_panel.current_game_id
+        if game_id is None:
+            game_id = self.game_table._selected_game_id()
+        try:
+            collection_id = q.create_collection(self._conn, name)
+        except sqlite3.IntegrityError:
+            existing = q.get_collection_by_name(self._conn, name)
+            if existing is None:
+                return
+            collection_id = int(existing["id"])
+        if game_id is not None:
+            q.add_game_to_collection(self._conn, collection_id, game_id)
+        self.refresh_sidebar()
+
+    def _on_remove_from_collection(self, game_id: int) -> None:
+        if self._selected_collection is None:
+            return
+        q.remove_game_from_collection(
+            self._conn, self._selected_collection, game_id
+        )
+        self.refresh_game_table()
+
+    def _on_favorite_toggled(self, _game_id: int, _is_favorite: bool) -> None:
+        """Refresh the sidebar so the Favorites count stays accurate."""
+        self.refresh_sidebar()
 
     def _on_open_library(self) -> None:
         from romulus.app import prompt_for_library_path

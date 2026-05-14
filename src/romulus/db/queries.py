@@ -484,3 +484,164 @@ def get_games_needing_enrichment(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         """
     ).fetchall()
     return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Detail panel lookups
+# ---------------------------------------------------------------------------
+
+
+def get_game_by_id(conn: sqlite3.Connection, game_id: int) -> sqlite3.Row | None:
+    """Return the games row for `game_id`, or None if it does not exist."""
+    return conn.execute(
+        "SELECT * FROM games WHERE id = ?", (game_id,)
+    ).fetchone()
+
+
+def get_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> sqlite3.Row | None:
+    """Return the roms row for `rom_id`, or None if it does not exist."""
+    return conn.execute(
+        "SELECT * FROM roms WHERE id = ?", (rom_id,)
+    ).fetchone()
+
+
+def get_roms_for_game(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
+    """Return every ROM linked to a game, ordered by filename."""
+    rows = conn.execute(
+        "SELECT * FROM roms WHERE game_id = ? ORDER BY filename",
+        (game_id,),
+    ).fetchall()
+    return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Collections
+# ---------------------------------------------------------------------------
+
+FAVORITES_NAME = "Favorites"
+
+
+def ensure_favorites_collection(conn: sqlite3.Connection) -> int:
+    """Return the id of the system "Favorites" collection, creating it if needed."""
+    row = conn.execute(
+        "SELECT id FROM collections WHERE name = ?", (FAVORITES_NAME,)
+    ).fetchone()
+    if row:
+        return row[0]
+    cursor = conn.execute(
+        "INSERT INTO collections (name, description, is_system) VALUES (?, ?, 1)",
+        (FAVORITES_NAME, "Built-in favorites collection"),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def create_collection(
+    conn: sqlite3.Connection,
+    name: str,
+    description: str | None = None,
+    is_system: bool = False,
+) -> int:
+    """Insert a new collection row; return its id.
+
+    Raises sqlite3.IntegrityError if a collection with the same name exists.
+    """
+    cursor = conn.execute(
+        "INSERT INTO collections (name, description, is_system) VALUES (?, ?, ?)",
+        (name, description, int(bool(is_system))),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def delete_collection(conn: sqlite3.Connection, collection_id: int) -> None:
+    """Remove a collection and every game-link pointing at it.
+
+    System collections (is_system=1) are protected — calling this on one raises
+    ValueError so callers must guard against it explicitly.
+    """
+    row = conn.execute(
+        "SELECT is_system FROM collections WHERE id = ?", (collection_id,)
+    ).fetchone()
+    if row is None:
+        return
+    if int(row[0]):
+        raise ValueError("Cannot delete system collection")
+    conn.execute(
+        "DELETE FROM collection_games WHERE collection_id = ?", (collection_id,)
+    )
+    conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+    conn.commit()
+
+
+def add_game_to_collection(
+    conn: sqlite3.Connection, collection_id: int, game_id: int
+) -> None:
+    """Link a game to a collection. Idempotent — duplicate inserts are ignored."""
+    conn.execute(
+        "INSERT OR IGNORE INTO collection_games (collection_id, game_id) VALUES (?, ?)",
+        (collection_id, game_id),
+    )
+    conn.commit()
+
+
+def remove_game_from_collection(
+    conn: sqlite3.Connection, collection_id: int, game_id: int
+) -> None:
+    """Remove a single game from a collection."""
+    conn.execute(
+        "DELETE FROM collection_games WHERE collection_id = ? AND game_id = ?",
+        (collection_id, game_id),
+    )
+    conn.commit()
+
+
+def get_collection_games(
+    conn: sqlite3.Connection, collection_id: int
+) -> list[int]:
+    """Return every game_id linked to a collection, ordered by insertion."""
+    rows = conn.execute(
+        "SELECT game_id FROM collection_games WHERE collection_id = ?",
+        (collection_id,),
+    ).fetchall()
+    return [int(row[0]) for row in rows]
+
+
+def get_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return every collection row with a game_count aggregate.
+
+    Columns: `id, name, description, is_system, game_count`. System collections
+    (is_system=1) sort to the top so the UI can render Favorites above any
+    user-created entries.
+    """
+    rows = conn.execute(
+        """
+        SELECT c.id, c.name, c.description, c.is_system,
+               COUNT(cg.game_id) AS game_count
+        FROM collections c
+        LEFT JOIN collection_games cg ON cg.collection_id = c.id
+        GROUP BY c.id, c.name, c.description, c.is_system
+        ORDER BY c.is_system DESC, c.name
+        """
+    ).fetchall()
+    return list(rows)
+
+
+def get_collection_by_name(
+    conn: sqlite3.Connection, name: str
+) -> sqlite3.Row | None:
+    """Return the collection row with this name, or None."""
+    return conn.execute(
+        "SELECT * FROM collections WHERE name = ?", (name,)
+    ).fetchone()
+
+
+def is_game_in_collection(
+    conn: sqlite3.Connection, collection_id: int, game_id: int
+) -> bool:
+    """True if a (collection, game) link row exists."""
+    row = conn.execute(
+        "SELECT 1 FROM collection_games WHERE collection_id = ? AND game_id = ? LIMIT 1",
+        (collection_id, game_id),
+    ).fetchone()
+    return row is not None

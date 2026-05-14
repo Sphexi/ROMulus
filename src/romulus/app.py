@@ -16,15 +16,17 @@ from romulus.db import (
     seed_defaults,
     set_config,
 )
+from romulus.db import queries as q
 from romulus.models import seed_systems
 
 
 def initialize_database(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Open the app DB, create tables, and seed systems + defaults."""
+    """Open the app DB, create tables, and seed systems + defaults + favorites."""
     conn = get_connection(db_path)
     create_tables(conn)
     seed_systems(conn)
     seed_defaults(conn)
+    q.ensure_favorites_collection(conn)
     return conn
 
 
