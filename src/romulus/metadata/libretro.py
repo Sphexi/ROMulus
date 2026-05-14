@@ -7,7 +7,10 @@ as a non-error skip.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
+import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -95,5 +98,20 @@ def fetch_cover(
         return None
 
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
+    # Atomic write: stage to a sibling temp file then os.replace into place so a
+    # cancelled / killed worker can never leave a half-written PNG that future
+    # `dest.exists() and st_size > 0` checks would mistake for a real cover.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{dest.name}.", suffix=".part", dir=str(dest.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(response.content)
+        os.replace(tmp_path, dest)
+    except OSError as exc:
+        logger.warning("libretro cover write failed: dest=%s err=%s", dest, exc)
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        return None
     return dest, url

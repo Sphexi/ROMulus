@@ -134,6 +134,34 @@ class TestFetchCover:
         local_path, _ = result
         assert local_path.read_bytes() == b"already-here"
 
+    def test_fetch_atomic_write_no_partial_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Simulate a write failure mid-rename; the destination must not exist
+        # (so future runs treat the slot as "not cached" and retry cleanly).
+        client = self._make_client(200, b"\x89PNG\r\n\x1a\nDATA")
+
+        def _bad_replace(src: object, dst: object) -> None:
+            raise OSError("simulated rename failure")
+
+        monkeypatch.setattr("romulus.metadata.libretro.os.replace", _bad_replace)
+        result = libretro.fetch_cover(
+            "Nintendo - Game Boy",
+            "gb",
+            "Tetris (World)",
+            "Named_Boxarts",
+            tmp_path,
+            client=client,
+        )
+        assert result is None
+        dest = libretro.cover_cache_path(
+            tmp_path, "gb", "Named_Boxarts", "Tetris (World)"
+        )
+        assert not dest.exists()
+        # The .part temp file should also have been cleaned up.
+        leftovers = list(dest.parent.glob("*.part"))
+        assert leftovers == []
+
 
 # ---------------------------------------------------------------------------
 # Hasheous
