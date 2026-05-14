@@ -7,6 +7,7 @@ Rate-limited politely: 1 request/second, with exponential backoff on 429.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -20,7 +21,20 @@ MIN_REQUEST_INTERVAL: float = 1.0
 MAX_RETRIES: int = 3
 BACKOFF_BASE: float = 1.0
 
+# Defense-in-depth: reject any hash value that isn't a hex string of a
+# plausible length before we interpolate it into the lookup URL. SHA-1 is 40
+# chars, MD5 is 32, CRC32 is 8. Anything else is either malformed or a path
+# traversal attempt and should never reach the network.
+_HEX_RE = re.compile(r"^[0-9a-f]+$")
+_VALID_HASH_LENGTHS = (8, 32, 40)
+
 _last_request_ts: float = 0.0
+
+
+def _is_valid_hash(value: str) -> bool:
+    """True if `value` looks like a CRC32 / MD5 / SHA-1 hex digest."""
+    lowered = value.lower()
+    return bool(_HEX_RE.match(lowered)) and len(lowered) in _VALID_HASH_LENGTHS
 
 
 def _respect_rate_limit() -> None:
@@ -71,6 +85,9 @@ def lookup_by_hash(
 ) -> dict[str, Any] | None:
     """Look up metadata by hash. Returns parsed dict, or None on miss/error."""
     if not sha1:
+        return None
+    if not _is_valid_hash(sha1):
+        logger.warning("hasheous lookup rejected: malformed hash value")
         return None
     url = f"{HASHEOUS_BASE_URL}/{hash_type}/{sha1.lower()}"
 

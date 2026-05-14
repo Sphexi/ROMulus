@@ -57,3 +57,68 @@ Deferred (out of session-8 fix scope, flagged for future work):
 - D2 (DB file permissions for ScreenScraper credentials) needs cross-platform thought — punt to whichever session adds secret storage.
 - The atomic-write pattern in `libretro.py` is the reference for Session 9's Organizer, which will also write user-visible files. Use the same `tempfile.mkstemp` + `os.replace` pattern there.
 
+---
+
+## Session 8 — Follow-up Pass (2026-05-14)
+
+The initial Session 8 pass (commit `bcb15f3`) fixed F1 (atomic write) and
+deferred D1 / D2 / D3 as out-of-scope. This follow-up pass re-runs the
+review against the deferred items and lands the two highest-value fixes
+plus one additional hardening item the first pass missed.
+
+### Fix A — `MainWindow.closeEvent` waits on running workers (was D1, partial)
+
+Closing the window while a `ScanWorker` or `EnrichWorker` was still running
+left the QThread alive with an open SQLite connection. WAL files could
+end up in an inconsistent state. Added `MainWindow.closeEvent` that
+requests cooperative cancel on every live worker, then `wait(5000)` so a
+wedged worker can't freeze shutdown forever. Test:
+`tests/test_ui.py::TestMainWindow::test_close_event_waits_on_running_worker`.
+
+### Fix B — Concurrent scan / enrich actions are now rejected (was D1, other half)
+
+`_on_quick_scan` and `_on_enrich` overwrote `self._scan_worker` /
+`self._enrich_worker` unconditionally. A double-click would orphan the
+first worker and race two QThreads on the same DB file. Added
+`isRunning()` guards that show `QMessageBox.information` and return
+early. Tests: `test_quick_scan_guards_against_concurrent_runs`,
+`test_enrich_guards_against_concurrent_runs`.
+
+### Fix C — DB file is now chmod'd to 0o600 on POSIX (was D2)
+
+Cross-platform thought, resolved: on POSIX, `_restrict_db_permissions` in
+`src/romulus/db/connection.py` chmods the DB plus its `-wal` / `-shm`
+siblings to `0o600` after every `sqlite3.connect()`. On Windows the
+function is a deliberate no-op (NTFS ACLs are inherited from the parent;
+`os.chmod` on Windows only toggles the read-only bit and would actively
+prevent SQLite from writing). chmod failures are logged at DEBUG and
+swallowed — restrictive perms are defense-in-depth, not a precondition.
+Test: `test_get_connection_restricts_db_file_permissions` (POSIX-only,
+skipped on Windows).
+
+### Fix D — Hasheous hash input is validated before URL interpolation
+
+Not in the original Deferred set, but caught on the follow-up review.
+`lookup_by_hash` interpolated its `sha1` argument into the URL path
+without checking the value. In practice the value is always pulled from
+the `hashes` table (well-formed), but the function is a public API and
+accepts any `str`. Added `_is_valid_hash` regex check (lowercase hex,
+length 8 / 32 / 40 for CRC32 / MD5 / SHA-1). Malformed input is logged
+and rejected before any HTTP call. Test:
+`tests/test_metadata.py::TestLookupByHash::test_lookup_rejects_malformed_hash`.
+
+### Still deferred after this pass
+
+- **D3** (shared `httpx.Client` across enrich calls) — a performance
+  optimization, not a correctness or security issue. Punted to whichever
+  later session profiles real enrichment runs.
+- **Note 6** from the first pass (encrypt ScreenScraper credentials at
+  rest) — needs a system-keyring story that this app doesn't yet have.
+  Fix C limits the blast radius in the meantime.
+
+### Tests / lint after the follow-up
+
+356 passed, 1 skipped (POSIX-only chmod test). Was 352 after the initial
+Session 8 commit, so +4 net new tests in this follow-up pass. Ruff clean
+on `src/` and `tests/`.
+

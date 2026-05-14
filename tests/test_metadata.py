@@ -258,6 +258,26 @@ class TestLookupByHash:
         client = httpx.Client(transport=httpx.MockTransport(handler))
         assert hasheous.lookup_by_hash("a" * 40, client=client) is None
 
+    def test_lookup_rejects_malformed_hash(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defense-in-depth: a non-hex hash never reaches the network."""
+        self._patch_no_rate_limit(monkeypatch)
+        calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(200, json={})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        # Path-traversal attempt — must be rejected without an HTTP call.
+        assert hasheous.lookup_by_hash("../etc/passwd", client=client) is None
+        # Wrong length (39 chars) — also rejected.
+        assert hasheous.lookup_by_hash("a" * 39, client=client) is None
+        # Non-hex characters — rejected.
+        assert hasheous.lookup_by_hash("g" * 40, client=client) is None
+        assert calls == []
+
 
 # ---------------------------------------------------------------------------
 # LaunchBox XML

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
+import stat
+import sys
 
 import pytest
 
@@ -32,6 +34,23 @@ def test_get_connection_enables_foreign_keys(tmp_path):
     try:
         result = conn.execute("PRAGMA foreign_keys").fetchone()[0]
         assert result == 1
+    finally:
+        conn.close()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: NTFS ACLs are inherited, not set via chmod",
+)
+def test_get_connection_restricts_db_file_permissions(tmp_path):
+    """The DB stores ScreenScraper credentials — keep it owner-only on POSIX."""
+    db_path = tmp_path / "romulus.db"
+    conn = get_connection(db_path)
+    try:
+        mode = stat.S_IMODE(db_path.stat().st_mode)
+        # Owner-only — no group or world read/write/execute bits.
+        assert mode & (stat.S_IRWXG | stat.S_IRWXO) == 0
+        assert mode & stat.S_IRUSR
     finally:
         conn.close()
 

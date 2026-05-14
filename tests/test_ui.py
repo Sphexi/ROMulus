@@ -579,6 +579,82 @@ class TestMainWindow:
         window.refresh_game_table()
         assert window.game_table.proxy.rowCount() == 1
 
+    def test_close_event_waits_on_running_worker(self, qapp, seeded_db) -> None:
+        """closeEvent must request cancel and wait, not leak the QThread."""
+        from PySide6.QtGui import QCloseEvent
+
+        from romulus.ui.main_window import MainWindow
+
+        window = MainWindow(seeded_db)
+
+        class _FakeWorker:
+            def __init__(self) -> None:
+                self.cancel_called = False
+                self.wait_args: list[int] = []
+                self._running = True
+
+            def isRunning(self) -> bool:  # noqa: N802 - mimics QThread API
+                return self._running
+
+            def cancel(self) -> None:
+                self.cancel_called = True
+
+            def wait(self, msecs: int) -> bool:
+                self.wait_args.append(msecs)
+                self._running = False
+                return True
+
+        fake = _FakeWorker()
+        window._scan_worker = fake  # type: ignore[assignment]
+        window.closeEvent(QCloseEvent())
+        assert fake.cancel_called is True
+        assert fake.wait_args, "wait() should be invoked with a timeout"
+
+    def test_quick_scan_guards_against_concurrent_runs(
+        self, qapp, seeded_db, monkeypatch
+    ) -> None:
+        """Clicking Quick Scan while a scan is running must be a no-op."""
+        from romulus.ui.main_window import MainWindow
+
+        window = MainWindow(seeded_db)
+
+        class _FakeRunningWorker:
+            def isRunning(self) -> bool:  # noqa: N802 - mimics QThread API
+                return True
+
+        window._scan_worker = _FakeRunningWorker()  # type: ignore[assignment]
+
+        info_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "romulus.ui.main_window.QMessageBox.information",
+            lambda *args, **_kw: info_calls.append((args[1], args[2])),
+        )
+        # Should bail out before constructing the dialog/worker.
+        window._on_quick_scan()
+        assert info_calls, "expected a warning when a scan is already running"
+
+    def test_enrich_guards_against_concurrent_runs(
+        self, qapp, seeded_db, monkeypatch
+    ) -> None:
+        """Clicking Enrich while enrichment is running must be a no-op."""
+        from romulus.ui.main_window import MainWindow
+
+        window = MainWindow(seeded_db)
+
+        class _FakeRunningWorker:
+            def isRunning(self) -> bool:  # noqa: N802 - mimics QThread API
+                return True
+
+        window._enrich_worker = _FakeRunningWorker()  # type: ignore[assignment]
+
+        info_calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "romulus.ui.main_window.QMessageBox.information",
+            lambda *args, **_kw: info_calls.append((args[1], args[2])),
+        )
+        window._on_enrich()
+        assert info_calls, "expected a warning when enrichment is already running"
+
 
 # ---------------------------------------------------------------------------
 # GameTableProxy — region + match-status filters

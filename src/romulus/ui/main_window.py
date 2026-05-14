@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
@@ -276,6 +276,13 @@ class MainWindow(QMainWindow):
         )
 
     def _on_quick_scan(self) -> None:
+        if self._scan_worker is not None and self._scan_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Scan already running",
+                "A scan is already in progress — please wait for it to finish.",
+            )
+            return
         library_path = get_config(self._conn, "library_path") or ""
         if not library_path:
             QMessageBox.warning(
@@ -313,6 +320,13 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
 
     def _on_enrich(self) -> None:
+        if self._enrich_worker is not None and self._enrich_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Enrichment already running",
+                "Enrichment is already in progress — please wait for it to finish.",
+            )
+            return
         cover_cache = get_config(self._conn, "cover_cache_path") or None
 
         self._enrich_dialog = EnrichProgressDialog(self)
@@ -339,3 +353,23 @@ class MainWindow(QMainWindow):
 
     def _on_enrich_failed(self, message: str) -> None:
         self.status_label.setText(message)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API
+        """Stop any running workers cleanly before the window goes away.
+
+        QThread workers hold an open SQLite connection; tearing down the main
+        window without waiting on them leaks the thread and (worse) can leave
+        WAL files in an inconsistent state. We request cooperative cancel,
+        then wait up to a few seconds for the thread to drain.
+        """
+        for worker in (self._scan_worker, self._enrich_worker):
+            if worker is None or not worker.isRunning():
+                continue
+            worker.cancel()
+            # Bounded wait so a wedged worker never freezes shutdown forever.
+            worker.wait(5000)
+        super().closeEvent(event)
