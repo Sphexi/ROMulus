@@ -246,13 +246,19 @@ class OrganizePreviewDialog(QDialog):
             f"Applying {current} of {total}: {source}"
         )
 
-    def on_finished(self, applied: int, skipped: int, failed: int) -> None:
-        """Slot — show the post-apply summary and switch Cancel into Close."""
-        self._summary_label.setText(
-            f"Done. Applied {applied}, skipped {skipped}, failed {failed}."
-        )
+    def on_finished(
+        self, applied: int, skipped: int, failed: int, errors: list[str] | None = None  # noqa: ARG002
+    ) -> None:
+        """Slot — fill the bar to 100% and show the post-apply summary."""
+        self._progress.setRange(0, max(1, self._progress.maximum()))
         self._progress.setValue(self._progress.maximum())
+        icon = "✓" if failed == 0 else "✗"
+        self._summary_label.setText(
+            f"{icon} Done. Applied {applied}, skipped {skipped}, failed {failed}."
+        )
 
     def on_failed(self, message: str) -> None:
-        """Slot — show an error message."""
-        self._summary_label.setText(message)
+        """Slot — fill bar to end, show an error message."""
+        self._progress.setRange(0, 1)
+        self._progress.setValue(0)
+        self._summary_label.setText(f"✗ {message}")

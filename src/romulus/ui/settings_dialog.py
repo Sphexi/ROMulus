@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -27,6 +29,7 @@ from PySide6.QtWidgets import (
 from romulus.app import DEFAULT_LOG_PATH, set_log_level
 from romulus.db import get_config, set_config
 from romulus.metadata.screenscraper import test_connection as screenscraper_test_connection
+from romulus.ui.themes import AVAILABLE_THEMES, apply_theme
 
 
 class _GeneralTab(QWidget):
@@ -44,10 +47,14 @@ class _GeneralTab(QWidget):
         path_row.addWidget(browse)
 
         self.theme = QComboBox()
-        self.theme.addItems(["system", "light", "dark"])
         current_theme = get_config(conn, "theme") or "system"
-        idx = max(0, self.theme.findText(current_theme))
-        self.theme.setCurrentIndex(idx)
+        for theme_id, display_name in AVAILABLE_THEMES.items():
+            self.theme.addItem(display_name, theme_id)
+        # Select the index whose data matches the saved theme id.
+        for i in range(self.theme.count()):
+            if self.theme.itemData(i) == current_theme:
+                self.theme.setCurrentIndex(i)
+                break
 
         form = QFormLayout(self)
         form.addRow("Library path:", path_row)
@@ -62,7 +69,12 @@ class _GeneralTab(QWidget):
 
     def save(self) -> None:
         set_config(self._conn, "library_path", self.library_path.text())
-        set_config(self._conn, "theme", self.theme.currentText())
+        chosen_id = self.theme.currentData() or "system"
+        set_config(self._conn, "theme", chosen_id)
+        # Apply immediately — no restart needed.
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, chosen_id)
 
 
 class _DatTab(QWidget):
@@ -82,7 +94,16 @@ class _DatTab(QWidget):
 
         self.list = QListWidget()
         for path in paths:
-            self.list.addItem(str(path))
+            p = Path(str(path))
+            if p.exists():
+                display = str(p.resolve())
+                self.list.addItem(display)
+            else:
+                item_text = str(path)
+                from PySide6.QtWidgets import QListWidgetItem
+                item = QListWidgetItem(item_text)
+                item.setToolTip("Path not found on disk")
+                self.list.addItem(item)
 
         add_btn = QPushButton("Add folder...")
         add_btn.clicked.connect(self._add)
@@ -246,6 +267,8 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(tabs)
         layout.addWidget(buttons)
+
+        self.resize(640, 480)
 
     def _accept_and_save(self) -> None:
         self.general.save()

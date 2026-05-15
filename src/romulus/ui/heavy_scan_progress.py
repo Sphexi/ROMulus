@@ -36,11 +36,11 @@ class HeavyScanProgressDialog(QProgressDialog):
         total_matched: int,
         errors: int,
     ) -> None:
-        """Slot — show the final summary and switch Cancel into Close."""
+        """Slot — stop the spinner, show the final summary, switch to Close."""
         self.setRange(0, 1)
         self.setValue(1)
         self.setLabelText(
-            f"Heavy Scan complete.\n"
+            f"✓ Heavy Scan complete.\n"
             f"ROMs hashed: {total_hashed}\n"
             f"DAT matches found: {total_matched}\n"
             f"Errors: {errors}"
@@ -48,8 +48,8 @@ class HeavyScanProgressDialog(QProgressDialog):
         self.setCancelButtonText("Close")
 
     def on_failed(self, message: str) -> None:
-        """Slot — show an error message and switch Cancel into Close."""
+        """Slot — stop the spinner, show an error message, switch to Close."""
         self.setRange(0, 1)
-        self.setValue(1)
-        self.setLabelText(message)
+        self.setValue(0)
+        self.setLabelText(f"✗ {message}")
         self.setCancelButtonText("Close")

@@ -26,7 +26,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-COLUMNS = ("Name", "System", "Region", "Size", "Match")
+from romulus.db import queries as q
+
+# Column indices — keep in sync with COLUMNS tuple.
+_COL_NAME = 0
+_COL_SYSTEM = 1
+_COL_REGION = 2
+_COL_SIZE = 3
+_COL_MATCH = 4
+_COL_PATH = 5
+
+COLUMNS = ("Name", "System", "Region", "Size", "Match", "Path")
 # Cap rows loaded at once so very large libraries stay responsive.
 DEFAULT_PAGE_SIZE = 5000
 
@@ -37,14 +47,26 @@ REGION_FILTER_OPTIONS: tuple[str, ...] = (
     "Japan",
     "World",
     "Other",
+    "None (no region)",
 )
-MATCH_FILTER_OPTIONS: tuple[str, ...] = ("All", "Verified", "Unmatched")
+MATCH_FILTER_OPTIONS: tuple[str, ...] = (
+    "All",
+    "Verified",
+    "Fuzzy",
+    "Unmatched",
+)
+ENRICHMENT_FILTER_OPTIONS: tuple[str, ...] = (
+    "All",
+    "Has cover",
+    "Has metadata",
+    "Has both",
+    "Has neither",
+)
 # Regions that the "Other" bucket lumps together (anything not in this set).
 _KNOWN_REGIONS: frozenset[str] = frozenset({"USA", "Europe", "Japan", "World"})
 # Hoisted out of filterAcceptsRow so the proxy doesn't allocate a fresh set
 # every time Qt invokes the filter (once per row per filter change).
 _VERIFIED_CONFIDENCES: frozenset[str] = frozenset({"dat_verified", "header"})
-_UNMATCHED_CONFIDENCES: frozenset[str] = frozenset({"unmatched", "fuzzy"})
 
 
 @dataclass(frozen=True)
@@ -59,6 +81,9 @@ class GameRow:
     size_bytes: int
     match_confidence: str
     game_id: int | None = None
+    rom_path: str = ""
+    has_cover: bool = False
+    has_metadata: bool = False
 
 
 def _format_size(size_bytes: int) -> str:
@@ -79,47 +104,28 @@ def load_rom_rows(
     limit: int = DEFAULT_PAGE_SIZE,
     game_ids: list[int] | None = None,
 ) -> list[GameRow]:
-    """Pull ROM rows for the table.
+    """Pull ROM rows for the table, including enrichment status and path.
 
     `system_id` filters to a single platform. `game_ids` restricts the result
     to a specific set of game ids (used by collection views). Both can be
     combined.
     """
-    base = (
-        "SELECT r.id, r.filename, r.system_id, "
-        "COALESCE(s.short_name, s.display_name, r.system_id) AS sys_name, "
-        "COALESCE(g.region, '') AS region, r.size_bytes, r.match_confidence, "
-        "r.game_id "
-        "FROM roms r "
-        "LEFT JOIN systems s ON s.id = r.system_id "
-        "LEFT JOIN games g ON g.id = r.game_id"
+    rows = q.get_games_with_enrichment_status(
+        conn, system_id=system_id, game_ids=game_ids, limit=limit
     )
-    clauses: list[str] = []
-    params: list[object] = []
-    if system_id is not None:
-        clauses.append("r.system_id = ?")
-        params.append(system_id)
-    if game_ids is not None:
-        if not game_ids:
-            return []
-        placeholders = ",".join("?" for _ in game_ids)
-        clauses.append(f"r.game_id IN ({placeholders})")
-        params.extend(game_ids)
-    if clauses:
-        base += " WHERE " + " AND ".join(clauses)
-    base += " ORDER BY r.filename LIMIT ?"
-    params.append(limit)
-    rows = conn.execute(base, params).fetchall()
     return [
         GameRow(
-            rom_id=row[0],
-            name=row[1],
-            system_id=row[2] or "",
-            system_name=row[3] or "",
-            region=row[4] or "",
-            size_bytes=int(row[5] or 0),
-            match_confidence=row[6] or "unmatched",
-            game_id=int(row[7]) if row[7] is not None else None,
+            rom_id=int(row["rom_id"]),
+            name=str(row["name"] or ""),
+            system_id=str(row["system_id"] or ""),
+            system_name=str(row["system_name"] or ""),
+            region=str(row["region"] or ""),
+            size_bytes=int(row["size_bytes"] or 0),
+            match_confidence=str(row["match_confidence"] or "unmatched"),
+            game_id=int(row["game_id"]) if row["game_id"] is not None else None,
+            rom_path=str(row["rom_path"] or ""),
+            has_cover=bool(int(row["has_cover"] or 0)),
+            has_metadata=bool(int(row["has_metadata"] or 0)),
         )
         for row in rows
     ]
@@ -168,27 +174,31 @@ class GameTableModel(QAbstractTableModel):
         row = self._rows[index.row()]
         col = index.column()
         if role == Qt.ItemDataRole.DisplayRole:
-            if col == 0:
+            if col == _COL_NAME:
                 return row.name
-            if col == 1:
+            if col == _COL_SYSTEM:
                 return row.system_name
-            if col == 2:
+            if col == _COL_REGION:
                 return row.region
-            if col == 3:
+            if col == _COL_SIZE:
                 return _format_size(row.size_bytes)
-            if col == 4:
+            if col == _COL_MATCH:
                 return row.match_confidence
+            if col == _COL_PATH:
+                return row.rom_path
             return None
         if role == Qt.ItemDataRole.UserRole:
             # Raw sort key — used by GameTableProxy for size sorting.
-            if col == 3:
+            if col == _COL_SIZE:
                 return row.size_bytes
             return self.data(index, Qt.ItemDataRole.DisplayRole)
+        if role == Qt.ItemDataRole.ToolTipRole and col == _COL_PATH:
+            return row.rom_path
         return None
 
 
 class GameTableProxy(QSortFilterProxyModel):
-    """Proxy model — name search + region + match filters, numeric size sort."""
+    """Proxy model — name search + region + match + enrichment filters."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -199,6 +209,7 @@ class GameTableProxy(QSortFilterProxyModel):
         self._name_filter: str = ""
         self._region_filter: str = "All"
         self._match_filter: str = "All"
+        self._enrichment_filter: str = "All"
 
     def set_name_filter(self, text: str) -> None:
         """Substring (case-insensitive) match against the Name column."""
@@ -215,8 +226,13 @@ class GameTableProxy(QSortFilterProxyModel):
         self.invalidate()
 
     def set_match_filter(self, status: str) -> None:
-        """Filter rows by match status (All / Verified / Unmatched)."""
+        """Filter rows by match status (All / Verified / Fuzzy / Unmatched)."""
         self._match_filter = status or "All"
+        self.invalidate()
+
+    def set_enrichment_filter(self, value: str) -> None:
+        """Filter rows by enrichment status (All / Has cover / Has metadata / …)."""
+        self._enrichment_filter = value or "All"
         self.invalidate()
 
     def filterAcceptsRow(
@@ -228,24 +244,51 @@ class GameTableProxy(QSortFilterProxyModel):
         if not isinstance(model, GameTableModel):
             return True
         row = model.row_at(source_row)
+
+        # Name search
         if self._name_filter and self._name_filter.lower() not in row.name.lower():
             return False
+
+        # Region filter
         if self._region_filter != "All":
             row_region = row.region or ""
-            if self._region_filter == "Other":
+            if self._region_filter == "None (no region)":
+                if row_region != "":
+                    return False
+            elif self._region_filter == "Other":
                 if row_region in _KNOWN_REGIONS or row_region == "":
                     return False
             elif row_region != self._region_filter:
                 return False
+
+        # Match filter — Fuzzy is now separate from Unmatched
         if self._match_filter == "Verified":
-            return row.match_confidence in _VERIFIED_CONFIDENCES
-        if self._match_filter == "Unmatched":
-            return row.match_confidence in _UNMATCHED_CONFIDENCES
+            if row.match_confidence not in _VERIFIED_CONFIDENCES:
+                return False
+        elif self._match_filter == "Fuzzy":
+            if row.match_confidence != "fuzzy":
+                return False
+        elif self._match_filter == "Unmatched" and row.match_confidence != "unmatched":
+            return False
+
+        # Enrichment filter
+        if self._enrichment_filter == "Has cover":
+            if not row.has_cover:
+                return False
+        elif self._enrichment_filter == "Has metadata":
+            if not row.has_metadata:
+                return False
+        elif self._enrichment_filter == "Has both":
+            if not (row.has_cover and row.has_metadata):
+                return False
+        elif self._enrichment_filter == "Has neither" and (row.has_cover or row.has_metadata):
+            return False
+
         return True
 
 
 class GameTable(QWidget):
-    """Search bar + region/match filters + sortable game table widget."""
+    """Search bar + region/match/enrichment filters + sortable game table widget."""
 
     game_selected = Signal(object)
     add_to_favorites_requested = Signal(int)
@@ -263,6 +306,8 @@ class GameTable(QWidget):
         self.region_filter.addItems(REGION_FILTER_OPTIONS)
         self.match_filter = QComboBox(self)
         self.match_filter.addItems(MATCH_FILTER_OPTIONS)
+        self.enrichment_filter = QComboBox(self)
+        self.enrichment_filter.addItems(ENRICHMENT_FILTER_OPTIONS)
 
         filter_row = QHBoxLayout()
         filter_row.setContentsMargins(0, 0, 0, 0)
@@ -271,6 +316,8 @@ class GameTable(QWidget):
         filter_row.addWidget(self.region_filter, 1)
         filter_row.addWidget(QLabel("Match:", self))
         filter_row.addWidget(self.match_filter, 1)
+        filter_row.addWidget(QLabel("Enrichment:", self))
+        filter_row.addWidget(self.enrichment_filter, 1)
 
         self.model = GameTableModel()
         self.proxy = GameTableProxy(self)
@@ -286,7 +333,14 @@ class GameTable(QWidget):
         self.view.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive
         )
-        self.view.horizontalHeader().setStretchLastSection(True)
+        # Path column is wide by default but user-resizable; other columns
+        # are set to stretch across the remaining space.
+        self.view.horizontalHeader().setStretchLastSection(False)
+        self.view.horizontalHeader().setSectionResizeMode(
+            _COL_NAME, QHeaderView.ResizeMode.Stretch
+        )
+        # Path column gets a generous minimum; user can shrink further.
+        self.view.setColumnWidth(_COL_PATH, 280)
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._on_context_menu)
 
@@ -304,6 +358,9 @@ class GameTable(QWidget):
         self.search.textChanged.connect(self.proxy.set_name_filter)
         self.region_filter.currentTextChanged.connect(self.proxy.set_region_filter)
         self.match_filter.currentTextChanged.connect(self.proxy.set_match_filter)
+        self.enrichment_filter.currentTextChanged.connect(
+            self.proxy.set_enrichment_filter
+        )
         self.view.selectionModel().currentRowChanged.connect(
             self._on_current_row_changed
         )

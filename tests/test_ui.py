@@ -83,7 +83,7 @@ class TestGameTableModel:
     def test_empty_model(self, qapp) -> None:
         model = GameTableModel()
         assert model.rowCount() == 0
-        assert model.columnCount() == 5
+        assert model.columnCount() == 6  # Name/System/Region/Size/Match/Path
 
     def test_rows_render(self, qapp) -> None:
         rows = [
@@ -600,7 +600,7 @@ class TestSettingsDialog:
         seed_defaults(seeded_db)
         dialog = SettingsDialog(seeded_db)
         dialog.general.library_path.setText("/tmp/my-roms")
-        dialog.general.theme.setCurrentText("dark")
+        dialog.general.theme.setCurrentText("Dark")
         dialog.scan.threads.setValue(12)
         dialog.metadata.username.setText("user1")
         dialog._accept_and_save()
@@ -853,6 +853,8 @@ class TestRegionAndMatchFilters:
         assert proxy.rowCount() == 2
 
     def test_match_filter_unmatched(self, qapp) -> None:
+        # "Unmatched" now means strictly match_confidence == "unmatched".
+        # "Fuzzy" is its own distinct filter option (item #6).
         model = GameTableModel(
             [
                 _row_full("v1", match="dat_verified"),
@@ -863,7 +865,20 @@ class TestRegionAndMatchFilters:
         proxy = GameTableProxy()
         proxy.setSourceModel(model)
         proxy.set_match_filter("Unmatched")
-        assert proxy.rowCount() == 2
+        assert proxy.rowCount() == 1  # only "unmatched" — fuzzy is now separate
+
+    def test_match_filter_fuzzy(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("v1", match="dat_verified"),
+                _row_full("v2", match="fuzzy"),
+                _row_full("v3", match="unmatched"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_match_filter("Fuzzy")
+        assert proxy.rowCount() == 1  # only "fuzzy"
 
     def test_filters_compose_with_name_search(self, qapp) -> None:
         model = GameTableModel(
@@ -1555,3 +1570,372 @@ class TestEnrichProgressDialog:
 
         # Worker was created (pre-flight passed).
         assert window._enrich_worker is not None
+
+
+# ---------------------------------------------------------------------------
+# Item #1 — Theme system
+# ---------------------------------------------------------------------------
+
+
+class TestThemeSystem:
+    def test_available_themes_contains_all_four(self) -> None:
+        from romulus.ui.themes import AVAILABLE_THEMES
+
+        for tid in ("system", "dark", "light", "wbm_classic"):
+            assert tid in AVAILABLE_THEMES
+
+    def test_load_theme_qss_system_returns_empty(self) -> None:
+        from romulus.ui.themes import load_theme_qss
+
+        assert load_theme_qss("system") == ""
+
+    def test_load_theme_qss_dark_has_content(self) -> None:
+        from romulus.ui.themes import load_theme_qss
+
+        qss = load_theme_qss("dark")
+        assert len(qss) > 100
+        assert "QWidget" in qss
+
+    def test_load_theme_qss_light_has_content(self) -> None:
+        from romulus.ui.themes import load_theme_qss
+
+        qss = load_theme_qss("light")
+        assert len(qss) > 100
+        assert "QWidget" in qss
+
+    def test_load_theme_qss_wbm_classic_has_content(self) -> None:
+        from romulus.ui.themes import load_theme_qss
+
+        qss = load_theme_qss("wbm_classic")
+        assert len(qss) > 100
+        assert "QWidget" in qss
+
+    def test_load_theme_qss_unknown_returns_empty(self) -> None:
+        from romulus.ui.themes import load_theme_qss
+
+        assert load_theme_qss("totally_unknown_theme") == ""
+
+    def test_apply_theme_system_clears_stylesheet(self, qapp) -> None:
+        from romulus.ui.themes import apply_theme
+
+        # Set something first so clearing is meaningful.
+        qapp.setStyleSheet("QWidget { color: red; }")
+        apply_theme(qapp, "system")
+        assert qapp.styleSheet() == ""
+
+    def test_apply_theme_dark_sets_stylesheet(self, qapp) -> None:
+        from romulus.ui.themes import apply_theme
+
+        apply_theme(qapp, "dark")
+        assert len(qapp.styleSheet()) > 0
+        # Clean up so other tests get a pristine app.
+        qapp.setStyleSheet("")
+
+
+# ---------------------------------------------------------------------------
+# Item #2 — SettingsDialog default size
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsDialogSize:
+    def test_dialog_default_size_is_at_least_640x480(self, qapp, seeded_db) -> None:
+        from romulus.db import seed_defaults
+        from romulus.ui.settings_dialog import SettingsDialog
+
+        seed_defaults(seeded_db)
+        dialog = SettingsDialog(seeded_db)
+        assert dialog.width() >= 640
+        assert dialog.height() >= 480
+
+
+# ---------------------------------------------------------------------------
+# Item #3 — DAT tab absolute path resolution
+# ---------------------------------------------------------------------------
+
+
+class TestDatTabAbsolutePaths:
+    def test_existing_path_displayed_as_absolute(self, qapp, seeded_db, tmp_path) -> None:
+        import json
+
+        from romulus.db import seed_defaults, set_config
+        from romulus.ui.settings_dialog import SettingsDialog
+
+        seed_defaults(seeded_db)
+        # Write a path that exists on disk.
+        set_config(seeded_db, "dat_paths", json.dumps([str(tmp_path)]))
+        dialog = SettingsDialog(seeded_db)
+        item_text = dialog.dats.list.item(0).text()
+        # Must be the resolved absolute path.
+        from pathlib import Path
+        assert item_text == str(Path(str(tmp_path)).resolve())
+
+    def test_missing_path_shows_raw_with_tooltip(self, qapp, seeded_db) -> None:
+        import json
+
+        from romulus.db import seed_defaults, set_config
+        from romulus.ui.settings_dialog import SettingsDialog
+
+        seed_defaults(seeded_db)
+        ghost = "/this/path/does/not/exist/at/all"
+        set_config(seeded_db, "dat_paths", json.dumps([ghost]))
+        dialog = SettingsDialog(seeded_db)
+        item = dialog.dats.list.item(0)
+        assert item is not None
+        # Raw path preserved.
+        assert item.text() == ghost
+        # Tooltip explains the problem.
+        assert "not found" in item.toolTip().lower()
+
+
+# ---------------------------------------------------------------------------
+# Item #4 — Progress dialogs: spinner stops on on_finished
+# ---------------------------------------------------------------------------
+
+
+class TestProgressDialogSpinners:
+    def test_scan_progress_on_finished_stops_spinner(self, qapp) -> None:
+        from romulus.ui.scan_progress import ScanProgressDialog
+
+        dlg = ScanProgressDialog()
+        assert dlg.maximum() == 0  # indeterminate on open
+        dlg.on_finished(1, 42, 38, 4, ["snes"])
+        assert not (dlg.minimum() == 0 and dlg.maximum() == 0)
+        assert dlg.value() > 0
+        assert "✓" in dlg.labelText()
+
+    def test_scan_progress_on_failed_stops_spinner(self, qapp) -> None:
+        from romulus.ui.scan_progress import ScanProgressDialog
+
+        dlg = ScanProgressDialog()
+        dlg.on_failed("Something went wrong")
+        assert not (dlg.minimum() == 0 and dlg.maximum() == 0)
+        assert "✗" in dlg.labelText()
+
+    def test_heavy_scan_on_finished_stops_spinner(self, qapp) -> None:
+        from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
+
+        dlg = HeavyScanProgressDialog()
+        dlg.on_finished(100, 80, 2)
+        assert not (dlg.minimum() == 0 and dlg.maximum() == 0)
+        assert dlg.value() > 0
+        assert "✓" in dlg.labelText()
+
+    def test_heavy_scan_on_failed_stops_spinner(self, qapp) -> None:
+        from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
+
+        dlg = HeavyScanProgressDialog()
+        dlg.on_failed("DAT load error")
+        assert not (dlg.minimum() == 0 and dlg.maximum() == 0)
+        assert "✗" in dlg.labelText()
+
+    def test_export_on_finished_stops_spinner(self, qapp, seeded_db) -> None:
+        from romulus.core.exporter import load_all_profiles
+        from romulus.ui.export_dialog import ExportDialog
+
+        profiles = load_all_profiles()
+        if not profiles:
+            return  # Skip if no profiles bundled
+        dlg = ExportDialog(seeded_db, profiles)
+        # Force indeterminate state first (mimics clicking Export).
+        dlg._progress.setRange(0, 0)
+        dlg.on_finished(10, 2, 1024 * 1024, ["snes"], [])
+        assert not (dlg._progress.minimum() == 0 and dlg._progress.maximum() == 0)
+        assert "✓" in dlg._status_label.text()
+
+    def test_export_on_failed_stops_spinner(self, qapp, seeded_db) -> None:
+        from romulus.core.exporter import load_all_profiles
+        from romulus.ui.export_dialog import ExportDialog
+
+        profiles = load_all_profiles()
+        if not profiles:
+            return
+        dlg = ExportDialog(seeded_db, profiles)
+        dlg._progress.setRange(0, 0)
+        dlg.on_failed("Disk full")
+        assert not (dlg._progress.minimum() == 0 and dlg._progress.maximum() == 0)
+        assert "✗" in dlg._status_label.text()
+
+
+# ---------------------------------------------------------------------------
+# Item #5 — Enrichment filter
+# ---------------------------------------------------------------------------
+
+
+def _row_enriched(
+    name: str,
+    *,
+    has_cover: bool = False,
+    has_metadata: bool = False,
+) -> GameRow:
+    return GameRow(
+        rom_id=hash(name) & 0xFFFFFFFF,
+        name=name,
+        system_id="snes",
+        system_name="SNES",
+        region="USA",
+        size_bytes=1024,
+        match_confidence="fuzzy",
+        game_id=1,
+        has_cover=has_cover,
+        has_metadata=has_metadata,
+    )
+
+
+class TestEnrichmentFilter:
+    def test_filter_has_cover(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_enriched("A", has_cover=True),
+                _row_enriched("B", has_cover=False),
+                _row_enriched("C", has_cover=True, has_metadata=True),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_enrichment_filter("Has cover")
+        assert proxy.rowCount() == 2
+
+    def test_filter_has_metadata(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_enriched("A", has_metadata=True),
+                _row_enriched("B"),
+                _row_enriched("C", has_cover=True),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_enrichment_filter("Has metadata")
+        assert proxy.rowCount() == 1
+
+    def test_filter_has_both(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_enriched("A", has_cover=True, has_metadata=True),
+                _row_enriched("B", has_cover=True),
+                _row_enriched("C"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_enrichment_filter("Has both")
+        assert proxy.rowCount() == 1
+
+    def test_filter_has_neither(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_enriched("A"),
+                _row_enriched("B", has_cover=True),
+                _row_enriched("C", has_metadata=True),
+                _row_enriched("D", has_cover=True, has_metadata=True),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_enrichment_filter("Has neither")
+        assert proxy.rowCount() == 1
+
+    def test_filter_all_is_no_op(self, qapp) -> None:
+        model = GameTableModel(
+            [_row_enriched("A"), _row_enriched("B", has_cover=True)]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_enrichment_filter("All")
+        assert proxy.rowCount() == 2
+
+
+# ---------------------------------------------------------------------------
+# Item #6 — Region "None (no region)" filter
+# ---------------------------------------------------------------------------
+
+
+class TestRegionNoneFilter:
+    def test_none_region_matches_only_blank(self, qapp) -> None:
+        model = GameTableModel(
+            [
+                _row_full("A", region="USA"),
+                _row_full("B", region=""),
+                _row_full("C", region="Japan"),
+            ]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_region_filter("None (no region)")
+        assert proxy.rowCount() == 1
+
+    def test_none_region_excludes_named_regions(self, qapp) -> None:
+        model = GameTableModel(
+            [_row_full("A", region="Europe"), _row_full("B", region="Korea")]
+        )
+        proxy = GameTableProxy()
+        proxy.setSourceModel(model)
+        proxy.set_region_filter("None (no region)")
+        assert proxy.rowCount() == 0
+
+
+# ---------------------------------------------------------------------------
+# Item #7 — Path column in game table
+# ---------------------------------------------------------------------------
+
+
+class TestPathColumn:
+    def test_path_column_header_is_path(self, qapp) -> None:
+        from romulus.ui.game_table import COLUMNS
+
+        assert "Path" in COLUMNS
+        assert COLUMNS.index("Path") == 5
+
+    def test_path_column_data_returns_rom_path(self, qapp) -> None:
+        row = GameRow(
+            rom_id=1,
+            name="Mario.sfc",
+            system_id="snes",
+            system_name="SNES",
+            region="USA",
+            size_bytes=512,
+            match_confidence="fuzzy",
+            rom_path="/library/snes/Mario.sfc",
+        )
+        model = GameTableModel([row])
+        path_idx = model.index(0, 5)
+        assert model.data(path_idx) == "/library/snes/Mario.sfc"
+
+    def test_path_column_tooltip_matches_data(self, qapp) -> None:
+        row = GameRow(
+            rom_id=1,
+            name="Zelda.sfc",
+            system_id="snes",
+            system_name="SNES",
+            region="USA",
+            size_bytes=512,
+            match_confidence="dat_verified",
+            rom_path="/mnt/roms/snes/Zelda.sfc",
+        )
+        model = GameTableModel([row])
+        path_idx = model.index(0, 5)
+        tooltip = model.data(path_idx, Qt.ItemDataRole.ToolTipRole)
+        assert tooltip == "/mnt/roms/snes/Zelda.sfc"
+
+    def test_load_rom_rows_populates_rom_path(self, seeded_db) -> None:
+        """load_rom_rows now fills rom_path from the database."""
+        import time
+
+        from romulus.db import queries as queries_mod
+        from romulus.ui.game_table import load_rom_rows
+
+        queries_mod.upsert_rom(
+            seeded_db,
+            {
+                "path": "/roms/snes/Mario.sfc",
+                "filename": "Mario.sfc",
+                "extension": ".sfc",
+                "size_bytes": 512,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "match_confidence": "fuzzy",
+            },
+        )
+        seeded_db.commit()
+        rows = load_rom_rows(seeded_db)
+        assert rows[0].rom_path == "/roms/snes/Mario.sfc"

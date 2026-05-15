@@ -35,11 +35,11 @@ class EnrichProgressDialog(QProgressDialog):
         metadata_added: int,
         covers_added: int,
     ) -> None:
-        """Slot — show the final summary and switch Cancel into Close."""
+        """Slot — stop the spinner, show the final summary, switch to Close."""
         self.setRange(0, 1)
         self.setValue(1)
         self.setLabelText(
-            f"Enrichment complete.\n"
+            f"✓ Enrichment complete.\n"
             f"Games processed: {games_processed}\n"
             f"Metadata added: {metadata_added}\n"
             f"Covers added: {covers_added}"
@@ -47,6 +47,8 @@ class EnrichProgressDialog(QProgressDialog):
         self.setCancelButtonText("Close")
 
     def on_failed(self, message: str) -> None:
-        """Slot — show an error message and switch Cancel into Close."""
-        self.setLabelText(message)
+        """Slot — stop the spinner, show an error message, switch to Close."""
+        self.setRange(0, 1)
+        self.setValue(0)
+        self.setLabelText(f"✗ {message}")
         self.setCancelButtonText("Close")

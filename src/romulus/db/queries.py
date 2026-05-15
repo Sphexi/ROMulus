@@ -881,3 +881,65 @@ def update_plan_status(
 def datetime_now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string (used by plan rows)."""
     return datetime.now(UTC).isoformat()
+
+
+# ---------------------------------------------------------------------------
+# Enrichment-status query (used by the game table's enrichment filter)
+# ---------------------------------------------------------------------------
+
+
+def get_games_with_enrichment_status(
+    conn: sqlite3.Connection,
+    system_id: str | None = None,
+    game_ids: list[int] | None = None,
+    limit: int = 5000,
+) -> list[sqlite3.Row]:
+    """Return game rows annotated with ``has_cover`` and ``has_metadata`` flags.
+
+    This is the backing query for the game-table enrichment filter added in the
+    UI/UX pass.  Each returned row exposes the same columns as the base
+    ``load_rom_rows`` query PLUS:
+
+    * ``has_cover``    — 1 if at least one covers row exists for this game
+    * ``has_metadata`` — 1 if a metadata row exists for this game
+    * ``rom_path``     — path of the first linked ROM (ORDER BY filename)
+    """
+    base = """
+        SELECT
+            r.id            AS rom_id,
+            r.filename      AS name,
+            r.system_id,
+            r.path          AS rom_path,
+            COALESCE(s.short_name, s.display_name, r.system_id) AS system_name,
+            COALESCE(g.region, '')  AS region,
+            r.size_bytes,
+            r.match_confidence,
+            r.game_id,
+            CASE WHEN c.game_id IS NOT NULL THEN 1 ELSE 0 END AS has_cover,
+            CASE WHEN m.game_id IS NOT NULL THEN 1 ELSE 0 END AS has_metadata
+        FROM roms r
+        LEFT JOIN systems   s ON s.id = r.system_id
+        LEFT JOIN games     g ON g.id = r.game_id
+        LEFT JOIN (
+            SELECT DISTINCT game_id FROM covers
+        ) c ON c.game_id = r.game_id
+        LEFT JOIN (
+            SELECT DISTINCT game_id FROM metadata
+        ) m ON m.game_id = r.game_id
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if system_id is not None:
+        clauses.append("r.system_id = ?")
+        params.append(system_id)
+    if game_ids is not None:
+        if not game_ids:
+            return []
+        placeholders = ",".join("?" for _ in game_ids)
+        clauses.append(f"r.game_id IN ({placeholders})")
+        params.extend(game_ids)
+    if clauses:
+        base += " WHERE " + " AND ".join(clauses)
+    base += " ORDER BY r.filename LIMIT ?"
+    params.append(limit)
+    return conn.execute(base, params).fetchall()

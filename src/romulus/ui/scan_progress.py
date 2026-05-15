@@ -29,9 +29,11 @@ class ScanProgressDialog(QProgressDialog):
         files_skipped: int,
         systems_seen: list[str],  # noqa: ARG002
     ) -> None:
-        """Slot — show the final summary and switch Cancel into Close."""
+        """Slot — stop the spinner, show the final summary, switch to Close."""
+        self.setRange(0, 1)
+        self.setValue(1)
         self.setLabelText(
-            f"Scan complete.\n"
+            f"✓ Scan complete.\n"
             f"Files found: {files_found}\n"
             f"Matched to a system: {files_with_system}\n"
             f"Skipped: {files_skipped}"
@@ -39,6 +41,8 @@ class ScanProgressDialog(QProgressDialog):
         self.setCancelButtonText("Close")
 
     def on_failed(self, message: str) -> None:
-        """Slot — show an error message and switch Cancel into Close."""
-        self.setLabelText(message)
+        """Slot — stop the spinner, show an error message, switch to Close."""
+        self.setRange(0, 1)
+        self.setValue(0)
+        self.setLabelText(f"✗ {message}")
         self.setCancelButtonText("Close")

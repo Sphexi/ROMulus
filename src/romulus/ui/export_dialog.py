@@ -320,10 +320,13 @@ class ExportDialog(QDialog):
         systems: list[str],
         errors: list[str],
     ) -> None:
+        """Slot — stop the spinner, show the final summary."""
         self._progress.setRange(0, 1)
         self._progress.setValue(1)
+        icon = "✓" if not errors else "✗"
         summary = (
-            f"Exported {files_copied} file(s) ({_format_bytes(bytes_copied)}) "
+            f"{icon} Exported {files_copied} file(s) "
+            f"({_format_bytes(bytes_copied)}) "
             f"across {len(systems)} system(s)."
         )
         if files_skipped:
@@ -333,6 +336,7 @@ class ExportDialog(QDialog):
         self._status_label.setText(summary)
 
     def on_failed(self, message: str) -> None:
-        self._status_label.setText(message)
+        """Slot — stop the spinner, show an error message."""
         self._progress.setRange(0, 1)
         self._progress.setValue(0)
+        self._status_label.setText(f"✗ {message}")

@@ -326,12 +326,16 @@ class DetailPanel(QWidget):
 
     @staticmethod
     def _format_rom_list(roms: list[sqlite3.Row]) -> str:
+        """Format the ROM list using full absolute paths with size annotation."""
         if not roms:
             return ""
         lines: list[str] = []
         for rom in roms:
             size = int(rom["size_bytes"] or 0)
-            lines.append(f"{rom['filename']}  ({size:,} B)")
+            # Prefer the full path column; fall back to filename only.
+            path = str(rom["path"] or rom["filename"] or "")
+            confidence = str(rom["match_confidence"] or "unmatched")
+            lines.append(f"{path}  ({size:,} B)  [{confidence}]")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

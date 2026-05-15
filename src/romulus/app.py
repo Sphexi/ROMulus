@@ -174,6 +174,10 @@ def run() -> int:
     # QWidget subclass is even imported on some Qt builds. Moving this back to
     # the top of the file regresses headless startup. Do not "clean up".
     from romulus.ui.main_window import MainWindow
+    from romulus.ui.themes import apply_theme
+
+    theme = get_config(conn, "theme") or "system"
+    apply_theme(app, theme)
 
     window = MainWindow(conn)
     ensure_library_path(conn, window)
