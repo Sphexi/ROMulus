@@ -35,6 +35,7 @@ from romulus.core.exporter import (
     export_collection,
 )
 from romulus.core.hasher import hash_library
+from romulus.core.local_cover_finder import DiscoveryResult, discover_local_covers
 from romulus.core.organizer import OrganizeAction, OrganizeSummary, execute_plan
 from romulus.db import get_connection
 from romulus.metadata import enrich_library
@@ -297,6 +298,42 @@ class HeavyScanWorker(_DbWorker):
         )
         total_matched = match_hashes(conn)
         self.finished_ok.emit(total_hashed, total_matched, errors)
+
+
+class LocalCoverFinderWorker(_DbWorker):
+    """Run :func:`discover_local_covers` against a library path on a worker thread.
+
+    Signals:
+        progress(current, total, filename): Emitted once per ROM processed.
+        finished_ok(roms_scanned, covers_found, covers_skipped, errors): Final counts.
+        failed(message): Emitted on exception or cooperative cancel.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int, int, int)
+
+    _operation_name = "Local Cover Discovery"
+
+    def __init__(self, db_path: Path | str, library_path: Path | str) -> None:
+        super().__init__(db_path)
+        self._library_path = str(library_path)
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, filename: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, filename)
+
+        result: DiscoveryResult = discover_local_covers(
+            conn,
+            self._library_path,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(
+            result.roms_scanned,
+            result.covers_found,
+            result.covers_skipped_existing,
+            result.errors,
+        )
 
 
 class ExportWorker(_DbWorker):

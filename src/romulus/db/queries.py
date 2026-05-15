@@ -888,6 +888,50 @@ def datetime_now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 
+def get_roms_with_games(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return every ROM that is linked to a game, with identifiers for cover matching.
+
+    Columns: rom_id, rom_path, system_id, game_id, fuzzy_key, clean_name.
+    ROMs without a game_id are excluded because covers attach to games, not ROMs.
+    Used by the local cover discovery pipeline.
+    """
+    return conn.execute(
+        """
+        SELECT r.id       AS rom_id,
+               r.path     AS rom_path,
+               r.system_id,
+               r.game_id,
+               r.fuzzy_key,
+               COALESCE(r.dat_match, '') AS clean_name
+        FROM roms r
+        WHERE r.game_id IS NOT NULL
+          AND r.fuzzy_key IS NOT NULL
+          AND r.fuzzy_key != ''
+        ORDER BY r.system_id, r.id
+        """
+    ).fetchall()
+
+
+def has_cover_for_path(
+    conn: sqlite3.Connection, game_id: int, local_path: str
+) -> bool:
+    """Return True if a covers row with this exact local_path already exists for the game.
+
+    Used by the local cover discovery pipeline for idempotent re-runs — avoids
+    inserting duplicate rows when discovery is run more than once.
+
+    Args:
+        conn: SQLite connection.
+        game_id: The game to check.
+        local_path: Absolute path string of the candidate image file.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM covers WHERE game_id = ? AND local_path = ? LIMIT 1",
+        (game_id, local_path),
+    ).fetchone()
+    return row is not None
+
+
 def get_games_with_enrichment_status(
     conn: sqlite3.Connection,
     system_id: str | None = None,

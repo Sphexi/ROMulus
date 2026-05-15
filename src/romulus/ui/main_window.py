@@ -24,6 +24,7 @@ from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.export_dialog import ExportDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
 from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
+from romulus.ui.local_cover_progress import LocalCoverProgressDialog
 from romulus.ui.organize_preview import OrganizePreviewDialog
 from romulus.ui.scan_progress import ScanProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
@@ -32,6 +33,7 @@ from romulus.ui.workers import (
     EnrichWorker,
     ExportWorker,
     HeavyScanWorker,
+    LocalCoverFinderWorker,
     OrganizeWorker,
     ScanWorker,
 )
@@ -63,6 +65,8 @@ class MainWindow(QMainWindow):
         self._organize_dialog: OrganizePreviewDialog | None = None
         self._export_worker: ExportWorker | None = None
         self._export_dialog: ExportDialog | None = None
+        self._local_cover_worker: LocalCoverFinderWorker | None = None
+        self._local_cover_dialog: LocalCoverProgressDialog | None = None
 
         q.ensure_favorites_collection(conn)
 
@@ -136,6 +140,13 @@ class MainWindow(QMainWindow):
         enrich_action.setToolTip("Fetch cover art and metadata for matched games.")
         enrich_action.triggered.connect(self._on_enrich)
         tools_menu.addAction(enrich_action)
+        local_cover_action = QAction("&Find Local Covers", self)
+        local_cover_action.setToolTip(
+            "Scan the library tree for image files matching enrolled ROMs and link"
+            " them as covers."
+        )
+        local_cover_action.triggered.connect(self._on_find_local_covers)
+        tools_menu.addAction(local_cover_action)
         organize_action = QAction("&Organize", self)
         organize_action.setToolTip("Preview and apply library reorganization.")
         organize_action.triggered.connect(self._on_organize)
@@ -173,6 +184,13 @@ class MainWindow(QMainWindow):
         enrich = QAction("Enrich", self)
         enrich.triggered.connect(self._on_enrich)
         toolbar.addAction(enrich)
+        find_covers = QAction("Find Local Covers", self)
+        find_covers.setToolTip(
+            "Scan the library tree for image files matching enrolled ROMs and link"
+            " them as covers."
+        )
+        find_covers.triggered.connect(self._on_find_local_covers)
+        toolbar.addAction(find_covers)
         export = QAction("Export", self)
         export.triggered.connect(self._on_export)
         toolbar.addAction(export)
@@ -328,6 +346,9 @@ class MainWindow(QMainWindow):
 
     def _clear_export_worker(self) -> None:
         self._export_worker = None
+
+    def _clear_local_cover_worker(self) -> None:
+        self._local_cover_worker = None
 
     def _on_quick_scan(self) -> None:
         if self._scan_worker is not None and self._scan_worker.isRunning():
@@ -501,6 +522,72 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
 
     # ------------------------------------------------------------------
+    # Find Local Covers
+    # ------------------------------------------------------------------
+
+    def _on_find_local_covers(self) -> None:
+        """Scan the library tree for local image files and link them as covers."""
+        if (
+            self._local_cover_worker is not None
+            and self._local_cover_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Local cover discovery already running",
+                "Local cover discovery is already in progress — "
+                "please wait for it to finish.",
+            )
+            return
+
+        library_path = get_config(self._conn, "library_path") or ""
+        if not library_path:
+            QMessageBox.warning(
+                self,
+                "No library configured",
+                "Set a library folder via File > Open Library first.",
+            )
+            return
+
+        self._local_cover_dialog = LocalCoverProgressDialog(self)
+        self._local_cover_worker = LocalCoverFinderWorker(
+            DEFAULT_DB_PATH, library_path
+        )
+
+        self._local_cover_worker.progress.connect(
+            self._local_cover_dialog.on_progress
+        )
+        self._local_cover_worker.finished_ok.connect(
+            self._local_cover_dialog.on_finished
+        )
+        self._local_cover_worker.failed.connect(
+            self._local_cover_dialog.on_failed
+        )
+        self._local_cover_worker.finished_ok.connect(
+            self._on_local_cover_finished_ok
+        )
+        self._local_cover_worker.failed.connect(self._on_local_cover_failed)
+        self._local_cover_dialog.canceled.connect(self._local_cover_worker.cancel)
+        self._local_cover_worker.finished.connect(
+            self._local_cover_worker.deleteLater
+        )
+        self._local_cover_worker.finished.connect(self._clear_local_cover_worker)
+
+        self._local_cover_worker.start()
+        self._local_cover_dialog.exec()
+
+    def _on_local_cover_finished_ok(
+        self,
+        _roms_scanned: int,
+        _covers_found: int,
+        _covers_skipped: int,
+        _errors: int,
+    ) -> None:
+        self.refresh_all()
+
+    def _on_local_cover_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    # ------------------------------------------------------------------
     # Organize
     # ------------------------------------------------------------------
 
@@ -660,6 +747,7 @@ class MainWindow(QMainWindow):
             self._scan_worker,
             self._heavy_scan_worker,
             self._enrich_worker,
+            self._local_cover_worker,
             self._organize_worker,
             self._export_worker,
         ):
