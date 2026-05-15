@@ -337,14 +337,23 @@ class GameTable(QWidget):
         self.view.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Interactive
         )
-        # Path column is wide by default but user-resizable; other columns
-        # are set to stretch across the remaining space.
+        # Name column stretches; other columns stay Interactive so the user
+        # can drag-resize them. Path column gets re-fitted to its widest
+        # content every time set_rows() is called so full Windows paths like
+        # ``C:\Users\…\Documents\testromulus\gb\Game (USA, Europe).gb`` are
+        # visible without ellipsis. The user can still drag it narrower.
         self.view.horizontalHeader().setStretchLastSection(False)
         self.view.horizontalHeader().setSectionResizeMode(
             _COL_NAME, QHeaderView.ResizeMode.Stretch
         )
-        # Path column gets a generous minimum; user can shrink further.
         self.view.setColumnWidth(_COL_PATH, 280)
+        # Disable in-cell ellipsis on the Path column so wide cells render in
+        # full when the column is dragged wider (or auto-fitted below).
+        self.view.setTextElideMode(Qt.TextElideMode.ElideNone)
+        # Horizontal scrollbar appears when the Path column outgrows the view.
+        self.view.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._on_context_menu)
 
@@ -370,8 +379,16 @@ class GameTable(QWidget):
         )
 
     def set_rows(self, rows: list[GameRow]) -> None:
-        """Hand the underlying model a fresh list of rows."""
+        """Hand the underlying model a fresh list of rows.
+
+        Also auto-fits the Path column to its widest entry so full Windows
+        paths render without ellipsis on the typical first-launch view.
+        ``resizeColumnToContents`` works through the proxy and only measures
+        currently-visible rows, which is the right behavior — refit on every
+        rows change so filter narrowing also tightens the column.
+        """
         self.model.set_rows(rows)
+        self.view.resizeColumnToContents(_COL_PATH)
 
     def set_collection_context(self, in_collection: bool) -> None:
         """Tell the table whether the current view is filtered to a collection."""

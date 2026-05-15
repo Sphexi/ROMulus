@@ -78,9 +78,14 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.sidebar)
         splitter.addWidget(self.game_table)
         splitter.addWidget(self.detail_panel)
+        # Stretch ratios kick in on resize; explicit setSizes pins the
+        # *initial* layout. Without setSizes the sidebar is too narrow at
+        # startup and system names like "Sega Mega Drive / Genesis" elide
+        # to "Seg..." until the user drags the splitter manually.
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
         splitter.setStretchFactor(2, 2)
+        splitter.setSizes([260, 700, 360])
         self.setCentralWidget(splitter)
 
         self.status_label = QLabel("Ready")

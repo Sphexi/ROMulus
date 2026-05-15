@@ -425,6 +425,74 @@ class TestDetailPanelCovers:
         # No star marker on non-preferred index.
         assert panel.cover_index_label.text() == "2 of 3"
 
+    def test_panel_cycles_only_through_boxarts(
+        self, panel, panel_db
+    ) -> None:
+        """Regression: every libretro Enrich run inserts 3 covers per game
+        (Named_Boxarts + Named_Snaps + Named_Titles), each preferred for
+        its own type. Cycling through all three in one navigation strip
+        made the Make-preferred button stay disabled on most covers.
+        The panel now filters to Named_Boxarts so cycling + preferred
+        toggling has the expected semantics.
+        """
+        rom_id = q.upsert_rom(
+            panel_db,
+            {
+                "path": "/library/gb/Multi.gb",
+                "filename": "Multi.gb",
+                "extension": ".gb",
+                "size_bytes": 512,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "fuzzy_key": "multi",
+            },
+        )
+        gid = q.upsert_game(panel_db, {"title": "Multi", "system_id": "gb"})
+        q.link_rom_to_game(panel_db, rom_id, gid)
+        q.insert_cover(
+            panel_db, gid, "Named_Boxarts", None, "/img/Multi-box.png", is_preferred=1
+        )
+        q.insert_cover(
+            panel_db, gid, "Named_Snaps", None, "/img/Multi-snap.png", is_preferred=1
+        )
+        q.insert_cover(
+            panel_db, gid, "Named_Titles", None, "/img/Multi-title.png", is_preferred=1
+        )
+        panel_db.commit()
+        panel.update_game(gid)
+        # Only one cover (the Boxart) — prev/next must be disabled.
+        assert len(panel._covers) == 1
+        assert panel._covers[0]["cover_type"] == "Named_Boxarts"
+        assert not panel.prev_button.isEnabled()
+        assert not panel.next_button.isEnabled()
+
+    def test_panel_falls_back_when_no_boxart(
+        self, panel, panel_db
+    ) -> None:
+        """If a game has covers but none of type Named_Boxarts, show whatever
+        is available rather than nothing."""
+        rom_id = q.upsert_rom(
+            panel_db,
+            {
+                "path": "/library/gb/SnapOnly.gb",
+                "filename": "SnapOnly.gb",
+                "extension": ".gb",
+                "size_bytes": 512,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "fuzzy_key": "snaponly",
+            },
+        )
+        gid = q.upsert_game(panel_db, {"title": "Snap Only", "system_id": "gb"})
+        q.link_rom_to_game(panel_db, rom_id, gid)
+        q.insert_cover(
+            panel_db, gid, "Named_Snaps", None, "/img/snap.png", is_preferred=1
+        )
+        panel_db.commit()
+        panel.update_game(gid)
+        assert len(panel._covers) == 1
+        assert panel._covers[0]["cover_type"] == "Named_Snaps"
+
     def test_clicking_preferred_updates_button_state(
         self, panel, panel_db
     ) -> None:

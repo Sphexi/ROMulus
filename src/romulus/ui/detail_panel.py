@@ -232,7 +232,18 @@ class DetailPanel(QWidget):
             return
         self._game_id = int(game["id"])
         metadata = q.get_metadata(self._conn, self._game_id)
-        covers = q.get_covers(self._conn, self._game_id)
+        # Cycle through Named_Boxarts only: the panel displays a single image
+        # slot and ``is_preferred`` is scoped per (game_id, cover_type), so
+        # mixing types into one cycle produces multiple "preferred" covers
+        # (one per type) and the Make-preferred button stays disabled on most
+        # of them. Snaps/Titles are still in the DB for the exporter to ship
+        # to gamelist.xml; the UI just filters this view to boxarts.
+        all_covers = q.get_covers(self._conn, self._game_id)
+        covers = [c for c in all_covers if c["cover_type"] == "Named_Boxarts"]
+        # If a game somehow has no boxart but has other types, fall back so
+        # the user still sees *something*.
+        if not covers and all_covers:
+            covers = list(all_covers)
         roms = q.get_roms_for_game(self._conn, self._game_id)
         self._covers = covers
         self._cover_index = 0
@@ -429,8 +440,12 @@ class DetailPanel(QWidget):
         idx = max(0, min(self._cover_index, len(self._covers) - 1))
         cover_id = int(self._covers[idx]["id"])
         q.set_preferred_cover(self._conn, cover_id)
-        # Reload covers so preferred row sorts to index 0.
-        self._covers = q.get_covers(self._conn, self._game_id)
+        # Reload + re-filter to the same cover_type the cycle is restricted
+        # to. update_game()'s filter mirrors this logic; keep them in sync.
+        all_covers = q.get_covers(self._conn, self._game_id)
+        self._covers = [
+            c for c in all_covers if c["cover_type"] == "Named_Boxarts"
+        ] or list(all_covers)
         self._cover_index = 0
         self._render_cover_at_index()
         self._update_cover_nav()
