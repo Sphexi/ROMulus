@@ -79,3 +79,20 @@ def test_setup_logging_uses_rotating_file_handler(tmp_path: Path) -> None:
     assert len(file_handlers) == 1
     assert file_handlers[0].maxBytes == 5 * 1024 * 1024
     assert file_handlers[0].backupCount == 3
+
+
+def test_setup_logging_silences_httpcore_even_in_debug_mode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even at DEBUG level, httpcore connection internals must stay at INFO.
+
+    Otherwise every HTTP request floods the log with TCP/TLS handshake noise.
+    """
+    monkeypatch.setenv("ROMULUS_LOG_LEVEL", "DEBUG")
+    setup_logging(tmp_path / "romulus.log")
+    assert logging.getLogger().level == logging.DEBUG
+    for noisy in ("httpcore", "urllib3", "asyncio", "PIL"):
+        assert logging.getLogger(noisy).level == logging.INFO, (
+            f"Expected {noisy} logger to be capped at INFO, "
+            f"got {logging.getLogger(noisy).level}"
+        )

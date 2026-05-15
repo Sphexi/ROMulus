@@ -26,6 +26,18 @@ DEFAULT_LOG_PATH = Path.home() / ".romulus" / "romulus.log"
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
+# Third-party loggers whose DEBUG output is rarely useful even when we want
+# verbose app logs. ``httpcore`` emits 10+ lines per HTTP request describing
+# TCP/TLS internals; ``httpx`` itself stays at INFO and reports the request
+# verb + URL + status, which IS useful. Capped at INFO so DEBUG-level ROMULUS
+# stays focused on our own code.
+_NOISY_THIRD_PARTY_LOGGERS: tuple[str, ...] = (
+    "httpcore",
+    "urllib3",
+    "asyncio",
+    "PIL",
+)
+
 
 def setup_logging(log_path: Path | str | None = None) -> Path:
     """Configure root-logger handlers for the desktop app.
@@ -67,6 +79,10 @@ def setup_logging(log_path: Path | str | None = None) -> Path:
     root.setLevel(level)
     root.addHandler(file_handler)
     root.addHandler(stderr_handler)
+
+    for noisy in _NOISY_THIRD_PARTY_LOGGERS:
+        logging.getLogger(noisy).setLevel(logging.INFO)
+
     return resolved
 
 
