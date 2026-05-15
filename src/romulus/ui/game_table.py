@@ -330,22 +330,27 @@ class GameTable(QWidget):
         self.view = QTableView(self)
         self.view.setModel(self.proxy)
         self.view.setSortingEnabled(True)
+        # Default sort: Name ascending (A→Z). Without this Qt leaves the
+        # sort indicator off and rows fall in whatever order the underlying
+        # query returned, which surfaced as Z-first on the user's library.
+        self.view.sortByColumn(_COL_NAME, Qt.SortOrder.AscendingOrder)
         self.view.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
         self.view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
         self.view.setAlternatingRowColors(True)
         self.view.verticalHeader().setVisible(False)
-        self.view.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        # Name column stretches; other columns stay Interactive so the user
-        # can drag-resize them. Path column gets re-fitted to its widest
-        # content every time set_rows() is called so full Windows paths like
-        # ``C:\Users\…\Documents\testromulus\gb\Game (USA, Europe).gb`` are
-        # visible without ellipsis. The user can still drag it narrower.
-        self.view.horizontalHeader().setStretchLastSection(False)
-        self.view.horizontalHeader().setSectionResizeMode(
-            _COL_NAME, QHeaderView.ResizeMode.Stretch
-        )
+        # Name column stretches to fill remaining space; the rest are
+        # Interactive (user can drag-resize). Path defaults to 280px and the
+        # cell tooltip shows the full path on hover; we deliberately do NOT
+        # auto-fit Path to content because long Windows paths squeeze Name
+        # to ~0px when Stretch competes with a 1000+px Path column.
+        header = self.view.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self.view.setColumnWidth(_COL_SYSTEM, 110)
+        self.view.setColumnWidth(_COL_REGION, 90)
+        self.view.setColumnWidth(_COL_SIZE, 80)
+        self.view.setColumnWidth(_COL_MATCH, 90)
         self.view.setColumnWidth(_COL_PATH, 280)
         # Disable in-cell ellipsis on the Path column so wide cells render in
         # full when the column is dragged wider (or auto-fitted below).
@@ -379,16 +384,8 @@ class GameTable(QWidget):
         )
 
     def set_rows(self, rows: list[GameRow]) -> None:
-        """Hand the underlying model a fresh list of rows.
-
-        Also auto-fits the Path column to its widest entry so full Windows
-        paths render without ellipsis on the typical first-launch view.
-        ``resizeColumnToContents`` works through the proxy and only measures
-        currently-visible rows, which is the right behavior — refit on every
-        rows change so filter narrowing also tightens the column.
-        """
+        """Hand the underlying model a fresh list of rows."""
         self.model.set_rows(rows)
-        self.view.resizeColumnToContents(_COL_PATH)
 
     def set_collection_context(self, in_collection: bool) -> None:
         """Tell the table whether the current view is filtered to a collection."""
