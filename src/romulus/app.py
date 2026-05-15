@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QFileDialog
@@ -18,6 +21,53 @@ from romulus.db import (
 )
 from romulus.db import queries as q
 from romulus.models import seed_systems
+
+DEFAULT_LOG_PATH = Path.home() / ".romulus" / "romulus.log"
+_LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+
+def setup_logging(log_path: Path | str | None = None) -> Path:
+    """Configure root-logger handlers for the desktop app.
+
+    Routes every ``logging.getLogger(...)`` call in the codebase to:
+
+    1. A rotating file at ``~/.romulus/romulus.log`` (5 MB × 3 backups), and
+    2. ``stderr`` so a developer running ``python -m romulus`` sees output too.
+
+    Level defaults to ``INFO``; override with the ``ROMULUS_LOG_LEVEL`` env var
+    (one of ``DEBUG`` / ``INFO`` / ``WARNING`` / ``ERROR``). Idempotent — safe
+    to call more than once (existing handlers are removed first).
+
+    Returns the resolved log path so callers can surface it in error dialogs.
+    """
+    resolved = Path(log_path) if log_path is not None else DEFAULT_LOG_PATH
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+
+    level_name = os.environ.get("ROMULUS_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    formatter = logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
+
+    file_handler = RotatingFileHandler(
+        str(resolved),
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
+
+    stderr_handler = logging.StreamHandler()
+    stderr_handler.setFormatter(formatter)
+
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+        h.close()
+    root.setLevel(level)
+    root.addHandler(file_handler)
+    root.addHandler(stderr_handler)
+    return resolved
 
 
 def initialize_database(db_path: Path | str | None = None) -> sqlite3.Connection:
@@ -55,6 +105,9 @@ def ensure_library_path(conn: sqlite3.Connection, parent=None) -> str:
 
 def run() -> int:
     """Bootstrap QApplication, init the DB, and show the main window."""
+    log_path = setup_logging()
+    logger = logging.getLogger("romulus")
+    logger.info("Romulus starting up (log file: %s)", log_path)
     app = QApplication.instance() or QApplication(sys.argv)
     conn = initialize_database(DEFAULT_DB_PATH)
     # Late import is INTENTIONAL: ``MainWindow`` (and the chain of Qt widget
