@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Streaming copy chunk size — matches the value the organizer's pre-factor
 # implementation used so behaviour stays identical for callers that migrated.
-_COPY_CHUNK_BYTES: int = 1024 * 1024
+_COPY_CHUNK_BYTES = 1024 * 1024
 
 
 def atomic_replace(source: Path, dest: Path) -> None:

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 
 import pytest
 
 from romulus.db import create_tables
+from romulus.db.connection import get_connection
 from romulus.models import seed_systems
 
 # Force Qt to use the offscreen platform plugin in tests so headless CI works.
@@ -18,15 +18,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 def db(tmp_path):
     """A fully-initialized SQLite connection backed by a temp file.
 
-    Schema is created but no rows are seeded — tests decide what to seed.
-    Using a file (not :memory:) so multiple cursors and WAL mode behave the
-    same way as in production.
+    Reuses ``get_connection`` so tests pick up future connection-setup tweaks
+    (PRAGMA additions, etc.) automatically. ``_restrict_db_permissions`` is a
+    no-op on Windows and silently passes through OSError elsewhere, so it is
+    safe to call here.
     """
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
+    conn = get_connection(tmp_path / "test.db")
     create_tables(conn)
     yield conn
     conn.close()

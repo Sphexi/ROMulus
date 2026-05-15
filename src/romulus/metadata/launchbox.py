@@ -13,7 +13,12 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+from romulus.metadata._types import MetadataPayload
+
 logger = logging.getLogger(__name__)
+
+# Index keyed by (system_id, normalized_title) for fast lookups.
+type LaunchBoxIndex = dict[tuple[str | None, str], "LaunchBoxEntry"]
 
 # LaunchBox uses its own platform names — map a handful of common ones to our
 # canonical system ids. Anything not in this map is left as-is (matching falls
@@ -113,7 +118,7 @@ def parse_launchbox_xml(xml_path: Path | str) -> list[LaunchBoxEntry]:
     return entries
 
 
-def build_index(entries: list[LaunchBoxEntry]) -> dict[tuple[str | None, str], LaunchBoxEntry]:
+def build_index(entries: list[LaunchBoxEntry]) -> LaunchBoxIndex:
     """Index entries by (system_id, normalized_title) for O(1) match lookups."""
     return {(e.system_id, _normalize_title(e.title)): e for e in entries}
 
@@ -121,7 +126,7 @@ def build_index(entries: list[LaunchBoxEntry]) -> dict[tuple[str | None, str], L
 def match_game(
     title: str,
     system_id: str | None,
-    index: dict[tuple[str | None, str], LaunchBoxEntry],
+    index: LaunchBoxIndex,
 ) -> LaunchBoxEntry | None:
     """Look up a LaunchBox entry by normalized title within a system.
 
@@ -135,7 +140,7 @@ def match_game(
     return index.get((None, normalized))
 
 
-def entry_to_metadata(entry: LaunchBoxEntry) -> dict[str, str | None]:
+def entry_to_metadata(entry: LaunchBoxEntry) -> MetadataPayload:
     """Convert a LaunchBoxEntry to the dict shape expected by upsert_metadata."""
     return {
         "description": entry.description,

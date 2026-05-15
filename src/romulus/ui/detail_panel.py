@@ -35,6 +35,14 @@ _MATCH_BADGES: dict[str, tuple[str, str, str]] = {
     "unmatched": ("Unmatched", "#888888", "#ffffff"),
 }
 
+# Ordering for picking the strongest match across a game's linked ROMs.
+_CONFIDENCE_RANK: dict[str, int] = {
+    "unmatched": 0,
+    "fuzzy": 1,
+    "header": 2,
+    "dat_verified": 3,
+}
+
 
 def _badge_text_for(confidence: str) -> tuple[str, str, str]:
     """Look up a badge label and colors for a match_confidence value."""
@@ -281,7 +289,7 @@ class DetailPanel(QWidget):
         self.cover_label.setText(PLACEHOLDER_TEXT)
 
     @staticmethod
-    def _field(label: str, value: object) -> str:
+    def _field(label: str, value: str | int | None) -> str:
         if value is None or value == "":
             return ""
         return f"{label}: {value}"
@@ -289,13 +297,12 @@ class DetailPanel(QWidget):
     @staticmethod
     def _best_confidence(roms: list[sqlite3.Row]) -> str:
         """Pick the highest-ranked match_confidence across ROMs for the game."""
-        rank = {"unmatched": 0, "fuzzy": 1, "header": 2, "dat_verified": 3}
-        best = "unmatched"
-        for rom in roms:
-            conf = rom["match_confidence"] or "unmatched"
-            if rank.get(conf, 0) > rank.get(best, 0):
-                best = conf
-        return best
+        if not roms:
+            return "unmatched"
+        return max(
+            (rom["match_confidence"] or "unmatched" for rom in roms),
+            key=lambda c: _CONFIDENCE_RANK.get(c, 0),
+        )
 
     @staticmethod
     def _format_rom_list(roms: list[sqlite3.Row]) -> str:

@@ -14,13 +14,15 @@ from typing import Any
 
 import httpx
 
+from romulus.metadata._types import MetadataPayload
+
 logger = logging.getLogger(__name__)
 
-SCREENSCRAPER_BASE_URL: str = "https://api.screenscraper.fr/api2"
-DEFAULT_TIMEOUT: float = 15.0
-MIN_REQUEST_INTERVAL: float = 1.0
+SCREENSCRAPER_BASE_URL = "https://api.screenscraper.fr/api2"
+DEFAULT_TIMEOUT = 15.0
+MIN_REQUEST_INTERVAL = 1.0
 
-_last_request_ts: float = 0.0
+_last_request_ts = 0.0
 
 
 def _respect_rate_limit() -> None:
@@ -39,7 +41,7 @@ def has_credentials(credentials: dict[str, str] | None) -> bool:
     return bool(credentials.get("username")) and bool(credentials.get("password"))
 
 
-def parse_screenscraper_response(payload: dict[str, Any]) -> dict[str, Any] | None:
+def parse_screenscraper_response(payload: dict[str, Any]) -> MetadataPayload | None:
     """Pull the relevant fields out of a ScreenScraper jeuInfos response."""
     response = payload.get("response")
     if not isinstance(response, dict):
@@ -135,7 +137,7 @@ def lookup_game(
     credentials: dict[str, str] | None,
     client: httpx.Client | None = None,
     rate_limit: bool = True,
-) -> dict[str, Any] | None:
+) -> MetadataPayload | None:
     """Look up a game by SHA-1 via ScreenScraper. Returns None if disabled/miss."""
     if not has_credentials(credentials):
         return None

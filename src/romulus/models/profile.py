@@ -14,7 +14,7 @@ explicitly rather than silently dropping them.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 
 class SystemMapping(BaseModel):
@@ -31,6 +31,7 @@ class SystemMapping(BaseModel):
     extensions: list[str] = Field(default_factory=list)
     supported: bool = True
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
     def is_supported(self) -> bool:
         """True only if the target supports this system AND a folder is set."""

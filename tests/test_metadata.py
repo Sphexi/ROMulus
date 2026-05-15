@@ -754,12 +754,34 @@ class TestEnrichLibrary:
         assert stats["covers_added"] == 0
 
 
-# Sanity: confirm no test in this module actually contacts the internet by
-# requiring that any unmocked httpx.Client raises if used.
+# Sanity: confirm every network-touching metadata function refuses to reach
+# the real internet when the caller supplies a MockTransport-backed client.
+# If a future refactor accidentally bypasses the injected client (e.g. by
+# building its own httpx.Client mid-function), the mock transport's "raises
+# on any request" guard below will fire and this test will fail loudly.
 def test_module_does_not_smuggle_real_network_calls() -> None:
-    # If this assertion ever fails, somebody added a test that bypassed
-    # MockTransport. The list below documents the only modules allowed to
-    # construct httpx.Clients without an injected mock — and they only do so
-    # when the caller hasn't provided one (covered by other tests).
-    callers = [libretro.fetch_cover, hasheous.lookup_by_hash, screenscraper.lookup_game]
-    assert all(callable(c) for c in callers)
+    def _raise(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("real network call attempted in test")
+
+    guarded = httpx.Client(transport=httpx.MockTransport(_raise))
+    try:
+        # 404 / non-200 paths short-circuit before reading body — but the
+        # request itself goes through the transport, so MockTransport sees it.
+        with pytest.raises(AssertionError):
+            libretro.fetch_cover(
+                "Nintendo - Test", "test", "Game", "Named_Boxarts", "/tmp", client=guarded
+            )
+        with pytest.raises(AssertionError):
+            hasheous.lookup_by_hash(
+                "a" * 40, client=guarded, rate_limit=False
+            )
+        with pytest.raises(AssertionError):
+            screenscraper.lookup_game(
+                "a" * 40,
+                "snes",
+                {"username": "u", "password": "p"},
+                client=guarded,
+                rate_limit=False,
+            )
+    finally:
+        guarded.close()

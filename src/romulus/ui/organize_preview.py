@@ -13,6 +13,8 @@ responsible for executing the plan (typically via :class:`OrganizeWorker`).
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
@@ -44,7 +46,7 @@ _ACTION_LABELS: dict[str, str] = {
 }
 
 # Action role used to round-trip the OrganizeAction object through the model.
-_ACTION_ROLE: int = int(Qt.ItemDataRole.UserRole) + 1
+_ACTION_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
 class OrganizePreviewDialog(QDialog):
@@ -140,9 +142,9 @@ class OrganizePreviewDialog(QDialog):
             ACTION_DELETE_DUPLICATE,
             ACTION_COLLISION,
         ]
-        by_kind: dict[str, list[OrganizeAction]] = {}
+        by_kind: defaultdict[str, list[OrganizeAction]] = defaultdict(list)
         for action in self._plan.actions:
-            by_kind.setdefault(action.kind, []).append(action)
+            by_kind[action.kind].append(action)
         root = self._model.invisibleRootItem()
         for kind in order:
             actions = by_kind.get(kind, [])

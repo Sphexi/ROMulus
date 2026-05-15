@@ -31,7 +31,9 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Callable
+import sys
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -43,10 +45,10 @@ from romulus.models.system import SYSTEM_REGISTRY
 logger = logging.getLogger(__name__)
 
 # Action type literals used in serialized plans.
-ACTION_MERGE_FOLDER: str = "merge_folder"
-ACTION_RENAME: str = "rename"
-ACTION_DELETE_DUPLICATE: str = "delete_duplicate"
-ACTION_COLLISION: str = "collision"
+ACTION_MERGE_FOLDER = "merge_folder"
+ACTION_RENAME = "rename"
+ACTION_DELETE_DUPLICATE = "delete_duplicate"
+ACTION_COLLISION = "collision"
 
 # Canonical extension preference order. Lower index = more canonical. Used by
 # duplicate-resolution to pick the keeper out of a group of byte-identical
@@ -65,6 +67,11 @@ _EXTENSION_PREFERENCE: dict[str, int] = {
     ".smd": 2,
     ".bin": 3,
 }
+
+# Sort sentinel used to push unranked extensions to the tail of duplicate-keeper
+# selection. ``sys.maxsize`` is self-documenting in a way the bare literal 1000
+# is not — and ``_EXTENSION_PREFERENCE`` can grow without revisiting the sentinel.
+_UNRANKED_SORT_KEY = sys.maxsize
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -101,7 +108,7 @@ class OrganizeAction:
     error: str | None = None
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class OrganizePlan:
     """Read-only snapshot of a proposed library reorganization."""
 
@@ -109,10 +116,7 @@ class OrganizePlan:
 
     def counts_by_kind(self) -> dict[str, int]:
         """Return ``{action_kind: count}`` over every action in the plan."""
-        out: dict[str, int] = {}
-        for action in self.actions:
-            out[action.kind] = out.get(action.kind, 0) + 1
-        return out
+        return dict(Counter(a.kind for a in self.actions))
 
     def to_json(self) -> str:
         """Serialize the plan to JSON for storage in ``organize_plans``."""
@@ -164,11 +168,11 @@ def find_alias_merges(conn: sqlite3.Connection) -> list[OrganizeAction]:
     system's ``folder_aliases`` list).
     """
     rows = q.get_alias_folder_pairs(conn)
-    folders_by_system: dict[str, list[str]] = {}
+    folders_by_system: defaultdict[str, list[str]] = defaultdict(list)
     for row in rows:
         sid = str(row["system_id"])
         folder = str(row["folder_path"]) if row["folder_path"] is not None else ""
-        folders_by_system.setdefault(sid, []).append(folder)
+        folders_by_system[sid].append(folder)
 
     actions: list[OrganizeAction] = []
     for sys_def in SYSTEM_REGISTRY:
@@ -234,7 +238,7 @@ def find_renameable_roms(conn: sqlite3.Connection) -> list[OrganizeAction]:
 
 
 def _pick_duplicate_keeper(
-    rows: list[sqlite3.Row],
+    rows: Iterable[sqlite3.Row],
 ) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     """Pick the keeper out of a duplicate group.
 
@@ -244,7 +248,7 @@ def _pick_duplicate_keeper(
 
     def sort_key(row: sqlite3.Row) -> tuple[int, int, int]:
         ext = str(row["extension"] or "").lower()
-        ext_rank = _EXTENSION_PREFERENCE.get(ext, 1000)
+        ext_rank = _EXTENSION_PREFERENCE.get(ext, _UNRANKED_SORT_KEY)
         filename_len = len(str(row["filename"]))
         rom_id = int(row["rom_id"])
         return (ext_rank, filename_len, rom_id)
@@ -260,9 +264,9 @@ def find_duplicates(conn: sqlite3.Connection) -> list[OrganizeAction]:
     so a hack will never be deduplicated against an original.
     """
     rows = q.get_duplicate_groups(conn)
-    groups: dict[str, list[sqlite3.Row]] = {}
+    groups: defaultdict[str, list[sqlite3.Row]] = defaultdict(list)
     for row in rows:
-        groups.setdefault(str(row["sha1"]), []).append(row)
+        groups[str(row["sha1"])].append(row)
 
     actions: list[OrganizeAction] = []
     for group_rows in groups.values():
@@ -303,10 +307,10 @@ def find_cross_extension_dupes(conn: sqlite3.Connection) -> list[OrganizeAction]
         ORDER BY r.game_id, r.id
         """
     ).fetchall()
-    groups: dict[tuple[int, str], list[sqlite3.Row]] = {}
+    groups: defaultdict[tuple[int, str], list[sqlite3.Row]] = defaultdict(list)
     for row in rows:
         folder = _normalize_folder(str(row["path"]))
-        groups.setdefault((int(row["game_id"]), folder), []).append(row)
+        groups[(int(row["game_id"]), folder)].append(row)
 
     actions: list[OrganizeAction] = []
     for group_rows in groups.values():
@@ -318,7 +322,7 @@ def find_cross_extension_dupes(conn: sqlite3.Connection) -> list[OrganizeAction]
         ranked = [
             (
                 _EXTENSION_PREFERENCE.get(
-                    str(r["extension"] or "").lower(), 1000
+                    str(r["extension"] or "").lower(), _UNRANKED_SORT_KEY
                 ),
                 r,
             )
@@ -326,10 +330,10 @@ def find_cross_extension_dupes(conn: sqlite3.Connection) -> list[OrganizeAction]
         ]
         ranked.sort(key=lambda pair: (pair[0], int(pair[1]["rom_id"])))
         keeper_rank, keeper = ranked[0]
-        if keeper_rank >= 1000:
+        if keeper_rank >= _UNRANKED_SORT_KEY:
             continue
         for rank, dup in ranked[1:]:
-            if rank >= 1000:
+            if rank >= _UNRANKED_SORT_KEY:
                 continue
             actions.append(
                 OrganizeAction(
@@ -344,7 +348,7 @@ def find_cross_extension_dupes(conn: sqlite3.Connection) -> list[OrganizeAction]
 
 
 def detect_collisions(
-    actions: list[OrganizeAction],
+    actions: Iterable[OrganizeAction],
 ) -> list[OrganizeAction]:
     """Augment a plan with ``collision`` actions for unsafe destinations.
 
@@ -354,13 +358,14 @@ def detect_collisions(
     current file). The original conflicting rename actions are filtered out —
     the user must resolve the collision manually.
     """
-    rename_actions = [a for a in actions if a.kind == ACTION_RENAME]
+    actions_list = list(actions)
+    rename_actions = [a for a in actions_list if a.kind == ACTION_RENAME]
     if not rename_actions:
-        return list(actions)
+        return actions_list
 
-    target_to_sources: dict[str, list[OrganizeAction]] = {}
+    target_to_sources: defaultdict[str, list[OrganizeAction]] = defaultdict(list)
     for action in rename_actions:
-        target_to_sources.setdefault(action.target_path, []).append(action)
+        target_to_sources[action.target_path].append(action)
 
     rename_sources = {a.source_path for a in rename_actions}
     colliding_targets: set[str] = set()
@@ -381,10 +386,10 @@ def detect_collisions(
                 )
             )
     if not colliding_targets:
-        return list(actions)
+        return actions_list
     safe = [
         a
-        for a in actions
+        for a in actions_list
         if not (a.kind == ACTION_RENAME and a.target_path in colliding_targets)
     ]
     return safe + collisions
@@ -485,7 +490,7 @@ def _execute_merge_folder(
 
 def execute_plan(
     conn: sqlite3.Connection,
-    approved_actions: list[OrganizeAction],
+    approved_actions: Sequence[OrganizeAction],
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Apply approved actions, updating the DB and filesystem.

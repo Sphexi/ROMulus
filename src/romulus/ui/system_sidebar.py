@@ -29,13 +29,13 @@ def get_rom_counts_by_system(conn: sqlite3.Connection) -> list[tuple[str, str, i
         ORDER BY s.display_name
         """
     ).fetchall()
-    return [(row[0], row[1], row[2]) for row in rows]
+    return [(row["id"], row["display_name"], row["n"]) for row in rows]
 
 
 def get_total_rom_count(conn: sqlite3.Connection) -> int:
     """Return the count of all ROM rows in the database."""
-    row = conn.execute("SELECT COUNT(*) FROM roms").fetchone()
-    return int(row[0]) if row else 0
+    row = conn.execute("SELECT COUNT(*) AS n FROM roms").fetchone()
+    return int(row["n"]) if row else 0
 
 
 def get_collections(conn: sqlite3.Connection) -> list[tuple[int, str, int]]:

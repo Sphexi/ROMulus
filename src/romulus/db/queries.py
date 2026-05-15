@@ -8,11 +8,12 @@ rather than constructing their own queries.
 from __future__ import annotations
 
 import sqlite3
-import time
-from typing import TYPE_CHECKING, Any
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 if TYPE_CHECKING:
     from romulus.core.dat_parser import DatEntry
+    from romulus.metadata._types import MetadataPayload
 
 # Ordering of match_confidence values. Used in upsert_rom so a re-scan never
 # downgrades a stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
@@ -23,12 +24,64 @@ _CONFIDENCE_RANK: dict[str, int] = {
     "dat_verified": 3,
 }
 
+
+class RomUpsertData(TypedDict):
+    """Shape of the dict accepted by :func:`upsert_rom`."""
+
+    path: str
+    filename: str
+    extension: str
+    size_bytes: int
+    mtime: float
+    system_id: str
+    scan_id: NotRequired[int | None]
+    fuzzy_key: NotRequired[str | None]
+    header_title: NotRequired[str | None]
+    dat_match: NotRequired[str | None]
+    match_confidence: NotRequired[str]
+
+
+class GameUpsertData(TypedDict):
+    """Shape of the dict accepted by :func:`upsert_game`."""
+
+    title: str
+    system_id: str
+    canonical_name: NotRequired[str | None]
+    region: NotRequired[str | None]
+    revision: NotRequired[str | None]
+    is_hack: NotRequired[bool]
+    is_homebrew: NotRequired[bool]
+    is_bios: NotRequired[bool]
+
+
+class ScanHistoryData(TypedDict):
+    """Shape of the dict accepted by :func:`insert_scan_history`."""
+
+    scan_type: str
+    started_at: str
+    root_path: str
+    finished_at: NotRequired[str | None]
+    files_found: NotRequired[int]
+    files_matched: NotRequired[int]
+    files_new: NotRequired[int]
+    errors: NotRequired[int]
+
+
+class ScanHistoryUpdate(TypedDict, total=False):
+    """Optional update fields for :func:`update_scan_history`."""
+
+    finished_at: str | None
+    files_found: int
+    files_matched: int
+    files_new: int
+    errors: int
+
 # ---------------------------------------------------------------------------
 # ROMs
 # ---------------------------------------------------------------------------
 
 
-def upsert_rom(conn: sqlite3.Connection, rom_data: dict[str, Any]) -> int:
+def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
     """Insert a ROM row or update it in place if `path` already exists.
 
     Returns the row id of the upserted ROM. Caller is responsible for committing
@@ -93,16 +146,15 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: dict[str, Any]) -> int:
     row = conn.execute(
         "SELECT id FROM roms WHERE path = ?", (rom_data["path"],)
     ).fetchone()
-    return row[0]
+    return row["id"]
 
 
 def get_roms_by_system(conn: sqlite3.Connection, system_id: str) -> list[sqlite3.Row]:
     """Return all ROM rows for the given system, ordered by filename."""
-    rows = conn.execute(
+    return conn.execute(
         "SELECT * FROM roms WHERE system_id = ? ORDER BY filename",
         (system_id,),
     ).fetchall()
-    return list(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +162,7 @@ def get_roms_by_system(conn: sqlite3.Connection, system_id: str) -> list[sqlite3
 # ---------------------------------------------------------------------------
 
 
-def upsert_game(conn: sqlite3.Connection, game_data: dict[str, Any]) -> int:
+def upsert_game(conn: sqlite3.Connection, game_data: GameUpsertData) -> int:
     """Insert a Game row, or return the existing id if one already matches.
 
     Matches by (system_id, title) — this is good enough for Quick Scan, where
@@ -171,7 +223,7 @@ def find_game_id_for_fuzzy_key(
         """,
         (system_id, fuzzy_key),
     ).fetchone()
-    return row[0] if row else None
+    return row["id"] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +231,7 @@ def find_game_id_for_fuzzy_key(
 # ---------------------------------------------------------------------------
 
 
-def insert_scan_history(conn: sqlite3.Connection, scan_data: dict[str, Any]) -> int:
+def insert_scan_history(conn: sqlite3.Connection, scan_data: ScanHistoryData) -> int:
     """Insert a new scan_history row; return its id.
 
     Required keys: scan_type, started_at, root_path.
@@ -207,7 +259,7 @@ def insert_scan_history(conn: sqlite3.Connection, scan_data: dict[str, Any]) -> 
 
 
 def update_scan_history(
-    conn: sqlite3.Connection, scan_id: int, updates: dict[str, Any]
+    conn: sqlite3.Connection, scan_id: int, updates: ScanHistoryUpdate
 ) -> None:
     """Update a scan_history row in place with arbitrary fields.
 
@@ -229,7 +281,8 @@ def update_scan_history(
         return
     # Safe: each name in `fields` is guaranteed to be in the `allowed` whitelist.
     set_clause = ", ".join(f"{f} = ?" for f in fields)
-    values = [updates[f] for f in fields] + [scan_id]
+    values: list[object] = [updates[f] for f in fields]  # type: ignore[literal-required]
+    values.append(scan_id)
     conn.execute(f"UPDATE scan_history SET {set_clause} WHERE id = ?", values)
 
 
@@ -260,7 +313,7 @@ def upsert_hash(
             md5   = excluded.md5,
             hashed_at = excluded.hashed_at
         """,
-        (rom_id, crc32, sha1, md5, time.time()),
+        (rom_id, crc32, sha1, md5, datetime.now(UTC).timestamp()),
     )
 
 
@@ -273,7 +326,7 @@ def get_hash(conn: sqlite3.Connection, rom_id: int) -> sqlite3.Row | None:
 
 def get_unhashed_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """ROMs that have no row in the hashes table at all."""
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT r.*
         FROM roms r
@@ -282,12 +335,11 @@ def get_unhashed_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY r.id
         """
     ).fetchall()
-    return list(rows)
 
 
 def get_stale_hashes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """ROMs whose recorded mtime is newer than their last hash timestamp."""
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT r.*
         FROM roms r
@@ -296,7 +348,6 @@ def get_stale_hashes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY r.id
         """
     ).fetchall()
-    return list(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +443,7 @@ _METADATA_FIELDS: tuple[str, ...] = (
 def upsert_metadata(
     conn: sqlite3.Connection,
     game_id: int,
-    metadata: dict[str, Any],
+    metadata: MetadataPayload,
     source: str,
 ) -> None:
     """Insert or replace a game's metadata row.
@@ -400,7 +451,7 @@ def upsert_metadata(
     Unknown keys are ignored; missing keys are stored as NULL. `source` records
     which provider (hasheous / launchbox / screenscraper) supplied the row.
     """
-    values = [metadata.get(field) for field in _METADATA_FIELDS]
+    values = [metadata.get(field) for field in _METADATA_FIELDS]  # type: ignore[literal-required]
     conn.execute(
         """
         INSERT INTO metadata (
@@ -450,10 +501,9 @@ def insert_cover(
 
 def get_covers(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
     """Return all cover rows for a game, oldest first."""
-    rows = conn.execute(
+    return conn.execute(
         "SELECT * FROM covers WHERE game_id = ? ORDER BY id", (game_id,)
     ).fetchall()
-    return list(rows)
 
 
 def has_cover(conn: sqlite3.Connection, game_id: int, cover_type: str) -> bool:
@@ -471,7 +521,7 @@ def get_games_needing_enrichment(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     Joins games -> roms (filtered to dat_verified matches) -> LEFT JOIN metadata
     so we only surface games that have a canonical hit but haven't been enriched.
     """
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT DISTINCT g.id, g.title, g.system_id, g.canonical_name,
                r.dat_match AS dat_match
@@ -483,7 +533,6 @@ def get_games_needing_enrichment(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY g.system_id, g.title
         """
     ).fetchall()
-    return list(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -507,11 +556,10 @@ def get_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> sqlite3.Row | None:
 
 def get_roms_for_game(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
     """Return every ROM linked to a game, ordered by filename."""
-    rows = conn.execute(
+    return conn.execute(
         "SELECT * FROM roms WHERE game_id = ? ORDER BY filename",
         (game_id,),
     ).fetchall()
-    return list(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +575,7 @@ def ensure_favorites_collection(conn: sqlite3.Connection) -> int:
         "SELECT id FROM collections WHERE name = ?", (FAVORITES_NAME,)
     ).fetchone()
     if row:
-        return row[0]
+        return row["id"]
     cursor = conn.execute(
         "INSERT INTO collections (name, description, is_system) VALUES (?, ?, 1)",
         (FAVORITES_NAME, "Built-in favorites collection"),
@@ -565,7 +613,7 @@ def delete_collection(conn: sqlite3.Connection, collection_id: int) -> None:
     ).fetchone()
     if row is None:
         return
-    if int(row[0]):
+    if int(row["is_system"]):
         raise ValueError("Cannot delete system collection")
     conn.execute(
         "DELETE FROM collection_games WHERE collection_id = ?", (collection_id,)
@@ -604,7 +652,7 @@ def get_collection_games(
         "SELECT game_id FROM collection_games WHERE collection_id = ?",
         (collection_id,),
     ).fetchall()
-    return [int(row[0]) for row in rows]
+    return [int(row["game_id"]) for row in rows]
 
 
 def get_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -614,7 +662,7 @@ def get_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     (is_system=1) sort to the top so the UI can render Favorites above any
     user-created entries.
     """
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT c.id, c.name, c.description, c.is_system,
                COUNT(cg.game_id) AS game_count
@@ -624,7 +672,6 @@ def get_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY c.is_system DESC, c.name
         """
     ).fetchall()
-    return list(rows)
 
 
 def get_collection_by_name(
@@ -660,7 +707,7 @@ def get_alias_folder_pairs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     registry's `folder_aliases` list to detect non-canonical folders that should
     be merged into the canonical one.
     """
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT system_id,
                LOWER(
@@ -681,7 +728,6 @@ def get_alias_folder_pairs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         GROUP BY system_id, folder_path
         """
     ).fetchall()
-    return list(rows)
 
 
 def get_duplicate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -692,7 +738,7 @@ def get_duplicate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     so the organizer never proposes deduping a hack against its original even
     if the hasher (incorrectly) reported identical content.
     """
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT h.sha1, r.id AS rom_id, r.path, r.filename, r.extension,
                r.system_id, r.game_id, r.size_bytes,
@@ -712,7 +758,6 @@ def get_duplicate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY h.sha1, r.id
         """
     ).fetchall()
-    return list(rows)
 
 
 def get_dat_matched_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -722,7 +767,7 @@ def get_dat_matched_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     Layer 3 identification have a canonical name we trust enough to rename
     against. Quick-scan (fuzzy/header) matches are NEVER renamed.
     """
-    rows = conn.execute(
+    return conn.execute(
         """
         SELECT r.id, r.path, r.filename, r.extension, r.system_id,
                r.game_id, r.dat_match, r.match_confidence
@@ -733,7 +778,6 @@ def get_dat_matched_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY r.id
         """
     ).fetchall()
-    return list(rows)
 
 
 def update_rom_path(
@@ -789,6 +833,4 @@ def update_plan_status(
 
 def datetime_now_iso() -> str:
     """Return the current UTC time as an ISO-8601 string (used by plan rows)."""
-    from datetime import UTC, datetime
-
     return datetime.now(UTC).isoformat()

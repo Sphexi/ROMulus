@@ -36,7 +36,8 @@ import logging
 import re
 import sqlite3
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,7 +65,7 @@ ProgressCallback = Callable[[int, int, str], None]
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ExportFilters:
     """Constraints applied to the candidate ROM set.
 
@@ -78,7 +79,7 @@ class ExportFilters:
     collection_id: int | None = None
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ExportOptions:
     """Toggles for the optional sidecar artifacts."""
 
@@ -87,7 +88,7 @@ class ExportOptions:
     generate_m3u: bool = True
 
 
-@dataclass
+@dataclass(slots=True)
 class ExportPreview:
     """Result of ``preview_export`` — bookkeeping with no filesystem writes."""
 
@@ -98,7 +99,7 @@ class ExportPreview:
     unsupported_systems: list[str] = field(default_factory=list)
 
 
-@dataclass
+@dataclass(slots=True)
 class ExportSummary:
     """Result of ``export_collection`` — what actually happened on disk."""
 
@@ -250,6 +251,8 @@ def preview_export(
     preview = ExportPreview()
     target = Path(target_path)
     unsupported: set[str] = set()
+    by_system: Counter[str] = Counter()
+    folder_tree: defaultdict[str, list[str]] = defaultdict(list)
     for row in _candidate_roms(conn, filters):
         system_id = str(row["system_id"])
         mapping = profile.systems.get(system_id)
@@ -258,11 +261,13 @@ def preview_export(
             continue
         preview.file_count += 1
         preview.total_size_bytes += int(row["size_bytes"] or 0)
-        preview.by_system[system_id] = preview.by_system.get(system_id, 0) + 1
+        by_system[system_id] += 1
         folder_key = str(
             target / profile.base_path / mapping.folder
         ).replace("\\", "/")
-        preview.folder_tree.setdefault(folder_key, []).append(str(row["filename"]))
+        folder_tree[folder_key].append(str(row["filename"]))
+    preview.by_system = dict(by_system)
+    preview.folder_tree = dict(folder_tree)
     preview.unsupported_systems = sorted(unsupported)
     return preview
 
@@ -316,7 +321,7 @@ def export_collection(
     systems_touched: set[str] = set()
     # Group rows by system_id so we can emit one gamelist.xml / artwork pass
     # per system after the file copy is complete.
-    by_system: dict[str, list[sqlite3.Row]] = {}
+    by_system: defaultdict[str, list[sqlite3.Row]] = defaultdict(list)
 
     total = len(candidates)
     for index, row in enumerate(candidates, start=1):
@@ -341,7 +346,7 @@ def export_collection(
             # exporter against a partially-populated SD card is idempotent.
             summary.files_skipped += 1
             systems_touched.add(system_id)
-            by_system.setdefault(system_id, []).append(row)
+            by_system[system_id].append(row)
             continue
         try:
             atomic.atomic_copy(source, dest)
@@ -351,7 +356,7 @@ def export_collection(
         summary.files_copied += 1
         summary.bytes_copied += size_bytes
         systems_touched.add(system_id)
-        by_system.setdefault(system_id, []).append(row)
+        by_system[system_id].append(row)
 
     summary.systems = sorted(systems_touched)
 
@@ -397,7 +402,7 @@ def generate_gamelist_xml(
     conn: sqlite3.Connection,
     system_id: str,
     system_dir: Path,
-    rows: list[sqlite3.Row],
+    rows: Iterable[sqlite3.Row],
 ) -> Path:
     """Write an EmulationStation gamelist.xml into ``system_dir``.
 
@@ -463,20 +468,20 @@ def generate_gamelist_xml(
 
 
 def generate_m3u_playlists(
-    system_dir: Path, rows: list[sqlite3.Row]
+    system_dir: Path, rows: Iterable[sqlite3.Row]
 ) -> int:
     """Group multi-disc ROMs by their stripped basename and write one .m3u.
 
     Returns the number of playlists written. Skips groups with fewer than
     two discs — single-disc games don't need a playlist.
     """
-    groups: dict[str, list[str]] = {}
+    groups: defaultdict[str, list[str]] = defaultdict(list)
     for row in rows:
         filename = str(row["filename"])
         if not _is_multi_disc_filename(filename):
             continue
         stem = _multi_disc_basename(Path(filename).stem)
-        groups.setdefault(stem, []).append(filename)
+        groups[stem].append(filename)
 
     written = 0
     for stem, members in groups.items():
@@ -499,7 +504,7 @@ def copy_artwork(
     system_id: str,
     profile: DestinationProfile,
     target: Path,
-    rows: list[sqlite3.Row],
+    rows: Iterable[sqlite3.Row],
 ) -> int:
     """Copy cover-art files for every game in ``rows`` into the target.
 

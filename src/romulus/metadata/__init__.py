@@ -11,16 +11,26 @@ import logging
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import TypedDict
 
 import httpx
 
 from romulus.db import get_config, queries
 from romulus.metadata import hasheous, launchbox, libretro, screenscraper
+from romulus.metadata.launchbox import LaunchBoxIndex
 from romulus.models.system import SYSTEM_REGISTRY
 
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, str], None]
+
+
+class EnrichmentStats(TypedDict):
+    """Counts returned from ``enrich_library`` after one run."""
+
+    games_processed: int
+    metadata_added: int
+    covers_added: int
 
 
 def _system_libretro_name(system_id: str | None) -> str | None:
@@ -70,7 +80,7 @@ def _fetch_metadata_for_game(
     title: str,
     system_id: str | None,
     sha1: str | None,
-    launchbox_index: dict | None,
+    launchbox_index: LaunchBoxIndex | None,
     credentials: dict[str, str] | None,
     http_client: httpx.Client | None,
 ) -> bool:
@@ -149,7 +159,7 @@ def enrich_library(
     progress_callback: ProgressCallback | None = None,
     launchbox_xml_path: Path | str | None = None,
     http_client: httpx.Client | None = None,
-) -> dict[str, int]:
+) -> EnrichmentStats:
     """Walk DAT-verified games that have no metadata and try each source.
 
     Returns a small stats dict: {games_processed, metadata_added, covers_added}.
@@ -163,7 +173,7 @@ def enrich_library(
         "password": get_config(conn, "screenscraper_password") or "",
     }
 
-    launchbox_index: dict | None = None
+    launchbox_index: LaunchBoxIndex | None = None
     if launchbox_xml_path is not None and Path(launchbox_xml_path).exists():
         entries = launchbox.parse_launchbox_xml(launchbox_xml_path)
         launchbox_index = launchbox.build_index(entries)
@@ -216,6 +226,7 @@ def enrich_library(
 
 
 __all__ = [
+    "EnrichmentStats",
     "enrich_library",
     "hasheous",
     "launchbox",

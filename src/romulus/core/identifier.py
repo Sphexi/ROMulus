@@ -11,25 +11,31 @@ import os
 from pathlib import Path
 
 # Magic bytes used to detect on-disk byte order before reading internal titles.
-_N64_MAGIC_Z64: bytes = b"\x80\x37\x12\x40"  # big-endian
-_N64_MAGIC_V64: bytes = b"\x37\x80\x40\x12"  # halfword-swapped
-_N64_MAGIC_N64: bytes = b"\x40\x12\x37\x80"  # little-endian (word-swapped)
-_MD_MAGIC_OVERSEAS: bytes = b"SEGA MEGA DRIVE"
-_MD_MAGIC_DOMESTIC: bytes = b"SEGA GENESIS"
-_MD_MAGIC_32X: bytes = b"SEGA 32X"
-_MD_MAGIC_PICO: bytes = b"SEGA PICO"
+_N64_MAGIC_Z64 = b"\x80\x37\x12\x40"  # big-endian
+_N64_MAGIC_V64 = b"\x37\x80\x40\x12"  # halfword-swapped
+_N64_MAGIC_N64 = b"\x40\x12\x37\x80"  # little-endian (word-swapped)
+_MD_MAGIC_OVERSEAS = b"SEGA MEGA DRIVE"
+_MD_MAGIC_DOMESTIC = b"SEGA GENESIS"
+_MD_MAGIC_32X = b"SEGA 32X"
+_MD_MAGIC_PICO = b"SEGA PICO"
+_MD_MAGICS = (
+    _MD_MAGIC_OVERSEAS,
+    _MD_MAGIC_DOMESTIC,
+    _MD_MAGIC_32X,
+    _MD_MAGIC_PICO,
+)
 
 # How much of the head of a file to read for header inspection. 64 KB covers
 # every cartridge layout we care about (SNES HiROM title is at 0xFFC0).
-_HEADER_READ_BYTES: int = 64 * 1024
+_HEADER_READ_BYTES = 64 * 1024
 
 # Title slot lengths from TECHNICAL_PLAN.md §6.
-_SNES_TITLE_LEN: int = 21
-_N64_TITLE_LEN: int = 20
-_MD_TITLE_LEN: int = 48
-_GB_TITLE_LEN: int = 16
-_GBA_TITLE_LEN: int = 12
-_DS_TITLE_LEN: int = 12
+_SNES_TITLE_LEN = 21
+_N64_TITLE_LEN = 20
+_MD_TITLE_LEN = 48
+_GB_TITLE_LEN = 16
+_GBA_TITLE_LEN = 12
+_DS_TITLE_LEN = 12
 
 
 def _clean_ascii_title(raw: bytes) -> str | None:
@@ -37,8 +43,7 @@ def _clean_ascii_title(raw: bytes) -> str | None:
     text = raw.decode("ascii", errors="replace")
     if "\x00" in text:
         text = text.split("\x00", 1)[0]
-    cleaned_chars = [c for c in text if c == " " or (c.isprintable() and ord(c) >= 0x20)]
-    cleaned = "".join(cleaned_chars).strip()
+    cleaned = "".join(c for c in text if c.isprintable()).strip()
     cleaned = " ".join(cleaned.split())
     return cleaned or None
 
@@ -119,12 +124,7 @@ def _extract_md_title(data: bytes) -> str | None:
     if len(data) < 0x100 + 16:
         return None
     magic_slice = data[0x100 : 0x100 + 16]
-    if not (
-        magic_slice.startswith(_MD_MAGIC_OVERSEAS)
-        or magic_slice.startswith(_MD_MAGIC_DOMESTIC)
-        or magic_slice.startswith(_MD_MAGIC_32X)
-        or magic_slice.startswith(_MD_MAGIC_PICO)
-    ):
+    if not magic_slice.startswith(_MD_MAGICS):
         return None
     candidates: list[tuple[float, str]] = []
     for offset in (0x150, 0x120):

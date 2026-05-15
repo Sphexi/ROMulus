@@ -18,14 +18,14 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-THUMBNAIL_BASE_URL: str = "https://thumbnails.libretro.com"
+THUMBNAIL_BASE_URL = "https://thumbnails.libretro.com"
 COVER_TYPES: tuple[str, ...] = ("Named_Boxarts", "Named_Snaps", "Named_Titles")
-DEFAULT_TIMEOUT: float = 15.0
+DEFAULT_TIMEOUT = 15.0
 
 # Characters libretro-thumbnails replaces with `_` in the filename portion of
 # the URL. From the session-6 spec: `&*/:\<>?\|"`. After de-duplicating the
 # `\` that appears twice in the spec, the unique set is the 10 chars below.
-_SANITIZE_CHARS: str = '&*/:\\<>?|"'
+_SANITIZE_CHARS = '&*/:\\<>?|"'
 
 
 def sanitize_game_name(name: str) -> str:

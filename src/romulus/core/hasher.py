@@ -21,13 +21,13 @@ from pathlib import Path
 from romulus.db import queries
 
 # Match the existing "NES\x1a" / "LYNX\x00" magics used by the identifier.
-_INES_MAGIC: bytes = b"NES\x1a"
-_LYNX_MAGIC: bytes = b"LYNX\x00"
-_N64_MAGIC_Z64: bytes = b"\x80\x37\x12\x40"
-_N64_MAGIC_V64: bytes = b"\x37\x80\x40\x12"
-_N64_MAGIC_N64: bytes = b"\x40\x12\x37\x80"
+_INES_MAGIC = b"NES\x1a"
+_LYNX_MAGIC = b"LYNX\x00"
+_N64_MAGIC_Z64 = b"\x80\x37\x12\x40"
+_N64_MAGIC_V64 = b"\x37\x80\x40\x12"
+_N64_MAGIC_N64 = b"\x40\x12\x37\x80"
 
-_CHUNK: int = 1 << 20  # 1 MiB streaming chunk; matches ROM-DEDUP §5.3 example.
+_CHUNK = 1 << 20  # 1 MiB streaming chunk; matches ROM-DEDUP §5.3 example.
 
 
 @dataclass(frozen=True)

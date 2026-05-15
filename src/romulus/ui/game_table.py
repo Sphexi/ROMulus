@@ -41,6 +41,10 @@ REGION_FILTER_OPTIONS: tuple[str, ...] = (
 MATCH_FILTER_OPTIONS: tuple[str, ...] = ("All", "Verified", "Unmatched")
 # Regions that the "Other" bucket lumps together (anything not in this set).
 _KNOWN_REGIONS: frozenset[str] = frozenset({"USA", "Europe", "Japan", "World"})
+# Hoisted out of filterAcceptsRow so the proxy doesn't allocate a fresh set
+# every time Qt invokes the filter (once per row per filter change).
+_VERIFIED_CONFIDENCES: frozenset[str] = frozenset({"dat_verified", "header"})
+_UNMATCHED_CONFIDENCES: frozenset[str] = frozenset({"unmatched", "fuzzy"})
 
 
 @dataclass(frozen=True)
@@ -59,12 +63,14 @@ class GameRow:
 
 def _format_size(size_bytes: int) -> str:
     """Human-readable byte size (KB / MB / GB)."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
     size = float(size_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+    for unit in ("KB", "MB", "GB", "TB"):
         size /= 1024
-    return f"{int(size_bytes)} B"
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}"
+    return f"{size:.1f} TB"
 
 
 def load_rom_rows(
@@ -232,9 +238,9 @@ class GameTableProxy(QSortFilterProxyModel):
             elif row_region != self._region_filter:
                 return False
         if self._match_filter == "Verified":
-            return row.match_confidence in {"dat_verified", "header"}
+            return row.match_confidence in _VERIFIED_CONFIDENCES
         if self._match_filter == "Unmatched":
-            return row.match_confidence in {"unmatched", "fuzzy"}
+            return row.match_confidence in _UNMATCHED_CONFIDENCES
         return True
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -166,7 +167,7 @@ _VERSION_SUFFIX_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ParsedFilename:
     """Structured result of parsing a ROM filename.
 
@@ -490,10 +491,10 @@ def group_into_games(conn: sqlite3.Connection, system_id: str) -> int:
         (system_id,),
     ).fetchall()
 
-    groups: dict[str, list[tuple[int, str]]] = {}
+    groups: defaultdict[str, list[tuple[int, str]]] = defaultdict(list)
     for row in rows:
         rom_id, filename, fuzzy = row[0], row[1], row[2]
-        groups.setdefault(fuzzy, []).append((rom_id, filename))
+        groups[fuzzy].append((rom_id, filename))
 
     games_touched = 0
     for fuzzy, rom_list in groups.items():
@@ -529,7 +530,7 @@ def group_into_games(conn: sqlite3.Connection, system_id: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class ScanResult:
     """Summary of a single scan invocation."""
 

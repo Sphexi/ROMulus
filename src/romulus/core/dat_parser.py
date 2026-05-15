@@ -13,6 +13,7 @@ import sqlite3
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import chain
 from pathlib import Path
 
 from romulus.db import queries
@@ -193,23 +194,16 @@ def parse_dat_file(filepath: str | os.PathLike[str]) -> list[DatEntry]:
 
 def _iter_dat_files(paths: Iterable[str | os.PathLike[str]]) -> list[Path]:
     """Flatten a mix of dat file paths and directories into a deduped file list."""
-    found: list[Path] = []
-    seen: set[Path] = set()
-    for raw in paths:
-        p = Path(raw)
+
+    def _expand(p: Path) -> Iterable[Path]:
         if p.is_dir():
-            files = sorted(p.rglob("*.dat")) + sorted(p.rglob("*.xml"))
-        elif p.is_file():
-            files = [p]
-        else:
-            continue
-        for f in files:
-            resolved = f.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            found.append(f)
-    return found
+            return chain(sorted(p.rglob("*.dat")), sorted(p.rglob("*.xml")))
+        if p.is_file():
+            return (p,)
+        return ()
+
+    candidates = chain.from_iterable(_expand(Path(raw)) for raw in paths)
+    return list({f.resolve(): f for f in candidates}.values())
 
 
 def load_all_dats(

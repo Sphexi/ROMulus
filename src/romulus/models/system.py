@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+HeaderRule = Literal["smc_512", "ines_16", "n64_byteswap", "lynx_64"]
 
 
 class SystemDef(BaseModel):
@@ -31,13 +34,28 @@ class SystemDef(BaseModel):
     manufacturer: str | None = None
     generation: int | None = None
     extensions: list[str] = Field(default_factory=list)
-    header_rule: str | None = Field(
+    header_rule: HeaderRule | None = Field(
         default=None,
         description="One of: smc_512 | ines_16 | n64_byteswap | lynx_64 | None",
     )
     libretro_name: str | None = None
     folder_aliases: list[str] = Field(default_factory=list)
     dat_name: str | None = None
+
+    @field_validator("extensions", mode="after")
+    @classmethod
+    def _ensure_dot_prefix(cls, v: list[str]) -> list[str]:
+        """Reject extensions missing a leading dot; lowercase the rest."""
+        for ext in v:
+            if not ext.startswith("."):
+                raise ValueError(f"extension {ext!r} must start with '.'")
+        return [ext.lower() for ext in v]
+
+    @field_validator("folder_aliases", mode="after")
+    @classmethod
+    def _lowercase_aliases(cls, v: list[str]) -> list[str]:
+        """Canonicalize folder aliases to lowercase."""
+        return [alias.lower() for alias in v]
 
 
 # ---------------------------------------------------------------------------
@@ -466,10 +484,9 @@ def seed_systems(conn: sqlite3.Connection) -> int:
     Idempotent — uses INSERT OR IGNORE, so existing rows are left untouched.
     Returns the number of rows actually inserted (0 if already seeded).
     """
-    cursor = conn.cursor()
     inserted = 0
     for sys_def in SYSTEM_REGISTRY:
-        cursor.execute(
+        inserted += conn.execute(
             """
             INSERT OR IGNORE INTO systems (
                 id, display_name, short_name, manufacturer, generation,
@@ -488,8 +505,7 @@ def seed_systems(conn: sqlite3.Connection) -> int:
                 json.dumps(sys_def.folder_aliases),
                 sys_def.dat_name,
             ),
-        )
-        inserted += cursor.rowcount
+        ).rowcount
     conn.commit()
     return inserted
 
@@ -501,18 +517,18 @@ def get_systems_by_alias(conn: sqlite3.Connection) -> dict[str, str]:
     stored as JSON arrays in the `systems.folder_aliases` column; this helper
     flattens them into a single dict for O(1) lookups.
     """
-    cursor = conn.execute("SELECT id, folder_aliases FROM systems")
+    rows = conn.execute("SELECT id, folder_aliases FROM systems").fetchall()
     alias_map: dict[str, str] = {}
-    for system_id, aliases_json in cursor.fetchall():
-        for alias in json.loads(aliases_json):
-            alias_map[alias.lower()] = system_id
+    for row in rows:
+        for alias in json.loads(row["folder_aliases"]):
+            alias_map[alias.lower()] = row["id"]
     return alias_map
 
 
 def get_extensions_by_system(conn: sqlite3.Connection) -> dict[str, list[str]]:
     """Build a lookup table mapping system_id to its list of accepted extensions."""
-    cursor = conn.execute("SELECT id, extensions FROM systems")
+    rows = conn.execute("SELECT id, extensions FROM systems").fetchall()
     return {
-        system_id: [ext.lower() for ext in json.loads(extensions_json)]
-        for system_id, extensions_json in cursor.fetchall()
+        row["id"]: [ext.lower() for ext in json.loads(row["extensions"])]
+        for row in rows
     }

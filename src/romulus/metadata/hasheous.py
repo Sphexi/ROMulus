@@ -13,13 +13,28 @@ from typing import Any
 
 import httpx
 
+from romulus.metadata._types import MetadataPayload
+
 logger = logging.getLogger(__name__)
 
-HASHEOUS_BASE_URL: str = "https://hasheous.org/api/v1/lookup"
-DEFAULT_TIMEOUT: float = 15.0
-MIN_REQUEST_INTERVAL: float = 1.0
-MAX_RETRIES: int = 3
-BACKOFF_BASE: float = 1.0
+HASHEOUS_BASE_URL = "https://hasheous.org/api/v1/lookup"
+DEFAULT_TIMEOUT = 15.0
+MIN_REQUEST_INTERVAL = 1.0
+MAX_RETRIES = 3
+BACKOFF_BASE = 1.0
+
+# Declarative mapping: each output key paired with the synonym keys the
+# Hasheous response may carry it under. Adding a new synonym is a one-line edit.
+_FIELD_SYNONYMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("title", ("title", "name")),
+    ("description", ("description", "summary", "overview")),
+    ("genre", ("genre", "genres")),
+    ("developer", ("developer", "developers")),
+    ("publisher", ("publisher", "publishers")),
+    ("release_date", ("release_date", "first_release_date", "released")),
+    ("players", ("players", "max_players")),
+    ("rating", ("rating", "esrb")),
+)
 
 # Defense-in-depth: reject any hash value that isn't a hex string of a
 # plausible length before we interpolate it into the lookup URL. SHA-1 is 40
@@ -28,7 +43,7 @@ BACKOFF_BASE: float = 1.0
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
 _VALID_HASH_LENGTHS = (8, 32, 40)
 
-_last_request_ts: float = 0.0
+_last_request_ts = 0.0
 
 
 def _is_valid_hash(value: str) -> bool:
@@ -46,7 +61,7 @@ def _respect_rate_limit() -> None:
     _last_request_ts = time.monotonic()
 
 
-def parse_hasheous_response(payload: dict[str, Any]) -> dict[str, Any]:
+def parse_hasheous_response(payload: dict[str, Any]) -> MetadataPayload:
     """Pluck the metadata fields we care about out of a Hasheous JSON body.
 
     Tolerates either a flat structure or one nested under "game"/"data".
@@ -65,16 +80,7 @@ def parse_hasheous_response(payload: dict[str, Any]) -> dict[str, Any]:
                 return value
         return None
 
-    return {
-        "title": _first("title", "name"),
-        "description": _first("description", "summary", "overview"),
-        "genre": _first("genre", "genres"),
-        "developer": _first("developer", "developers"),
-        "publisher": _first("publisher", "publishers"),
-        "release_date": _first("release_date", "first_release_date", "released"),
-        "players": _first("players", "max_players"),
-        "rating": _first("rating", "esrb"),
-    }
+    return {key: _first(*synonyms) for key, synonyms in _FIELD_SYNONYMS}  # type: ignore[return-value]
 
 
 def lookup_by_hash(
@@ -82,7 +88,7 @@ def lookup_by_hash(
     hash_type: str = "sha1",
     client: httpx.Client | None = None,
     rate_limit: bool = True,
-) -> dict[str, Any] | None:
+) -> MetadataPayload | None:
     """Look up metadata by hash. Returns parsed dict, or None on miss/error."""
     if not sha1:
         return None

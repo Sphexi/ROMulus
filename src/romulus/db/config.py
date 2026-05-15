@@ -31,7 +31,7 @@ DEFAULT_CONFIG: dict[str, str] = {
 def get_config(conn: sqlite3.Connection, key: str) -> str | None:
     """Return the stored value for `key`, or None if unset."""
     row = conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
-    return row[0] if row else None
+    return row["value"] if row else None
 
 
 def set_config(conn: sqlite3.Connection, key: str, value: str) -> None:
@@ -47,7 +47,7 @@ def set_config(conn: sqlite3.Connection, key: str, value: str) -> None:
 def get_all_config(conn: sqlite3.Connection) -> dict[str, str]:
     """Return every config entry as a plain dict."""
     rows = conn.execute("SELECT key, value FROM config").fetchall()
-    return {row[0]: row[1] for row in rows}
+    return {row["key"]: row["value"] for row in rows}
 
 
 def seed_defaults(conn: sqlite3.Connection) -> int:
@@ -56,13 +56,11 @@ def seed_defaults(conn: sqlite3.Connection) -> int:
     Existing values are preserved — this is intended to backfill new defaults
     after an upgrade, not to overwrite user settings.
     """
-    cursor = conn.cursor()
     inserted = 0
     for key, value in DEFAULT_CONFIG.items():
-        cursor.execute(
+        inserted += conn.execute(
             "INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)",
             (key, value),
-        )
-        inserted += cursor.rowcount
+        ).rowcount
     conn.commit()
     return inserted
