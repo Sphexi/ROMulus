@@ -81,6 +81,10 @@ class DetailPanel(QWidget):
         self._game_id: int | None = None
         self._favorites_id = q.ensure_favorites_collection(conn)
 
+        # Cover cycling state — all covers for the current game, current index.
+        self._covers: list[sqlite3.Row] = []
+        self._cover_index: int = 0
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
@@ -98,6 +102,38 @@ class DetailPanel(QWidget):
         cover_row.addWidget(self.cover_label)
         cover_row.addStretch(1)
         outer.addLayout(cover_row)
+
+        # Cover navigation: ◀ | "2 of 5" | ▶ | ★ Make preferred
+        nav_row = QHBoxLayout()
+        nav_row.setSpacing(4)
+
+        self.prev_button = QPushButton("◀", self)
+        self.prev_button.setFixedWidth(32)
+        self.prev_button.setToolTip("Previous cover")
+        self.prev_button.clicked.connect(self._on_prev_cover)
+        nav_row.addWidget(self.prev_button)
+
+        self.cover_index_label = QLabel("", self)
+        self.cover_index_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.cover_index_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        nav_row.addWidget(self.cover_index_label)
+
+        self.next_button = QPushButton("▶", self)
+        self.next_button.setFixedWidth(32)
+        self.next_button.setToolTip("Next cover")
+        self.next_button.clicked.connect(self._on_next_cover)
+        nav_row.addWidget(self.next_button)
+
+        self.preferred_button = QPushButton("★ Make preferred", self)
+        self.preferred_button.setToolTip(
+            "Set this cover as the default for this game"
+        )
+        self.preferred_button.clicked.connect(self._on_make_preferred)
+        nav_row.addWidget(self.preferred_button)
+
+        outer.addLayout(nav_row)
 
         # Title (bold, large).
         self.title_label = QLabel("Select a game", self)
@@ -198,6 +234,8 @@ class DetailPanel(QWidget):
         metadata = q.get_metadata(self._conn, self._game_id)
         covers = q.get_covers(self._conn, self._game_id)
         roms = q.get_roms_for_game(self._conn, self._game_id)
+        self._covers = covers
+        self._cover_index = 0
         self._render(game, metadata, covers, roms)
 
     @property
@@ -211,8 +249,11 @@ class DetailPanel(QWidget):
 
     def _render_empty(self) -> None:
         """Reset to the "no selection" state."""
+        self._covers = []
+        self._cover_index = 0
         self.cover_label.clear()
         self.cover_label.setText(PLACEHOLDER_TEXT)
+        self.cover_label.setToolTip("")
         self.title_label.setText("Select a game")
         self.system_label.setText("")
         self.region_label.setText("")
@@ -227,6 +268,7 @@ class DetailPanel(QWidget):
         self.favorite_button.setChecked(False)
         self.favorite_button.setEnabled(False)
         self.collection_button.setEnabled(False)
+        self._update_cover_nav()
 
     def _render(
         self,
@@ -264,8 +306,9 @@ class DetailPanel(QWidget):
         # ROM list (filename + size on one line each).
         self.rom_list.setPlainText(self._format_rom_list(roms))
 
-        # Cover image — use the first cover row that has a local file.
-        self._render_cover(covers)
+        # Cover viewer — display current index and update nav controls.
+        self._render_cover_at_index()
+        self._update_cover_nav()
 
         # Favorites toggle reflects current membership.
         is_fav = q.is_game_in_collection(
@@ -280,29 +323,100 @@ class DetailPanel(QWidget):
         self.favorite_button.setEnabled(True)
         self.collection_button.setEnabled(True)
 
-    def _render_cover(self, covers: list[sqlite3.Row]) -> None:
-        """Load the first cover with a readable local file; else show placeholder."""
-        for cover in covers:
-            local = cover["local_path"]
-            if not local:
-                continue
-            path = Path(str(local))
-            if not path.exists():
-                continue
-            pix = QPixmap(str(path))
-            if pix.isNull():
-                continue
-            scaled = pix.scaled(
-                COVER_WIDTH,
-                COVER_HEIGHT,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self.cover_label.setPixmap(scaled)
-            self.cover_label.setText("")
+    def _render_cover_at_index(self) -> None:
+        """Display the cover at ``self._cover_index``; show placeholder if none."""
+        covers = self._covers
+        if not covers:
+            self.cover_label.clear()
+            self.cover_label.setText(PLACEHOLDER_TEXT)
+            self.cover_label.setToolTip("")
             return
+
+        # Clamp index defensively.
+        idx = max(0, min(self._cover_index, len(covers) - 1))
+        cover = covers[idx]
+        local = cover["local_path"]
+        if local:
+            path = Path(str(local))
+            if path.exists():
+                pix = QPixmap(str(path))
+                if not pix.isNull():
+                    scaled = pix.scaled(
+                        COVER_WIDTH,
+                        COVER_HEIGHT,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    self.cover_label.setPixmap(scaled)
+                    self.cover_label.setText("")
+                    self.cover_label.setToolTip(str(path))
+                    return
+        # Fallback: no readable file for this cover row.
         self.cover_label.clear()
         self.cover_label.setText(PLACEHOLDER_TEXT)
+        self.cover_label.setToolTip("")
+
+    def _update_cover_nav(self) -> None:
+        """Refresh the navigation bar (index label + button states)."""
+        n = len(self._covers)
+        has_multiple = n > 1
+        self.prev_button.setEnabled(has_multiple)
+        self.next_button.setEnabled(has_multiple)
+        self.preferred_button.setEnabled(n > 0)
+        if n == 0:
+            self.cover_index_label.setText("")
+        else:
+            self.cover_index_label.setText(f"{self._cover_index + 1} of {n}")
+
+    # ------------------------------------------------------------------
+    # Cover navigation slots
+    # ------------------------------------------------------------------
+
+    def _on_prev_cover(self) -> None:
+        """Step backward through covers (wraps around)."""
+        n = len(self._covers)
+        if n < 2:
+            return
+        self._cover_index = (self._cover_index - 1) % n
+        self._render_cover_at_index()
+        self._update_cover_nav()
+
+    def _on_next_cover(self) -> None:
+        """Step forward through covers (wraps around)."""
+        n = len(self._covers)
+        if n < 2:
+            return
+        self._cover_index = (self._cover_index + 1) % n
+        self._render_cover_at_index()
+        self._update_cover_nav()
+
+    def _on_make_preferred(self) -> None:
+        """Mark the currently displayed cover as preferred, then reload."""
+        if not self._covers or self._game_id is None:
+            return
+        idx = max(0, min(self._cover_index, len(self._covers) - 1))
+        cover_id = int(self._covers[idx]["id"])
+        q.set_preferred_cover(self._conn, cover_id)
+        # Reload covers so preferred row sorts to index 0.
+        self._covers = q.get_covers(self._conn, self._game_id)
+        self._cover_index = 0
+        self._render_cover_at_index()
+        self._update_cover_nav()
+
+    # ------------------------------------------------------------------
+    # Cover rendering (legacy single-cover path kept for _render call)
+    # ------------------------------------------------------------------
+
+    def _render_cover(self, covers: list[sqlite3.Row]) -> None:
+        """Load the first cover with a readable local file; else show placeholder.
+
+        .. deprecated::
+            Kept for backward compatibility with any callers that bypassed
+            ``update_game``. New code goes through ``_render_cover_at_index``.
+        """
+        self._covers = covers
+        self._cover_index = 0
+        self._render_cover_at_index()
 
     @staticmethod
     def _field(label: str, value: str | int | None) -> str:

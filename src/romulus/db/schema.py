@@ -130,13 +130,14 @@ SCHEMA_STATEMENTS: list[str] = [
     # Cover art references
     """
     CREATE TABLE IF NOT EXISTS covers (
-        id         INTEGER PRIMARY KEY AUTOINCREMENT,
-        game_id    INTEGER REFERENCES games(id),
-        cover_type TEXT NOT NULL,
-        source_url TEXT,
-        local_path TEXT,
-        width      INTEGER,
-        height     INTEGER
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        game_id      INTEGER REFERENCES games(id),
+        cover_type   TEXT NOT NULL,
+        source_url   TEXT,
+        local_path   TEXT,
+        width        INTEGER,
+        height       INTEGER,
+        is_preferred INTEGER NOT NULL DEFAULT 0
     )
     """,
     # User collections
@@ -167,12 +168,46 @@ SCHEMA_STATEMENTS: list[str] = [
 ]
 
 
+def _migrate_covers_add_is_preferred(conn: sqlite3.Connection) -> None:
+    """Add ``is_preferred`` to covers if the column is absent (backward-compat).
+
+    Uses ``PRAGMA table_info`` to detect missing columns so the ALTER is
+    idempotent — safe to call on every startup regardless of DB age.
+
+    After adding the column, the first cover row per ``(game_id, cover_type)``
+    is promoted to ``is_preferred=1`` so existing users see their covers
+    immediately without any manual action.
+    """
+    rows = conn.execute("PRAGMA table_info(covers)").fetchall()
+    existing_columns = {row["name"] for row in rows}
+    if "is_preferred" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE covers ADD COLUMN is_preferred INTEGER NOT NULL DEFAULT 0"
+        )
+        # Promote the first (lowest id) row per (game_id, cover_type).
+        conn.execute(
+            """
+            UPDATE covers
+            SET is_preferred = 1
+            WHERE id IN (
+                SELECT MIN(id)
+                FROM covers
+                GROUP BY game_id, cover_type
+            )
+            """
+        )
+        conn.commit()
+
+
 def create_tables(conn: sqlite3.Connection) -> None:
     """Execute every CREATE TABLE / CREATE INDEX statement in order.
 
     Idempotent via IF NOT EXISTS. Safe to call on every startup.
+    Runs :func:`_migrate_covers_add_is_preferred` after the schema statements
+    so existing databases gain ``is_preferred`` on first launch.
     """
     cursor = conn.cursor()
     for statement in SCHEMA_STATEMENTS:
         cursor.execute(statement)
     conn.commit()
+    _migrate_covers_add_is_preferred(conn)

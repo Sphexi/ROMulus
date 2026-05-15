@@ -478,6 +478,11 @@ def discover_local_covers(
                         source_url=None,
                         local_path=match.image_path,
                     )
+                    # Promote the first cover per (game_id, cover_type) to
+                    # preferred without overriding an existing user choice.
+                    from romulus.db.queries import _ensure_preferred
+
+                    _ensure_preferred(conn, match.game_id, match.cover_type)
                     covers_found += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(

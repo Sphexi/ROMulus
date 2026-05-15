@@ -526,14 +526,16 @@ def insert_cover(
     local_path: str | None,
     width: int | None = None,
     height: int | None = None,
+    is_preferred: int = 0,
 ) -> int:
     """Insert a covers row and return its id."""
     cursor = conn.execute(
         """
-        INSERT INTO covers (game_id, cover_type, source_url, local_path, width, height)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO covers (
+            game_id, cover_type, source_url, local_path, width, height, is_preferred
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (game_id, cover_type, source_url, local_path, width, height),
+        (game_id, cover_type, source_url, local_path, width, height, is_preferred),
     )
     new_id = cursor.lastrowid
     assert new_id is not None, "INSERT into covers did not produce a lastrowid"
@@ -541,10 +543,114 @@ def insert_cover(
 
 
 def get_covers(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
-    """Return all cover rows for a game, oldest first."""
+    """Return all cover rows for a game.
+
+    Ordered ``is_preferred DESC, id ASC`` so the preferred cover is always
+    first — the UI can rely on index 0 being the default display cover.
+    """
     return conn.execute(
-        "SELECT * FROM covers WHERE game_id = ? ORDER BY id", (game_id,)
+        "SELECT * FROM covers WHERE game_id = ? ORDER BY is_preferred DESC, id ASC",
+        (game_id,),
     ).fetchall()
+
+
+def get_preferred_cover(
+    conn: sqlite3.Connection,
+    game_id: int,
+    cover_type: str = "Named_Boxarts",
+) -> sqlite3.Row | None:
+    """Return the preferred cover row for a game/type, or None if absent.
+
+    Args:
+        conn: SQLite connection.
+        game_id: Game to look up.
+        cover_type: Cover type to filter by (default ``"Named_Boxarts"``).
+    """
+    return conn.execute(
+        """
+        SELECT * FROM covers
+        WHERE game_id = ? AND cover_type = ? AND is_preferred = 1
+        LIMIT 1
+        """,
+        (game_id, cover_type),
+    ).fetchone()
+
+
+def set_preferred_cover(conn: sqlite3.Connection, cover_id: int) -> None:
+    """Mark ``cover_id`` as preferred and reset all other rows in its group.
+
+    A "group" is all covers sharing the same ``(game_id, cover_type)``.  The
+    operation is atomic — both the reset and the promotion happen inside a
+    single transaction so there is never a moment where zero rows are preferred.
+
+    Args:
+        conn: SQLite connection.
+        cover_id: The id of the cover row to promote.
+    """
+    row = conn.execute(
+        "SELECT game_id, cover_type FROM covers WHERE id = ?", (cover_id,)
+    ).fetchone()
+    if row is None:
+        return
+    game_id = int(row["game_id"])
+    cover_type = str(row["cover_type"])
+    with conn:
+        conn.execute(
+            "UPDATE covers SET is_preferred = 0 WHERE game_id = ? AND cover_type = ?",
+            (game_id, cover_type),
+        )
+        conn.execute(
+            "UPDATE covers SET is_preferred = 1 WHERE id = ?",
+            (cover_id,),
+        )
+
+
+def count_covers(
+    conn: sqlite3.Connection,
+    game_id: int,
+    cover_type: str = "Named_Boxarts",
+) -> int:
+    """Return the number of cover rows for a game/type.
+
+    Args:
+        conn: SQLite connection.
+        game_id: Game to count covers for.
+        cover_type: Cover type to filter by (default ``"Named_Boxarts"``).
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) FROM covers WHERE game_id = ? AND cover_type = ?",
+        (game_id, cover_type),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def _ensure_preferred(
+    conn: sqlite3.Connection, game_id: int, cover_type: str
+) -> None:
+    """Promote the first cover row per group if no preferred row exists yet.
+
+    Called after each insert during discovery to guarantee at least one row
+    has ``is_preferred=1`` without overriding an existing user preference.
+
+    Args:
+        conn: SQLite connection.
+        game_id: Game to check.
+        cover_type: Cover type group to check.
+    """
+    existing_preferred = conn.execute(
+        "SELECT 1 FROM covers WHERE game_id = ? AND cover_type = ? AND is_preferred = 1 LIMIT 1",
+        (game_id, cover_type),
+    ).fetchone()
+    if existing_preferred is None:
+        first = conn.execute(
+            "SELECT id FROM covers WHERE game_id = ? AND cover_type = ? ORDER BY id ASC LIMIT 1",
+            (game_id, cover_type),
+        ).fetchone()
+        if first is not None:
+            conn.execute(
+                "UPDATE covers SET is_preferred = 1 WHERE id = ?",
+                (int(first["id"]),),
+            )
 
 
 def has_cover(conn: sqlite3.Connection, game_id: int, cover_type: str) -> bool:
