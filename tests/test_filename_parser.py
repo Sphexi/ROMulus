@@ -191,6 +191,45 @@ class TestDisplayTitle:
         assert result.display_title == "La Histoire"
 
 
+class TestReleaseType:
+    """Re-release / port tags (Virtual Console etc.) are identity-bearing —
+    they must NOT be silently stripped or the cartridge dump collapses into
+    the same fuzzy_key as the VC release.
+    """
+
+    def test_virtual_console_tag_extracted(self):
+        result = parse_filename("Alien Soldier (USA) (Virtual Console).zip")
+        assert result.release_type == "Virtual Console"
+        # Region tag still works in parallel.
+        assert result.region == "USA"
+
+    def test_switch_online_tag_extracted(self):
+        result = parse_filename("F-Zero (USA) (Switch Online).sfc")
+        assert result.release_type == "Switch Online"
+
+    def test_genesis_mini_tag_extracted(self):
+        result = parse_filename("Sonic (USA) (Genesis Mini).md")
+        assert result.release_type == "Genesis Mini"
+
+    def test_no_release_tag(self):
+        result = parse_filename("Sonic (USA).md")
+        assert result.release_type is None
+
+    def test_unknown_paren_does_not_become_release_type(self):
+        result = parse_filename("Game (RetroPie).smc")
+        assert result.release_type is None
+
+    def test_display_title_includes_release_type(self):
+        """User sees a distinct title for the VC release in the game list."""
+        result = parse_filename("Alien Soldier (USA) (Virtual Console).zip")
+        assert "Virtual Console" in result.display_title
+        assert result.display_title == "Alien Soldier (Virtual Console)"
+
+    def test_display_title_omits_when_no_release_type(self):
+        result = parse_filename("Alien Soldier (USA).zip")
+        assert "(" not in result.display_title  # no spurious tag added
+
+
 @pytest.mark.parametrize(
     "filename,expected_clean",
     [

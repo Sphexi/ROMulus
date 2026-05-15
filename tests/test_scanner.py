@@ -319,6 +319,37 @@ class TestFullScan:
         result = scan_library(seeded_db, tmp_path)
         assert result.files_found == 1
 
+    def test_release_type_keeps_cartridge_and_vc_as_distinct_games(
+        self, seeded_db, tmp_path
+    ):
+        """Regression for user-reported bug: a cartridge dump and a
+        Virtual Console dump must NOT collapse into the same logical game.
+        The release_type tag is appended to the fuzzy_key so the grouper
+        creates two separate Game records.
+        """
+        md = tmp_path / "genesis"
+        md.mkdir()
+        (md / "Alien Soldier.zip").write_bytes(b"PK\x03\x04")
+        (md / "Alien Soldier (USA) (Virtual Console).zip").write_bytes(b"PK\x03\x04")
+        scan_library(seeded_db, tmp_path)
+
+        games = seeded_db.execute(
+            "SELECT id, title FROM games WHERE system_id = 'megadrive' "
+            "ORDER BY title"
+        ).fetchall()
+        assert len(games) == 2, f"expected 2 distinct games, got: {[g['title'] for g in games]}"
+        titles = {g["title"] for g in games}
+        # One game's title contains the release tag; the other doesn't.
+        assert any("Virtual Console" in t for t in titles)
+        assert any("Virtual Console" not in t for t in titles)
+
+        # Each game has exactly one ROM linked.
+        for game in games:
+            count = seeded_db.execute(
+                "SELECT COUNT(*) FROM roms WHERE game_id = ?", (game["id"],)
+            ).fetchone()[0]
+            assert count == 1, f"game {game['title']!r} should have 1 rom, has {count}"
+
     def test_scan_walks_subdirectories(self, seeded_db, tmp_path):
         _make_tree(tmp_path)
         scan_library(seeded_db, tmp_path)

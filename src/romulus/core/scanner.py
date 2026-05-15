@@ -117,6 +117,41 @@ _STATUS_SAMPLE: frozenset[str] = frozenset({"sample"})
 _STATUS_UNLICENSED: frozenset[str] = frozenset({"unl", "unlicensed"})
 _STATUS_HOMEBREW: frozenset[str] = frozenset({"homebrew", "aftermarket"})
 
+# Re-release / platform-port tags that ARE identity-bearing — they distinguish
+# a re-release from the original ROM rather than just describing a variant.
+# Stripping these into a shared fuzzy_key collapses the cartridge dump and the
+# Virtual Console / Switch Online / mini-console / arcade-port version into a
+# single game, which is wrong: the underlying bytes are usually different and
+# users expect them as distinct entries.
+_RELEASE_TYPE_TOKENS: frozenset[str] = frozenset(
+    {
+        "virtual console",
+        "wii virtual console",
+        "wii u virtual console",
+        "3ds virtual console",
+        "switch online",
+        "nso",
+        "genesis mini",
+        "mega drive mini",
+        "snes mini",
+        "snes classic",
+        "nes classic",
+        "nes mini",
+        "playstation classic",
+        "ps classic",
+        "sega channel",
+        "gametap",
+        "eshop",
+        "psn",
+        "playchoice-10",
+        "vs.",
+        "broadband adapter",
+        "satellaview",
+        "sufami turbo",
+        "32x",
+    }
+)
+
 # Compiled regexes (reused across thousands of files in a real scan).
 # ``_TAG_GROUP_RE`` matches both ``(...)`` and ``[...]`` groups — the scanner
 # parses both. The DAT parser only needs the ``(...)`` form (see dat_parser.py).
@@ -155,6 +190,7 @@ class ParsedFilename:
     region: str | None = None
     revision: str | None = None
     disc_number: int | None = None
+    release_type: str | None = None
     status: list[str] = field(default_factory=list)
     is_hack: bool = False
     is_homebrew: bool = False
@@ -247,7 +283,12 @@ def _classify_paren_tag(content: str) -> tuple[str, str]:
     """Classify a parenthesized tag group. Returns (kind, normalized_value).
 
     kind ∈ {region, revision, disc, prototype, beta, demo, sample,
-            unlicensed, homebrew, unknown}.
+            unlicensed, homebrew, release, unknown}.
+
+    ``release`` covers identity-bearing tags like "Virtual Console" or
+    "Switch Online" that distinguish a re-release from the original ROM.
+    The grouper folds these into the fuzzy_key so the cartridge dump and
+    the VC release end up as distinct games.
     """
     stripped = content.strip()
     lower = stripped.lower()
@@ -268,6 +309,8 @@ def _classify_paren_tag(content: str) -> tuple[str, str]:
         return "unlicensed", stripped
     if lower in _STATUS_HOMEBREW:
         return "homebrew", stripped
+    if lower in _RELEASE_TYPE_TOKENS:
+        return "release", stripped
     # Region: every comma-separated token must be a known region/language code.
     parts = [p.strip().lower() for p in stripped.split(",") if p.strip()]
     if parts and all(p in _REGION_TOKENS for p in parts):
@@ -319,6 +362,7 @@ def parse_filename(filename: str) -> ParsedFilename:
     region: str | None = None
     revision: str | None = None
     disc_number: int | None = None
+    release_type: str | None = None
     status: list[str] = []
 
     is_hack = False
@@ -385,6 +429,8 @@ def parse_filename(filename: str) -> ParsedFilename:
             elif kind == "homebrew":
                 is_homebrew = True
                 status.append("homebrew")
+            elif kind == "release" and release_type is None:
+                release_type = value
 
     # Strip every tag group and collapse whitespace.
     clean = _TAG_GROUP_RE.sub("", stem)
@@ -393,6 +439,10 @@ def parse_filename(filename: str) -> ParsedFilename:
     clean = re.sub(r"[\s_\-]+$", "", clean)
 
     display = _move_trailing_article_to_front(clean)
+    # Re-release tags stay in the display title so the user can tell a VC
+    # release apart from the cartridge in the game list.
+    if release_type:
+        display = f"{display} ({release_type})"
 
     return ParsedFilename(
         clean_name=clean,
@@ -401,6 +451,7 @@ def parse_filename(filename: str) -> ParsedFilename:
         region=region,
         revision=revision,
         disc_number=disc_number,
+        release_type=release_type,
         status=status,
         is_hack=is_hack,
         is_homebrew=is_homebrew,
@@ -419,12 +470,18 @@ def parse_filename(filename: str) -> ParsedFilename:
 # ---------------------------------------------------------------------------
 
 
-def generate_fuzzy_key(clean_name: str) -> str:
+def generate_fuzzy_key(clean_name: str, release_type: str | None = None) -> str:
     """Reduce a parsed title to a stable alphanumeric comparison key.
 
     Implements the seven normalization steps from ROM-DEDUP-METHODOLOGY.md §3.2.
     The input is the already-extension-stripped, already-tag-stripped title from
     `parse_filename().clean_name`.
+
+    ``release_type`` (e.g. "Virtual Console", "Switch Online", "Genesis Mini")
+    is appended to the key when present so re-releases stay distinct from the
+    original ROM. Without this, both ``Alien Soldier.zip`` and
+    ``Alien Soldier (Virtual Console).zip`` collapse to ``aliensoldier`` and
+    the grouper merges them into a single game.
     """
     name = clean_name
 
@@ -454,6 +511,10 @@ def generate_fuzzy_key(clean_name: str) -> str:
     # Step 6 + 7: lowercase, strip non-alphanumeric.
     name = name.lower()
     name = re.sub(r"[^a-z0-9]", "", name)
+    if release_type:
+        suffix = re.sub(r"[^a-z0-9]", "", release_type.lower())
+        if suffix:
+            name = f"{name}__{suffix}"
     return name
 
 
@@ -608,7 +669,7 @@ def scan_library(
                 continue
 
             parsed = parse_filename(filename)
-            fuzzy = generate_fuzzy_key(parsed.clean_name)
+            fuzzy = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
 
             queries.upsert_rom(
                 conn,

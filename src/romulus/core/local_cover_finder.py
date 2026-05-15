@@ -171,8 +171,10 @@ def _build_image_bucket(
                 if img_path.suffix.lower() not in IMAGE_EXTENSIONS:
                     continue
                 # Compute the fuzzy key for the image stem (tag-stripped like ROM names).
+                # release_type is included so a `Sonic (Virtual Console).png`
+                # bucket-keys differently from `Sonic.png` and matches its sibling ROM.
                 parsed = parse_filename(entry.name)
-                fkey = generate_fuzzy_key(parsed.clean_name)
+                fkey = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
                 if not fkey:
                     continue
                 cover_type = _infer_cover_type(img_path)
@@ -227,8 +229,12 @@ def find_local_covers_for_rom(
 
     rom_stem = Path(rom_path).stem
     stem_parsed = parse_filename(rom_stem)
-    stem_key = generate_fuzzy_key(stem_parsed.clean_name)
-    clean_key = generate_fuzzy_key(clean_name) if clean_name else ""
+    stem_key = generate_fuzzy_key(stem_parsed.clean_name, stem_parsed.release_type)
+    clean_key = (
+        generate_fuzzy_key(clean_name, stem_parsed.release_type)
+        if clean_name
+        else ""
+    )
 
     # Deduplicate candidate keys while preserving priority order.
     seen: set[str] = set()
