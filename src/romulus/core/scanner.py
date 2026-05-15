@@ -57,6 +57,14 @@ SIDE_FILE_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
+# Archive containers accepted as ROMs regardless of the system's native
+# extension list. Most retro libraries store cartridge ROMs zipped (smaller,
+# de facto standard), so a ``.zip`` inside a recognised system folder is a
+# ROM by convention. The hasher cracks the archive open during Heavy Scan to
+# match against DAT entries; Quick Scan just enrols the container and lets
+# Layer-3 sort identity out.
+ARCHIVE_EXTENSIONS: frozenset[str] = frozenset({".zip", ".7z"})
+
 # Articles to fold for fuzzy comparison. Multi-language coverage matches
 # ROM-DEDUP-METHODOLOGY.md §3.2.
 _ARTICLES: frozenset[str] = frozenset(
@@ -174,8 +182,15 @@ def is_rom_file(filename: str, accepted_extensions: list[str] | set[str]) -> boo
     """Return True if `filename` has an extension accepted by this system.
 
     `accepted_extensions` should contain lowercase extensions with leading dots.
+
+    Archive containers (``.zip``, ``.7z``) are always accepted regardless of the
+    system's native extension list, because most retro libraries store
+    cartridge ROMs zipped. The hasher inspects archive contents during Heavy
+    Scan; Quick Scan just enrols the file under the folder's detected system.
     """
     ext = Path(filename).suffix.lower()
+    if ext in ARCHIVE_EXTENSIONS:
+        return True
     return ext in set(accepted_extensions)
 
 

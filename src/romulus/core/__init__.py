@@ -45,6 +45,7 @@ from romulus.core.organizer import (
     find_renameable_roms,
 )
 from romulus.core.scanner import (
+    ARCHIVE_EXTENSIONS,
     SIDE_FILE_EXTENSIONS,
     ParsedFilename,
     ScanResult,
@@ -62,6 +63,7 @@ __all__ = [
     "ACTION_DELETE_DUPLICATE",
     "ACTION_MERGE_FOLDER",
     "ACTION_RENAME",
+    "ARCHIVE_EXTENSIONS",
     "BUILTIN_PROFILES_DIR",
     "SIDE_FILE_EXTENSIONS",
     "DatEntry",

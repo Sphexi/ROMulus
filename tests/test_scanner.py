@@ -126,6 +126,19 @@ class TestIsRomFile:
     def test_unknown_extension_rejected(self):
         assert is_rom_file("Game.gba", [".sfc", ".smc"]) is False
 
+    def test_zip_accepted_even_when_not_in_system_extensions(self):
+        """Genesis/MD ROMs are typically stored zipped, but megadrive's
+        accepted_extensions list only carries .md/.gen/.bin/.smd. The scanner
+        accepts .zip universally so those files don't get silently dropped.
+        """
+        assert is_rom_file("Sonic.zip", [".md", ".gen", ".bin"]) is True
+
+    def test_7z_accepted_even_when_not_in_system_extensions(self):
+        assert is_rom_file("Sonic.7z", [".md", ".gen", ".bin"]) is True
+
+    def test_uppercase_zip_accepted(self):
+        assert is_rom_file("Game.ZIP", [".sfc"]) is True
+
 
 # ---------------------------------------------------------------------------
 # Fuzzy key generation
@@ -279,6 +292,32 @@ class TestFullScan:
             "SELECT system_id FROM roms WHERE filename LIKE '%Sonic%'"
         ).fetchall()
         assert all(row[0] == "megadrive" for row in rows)
+
+    def test_scan_enrolls_zipped_genesis_roms(self, seeded_db, tmp_path):
+        """Regression for user-reported bug: a genesis folder of .zip + .srm
+        files was silently skipped because megadrive's accepted_extensions
+        didn't include .zip. Archives are now universally accepted.
+        """
+        genesis = tmp_path / "genesis"
+        genesis.mkdir()
+        (genesis / "Sonic the Hedgehog (USA).zip").write_bytes(b"PK\x03\x04" * 16)
+        (genesis / "Streets of Rage 2 (USA).zip").write_bytes(b"PK\x03\x04" * 16)
+        (genesis / "Sonic the Hedgehog (USA).srm").write_bytes(b"save data")
+        result = scan_library(seeded_db, tmp_path)
+        assert result.files_found == 2  # both zips enrolled
+        rows = seeded_db.execute(
+            "SELECT filename, system_id, extension FROM roms ORDER BY filename"
+        ).fetchall()
+        assert len(rows) == 2
+        assert all(r["system_id"] == "megadrive" for r in rows)
+        assert all(r["extension"] == ".zip" for r in rows)
+
+    def test_scan_enrolls_7z_archives(self, seeded_db, tmp_path):
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Game.7z").write_bytes(b"7z\xbc\xaf\x27\x1c")
+        result = scan_library(seeded_db, tmp_path)
+        assert result.files_found == 1
 
     def test_scan_walks_subdirectories(self, seeded_db, tmp_path):
         _make_tree(tmp_path)
