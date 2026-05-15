@@ -28,6 +28,14 @@ Export workflow:
 
 gamelist.xml format — see TECHNICAL_PLAN.md §10 for the XML structure.
 
+**Carry-forward from prior sessions (sessions 5–8):**
+
+- **Atomic file copies.** Every file written by `export_collection` (the ROMs themselves, gamelist.xml, .m3u playlists, copied artwork) MUST use the `tempfile.mkstemp` + `os.replace` pattern from [src/romulus/metadata/libretro.py](../../src/romulus/metadata/libretro.py) `fetch_cover` (Session 6 / Session 8). Copy to a temp file in the destination directory, then `os.replace` to the final path. Prevents partially-written ROMs if the user cancels mid-export or the disk fills up.
+- **ExportWorker signal contract.** Mirror [src/romulus/ui/workers.py](../../src/romulus/ui/workers.py) `ScanWorker` (Session 5) and `EnrichWorker` (Session 6): thread-local `sqlite3.Connection`, emit `progress(int, str)` / `finished_ok(...)` / `failed(str)`, support cooperative cancel via a private exception raised inside the progress callback.
+- **MainWindow integration.** Add an `isRunning()` guard to the Export toolbar handler and extend `closeEvent` to `requestInterruption` + `wait(5000)` on the export worker before the window closes — same hardening pattern Session 8 applied to scan/enrich.
+- **DATs are still placeholders.** [data/dats/](../../data/dats/) contains only synthetic 2-game Logiqx files (Session 3 carry-forward). `games.canonical_name` will be NULL for nearly every game until real No-Intro DATs are committed. gamelist.xml generation must fall back to the parsed `games.title` when `canonical_name` is NULL — do not assume canonical names are populated.
+- **Profile coverage.** The system registry (Session 1) defines 33 systems. Each built-in profile should list folder mappings for every system that target supports; for systems the target does *not* support, mark them as unsupported explicitly (e.g. an empty `folder` or a `supported: false` key) rather than omitting them silently, so a test can verify all 33 systems have an explicit decision per profile.
+
 **Tasks:**
 
 - [ ] Create `src/romulus/core/exporter.py`:

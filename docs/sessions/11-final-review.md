@@ -4,6 +4,15 @@
 
 **Covers:** All sessions since last review (Sessions 9–10) plus full project review
 
+**Carry-forward items to resolve or explicitly defer during this review:**
+
+- **Bundled DATs are placeholders.** [data/dats/](../../data/dats/) contains 2 synthetic Logiqx files (SNES + GB, 1 game each) from Session 3. Either commit real No-Intro DATs before tagging v0.1.0 or document in README how users download and install them. Heavy Scan match rates are misleading until this is fixed; flag it loudly in the README's "Known limitations" section if you defer.
+- **ScreenScraper "Test connection" button is disabled.** Wired up to nothing in [src/romulus/ui/settings_dialog.py](../../src/romulus/ui/settings_dialog.py) (Sessions 5–6). When you wire it during polish, hit the ScreenScraper endpoint with the *current form values* (not the saved config) so users can validate credentials before saving.
+- **Credential storage is plaintext.** Session 8 mitigated this with [src/romulus/db/connection.py](../../src/romulus/db/connection.py) `_restrict_db_permissions` (POSIX 0o600 on the DB plus `-wal` / `-shm` siblings). Final review must decide whether to escalate to system keyring (`keyring` package) for v0.1.0 or document the current posture as a known limitation in README.
+- **DAT and profile shipping policy.** README must document what ships in the wheel vs what users supply themselves, and how to point Romulus at user-managed DAT/profile folders (`dat_paths` config; built-in `data/profiles/` vs `~/.romulus/profiles/`).
+- **Worker contract is load-bearing.** ScanWorker (Session 5), EnrichWorker (Session 6), and any new workers from Sessions 9/10 all follow the same pattern: per-thread `sqlite3.Connection`, `progress` / `finished_ok` / `failed` signals, cooperative cancel via a private exception, `isRunning()` guard on the toolbar handler, and `requestInterruption` + `wait()` in `closeEvent`. If you find a worker that deviates, fix it during this review — cross-thread SQLite connections are a recipe for `ProgrammingError: SQLite objects created in a thread can only be used in that same thread`.
+- **Atomic file writes pattern.** The `tempfile.mkstemp` + `os.replace` pattern from [src/romulus/metadata/libretro.py](../../src/romulus/metadata/libretro.py) `fetch_cover` (Session 6 / Session 8) should be applied anywhere the app writes a user-visible file — covers, exports, organize renames, gamelist.xml. Grep `with open(..., "wb")` and `shutil.copy` in `src/romulus/` to audit.
+
 **Tasks:**
 
 - [ ] Read completion summaries from all build sessions since Session 8 review

@@ -20,6 +20,12 @@ Organize rules:
 - Hacks: never merge or deduplicate against originals
 - Collisions: same name but different content → flag for manual review, never overwrite
 
+**Carry-forward from prior sessions (sessions 5–8):**
+
+- **Atomic file moves.** When renaming or moving ROM files inside `execute_plan`, use the `tempfile.mkstemp` + `os.replace` pattern established in [src/romulus/metadata/libretro.py](../../src/romulus/metadata/libretro.py) `fetch_cover` (Session 6, hardened in Session 8). Write to a temp file in the destination directory, then `os.replace` to the final path — atomic on both POSIX and Windows, survives a mid-operation crash, and avoids leaving half-renamed ROMs behind.
+- **OrganizeWorker signal contract.** Any new QThread worker MUST mirror [src/romulus/ui/workers.py](../../src/romulus/ui/workers.py) `ScanWorker` (Session 5) and `EnrichWorker` (Session 6): open a thread-local `sqlite3.Connection` inside `run()` (never share the main thread's connection), emit `progress(int, str)` per item, `finished_ok(...)` on success with a result struct, `failed(str)` on exception, and support cooperative cancel via a private exception raised from inside the progress callback.
+- **MainWindow integration.** Add an `isRunning()` guard to the Organize toolbar handler so a double-click can't race two workers on the same DB, and extend `closeEvent` to `requestInterruption` + `wait(5000)` on the live worker before the window closes — both patterns landed in Session 8 for the scan/enrich workers and the organize worker must follow the same rules.
+
 Action types:
 - `merge_folder`: move all files from source folder to target folder (source is an alias of target)
 - `rename`: rename file to canonical No-Intro name
