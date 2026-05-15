@@ -130,25 +130,24 @@ systems:
     folder: ""
     supported: false
   # --- Extended registry (v0.1.0 DAT-driven expansion) ---
-  # These platforms entered SYSTEM_REGISTRY because No-Intro DATs
-  # for them ship in data/dats/. Folder mappings are deferred to a
-  # v0.2.0 profile pass; for now we list each one with
-  # supported: false so the exporter skips them explicitly rather
-  # than silently omitting them (session-10 carry-forward rule).
+  # The Pocket only runs systems that have a public openFPGA core. The
+  # working set as of 2026: 2600/5200/7800, colecovision, intellivision,
+  # vectrex, channelf, ngp/ngpc, wonderswan/color, pokemini. Everything
+  # else in the expansion remains unsupported.
   # -- Atari --
   atari5200:
-    folder: ""
-    supported: false
+    folder: "5200/common"
+    extensions: [".a52", ".bin", ".rom"]
   jaguar:
     folder: ""
     supported: false
   # -- Bandai --
   wonderswan:
-    folder: ""
-    supported: false
+    folder: "wonderswan/common"
+    extensions: [".ws"]
   wonderswancolor:
-    folder: ""
-    supported: false
+    folder: "wonderswan/common"
+    extensions: [".wsc", ".ws"]
   # -- Benesse --
   pocketchallengev2:
     folder: ""
@@ -162,8 +161,8 @@ systems:
     supported: false
   # -- Coleco --
   colecovision:
-    folder: ""
-    supported: false
+    folder: "coleco/common"
+    extensions: [".col", ".bin", ".rom"]
   # -- Commodore --
   c64plus4:
     folder: ""
@@ -185,16 +184,16 @@ systems:
     supported: false
   # -- Fairchild --
   channelf:
-    folder: ""
-    supported: false
+    folder: "channel_f/common"
+    extensions: [".bin", ".chf", ".rom"]
   # -- Funtech --
   superacan:
     folder: ""
     supported: false
   # -- GCE --
   vectrex:
-    folder: ""
-    supported: false
+    folder: "vectrex/common"
+    extensions: [".vec", ".bin", ".gam"]
   # -- GamePark --
   gp32:
     folder: ""
@@ -223,12 +222,13 @@ systems:
     supported: false
   # -- Mattel --
   intellivision:
-    folder: ""
-    supported: false
+    folder: "intv/common"
+    extensions: [".int", ".bin", ".rom", ".itv"]
   # -- NEC --
   supergrafx:
-    folder: ""
-    supported: false
+    # SuperGrafx ROMs play via the agg23 PCE core.
+    folder: "pce/common"
+    extensions: [".sgx", ".pce"]
   # -- Nintendo --
   ereader:
     folder: ""
@@ -237,8 +237,8 @@ systems:
     folder: ""
     supported: false
   pokemini:
-    folder: ""
-    supported: false
+    folder: "pokemini/common"
+    extensions: [".min"]
   satellaview:
     folder: ""
     supported: false
@@ -257,8 +257,9 @@ systems:
     folder: ""
     supported: false
   sg1000:
-    folder: ""
-    supported: false
+    # SG-1000 ROMs play via the Master System core on Pocket.
+    folder: "sms/common"
+    extensions: [".sg", ".bin", ".rom"]
   # -- Tiger --
   gamecom:
     folder: ""
@@ -272,5 +273,35 @@ systems:
     supported: false
   # -- Watara --
   supervision:
+    folder: ""
+    supported: false
+  # --- Digital-distribution / install-package era ---
+  # Pocket hardware cannot run any of these; all unsupported.
+  wii:
+    folder: ""
+    supported: false
+  wiiu:
+    folder: ""
+    supported: false
+  n3ds:
+    folder: ""
+    supported: false
+  dsiware:
+    folder: ""
+    supported: false
+  psvita:
+    folder: ""
+    supported: false
+  ps3:
+    folder: ""
+    supported: false
+  xbox360:
+    folder: ""
+    supported: false
+  # --- Mobile / PDA ---
+  j2me:
+    folder: ""
+    supported: false
+  palmos:
     folder: ""
     supported: false

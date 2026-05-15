@@ -668,28 +668,203 @@ class TestDatNameAliases:
     def test_casio_pv1000_maps_to_pv1000(self, tmp_path: Path) -> None:
         assert self._entry_system(tmp_path, "Casio - PV-1000") == "pv1000"
 
-    # ---- Intentionally unmapped (digital store / installer / mobile / niche) ----
+    # ---- Digital-distribution / install-package era (now mapped) ----
+    # These were "intentionally unmapped" in v0.1.0 first-pass; the
+    # v0.1.0 final-pass routes them onto real SystemDefs so the bundled
+    # CDN / PSN / Xbox Live DATs stop dropping to None.
 
-    def test_ibm_pc_is_intentionally_unmapped(self, tmp_path: Path) -> None:
-        assert self._entry_system(tmp_path, "IBM - PC and Compatibles") is None
-
-    def test_xbox360_digital_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+    def test_wii_wad_maps_to_wii(self, tmp_path: Path) -> None:
         assert (
-            self._entry_system(tmp_path, "Microsoft - XBOX 360 (Digital)") is None
+            self._entry_system(tmp_path, "Nintendo - Wii (Digital) (WAD)") == "wii"
         )
 
-    def test_psn_installer_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+    def test_wii_cdn_maps_to_wii(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Wii (Digital) (CDN)") == "wii"
+        )
+
+    def test_wiiu_digital_maps_to_wiiu(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Wii U (Digital)") == "wiiu"
+        )
+
+    def test_wiiu_cdn_maps_to_wiiu(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Wii U (Digital) (CDN)")
+            == "wiiu"
+        )
+
+    def test_3ds_digital_maps_to_n3ds(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Nintendo 3DS (Digital)")
+            == "n3ds"
+        )
+
+    def test_3ds_cdn_double_typo_maps_to_n3ds(self, tmp_path: Path) -> None:
+        # No-Intro's file has a literal "(CDN) (CDN)" double-suffix typo;
+        # preserved verbatim in the alias list.
+        assert (
+            self._entry_system(
+                tmp_path, "Nintendo - Nintendo 3DS (Digital) (CDN) (CDN)"
+            )
+            == "n3ds"
+        )
+
+    def test_3ds_encrypted_maps_to_n3ds(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Nintendo 3DS (Encrypted)")
+            == "n3ds"
+        )
+
+    def test_new_3ds_digital_maps_to_n3ds(self, tmp_path: Path) -> None:
+        # New 3DS is hardware-distinct but the ROM catalogue lives under the
+        # same logical "n3ds" id; Citra / Lime3DS handle both.
+        assert (
+            self._entry_system(tmp_path, "Nintendo - New Nintendo 3DS (Digital)")
+            == "n3ds"
+        )
+
+    def test_new_3ds_encrypted_maps_to_n3ds(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Nintendo - New Nintendo 3DS (Encrypted)"
+            )
+            == "n3ds"
+        )
+
+    def test_dsiware_maps_to_dsiware(self, tmp_path: Path) -> None:
+        # DSiWare (digital eShop titles) is a separate SystemDef from the
+        # DS cartridge ``nds`` system — different content, different size
+        # bucket, but both run on melonDS / DeSmuME.
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Nintendo DSi (Digital)")
+            == "dsiware"
+        )
+
+    def test_psvita_vpk_maps_to_psvita(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Sony - PlayStation Vita (VPK)")
+            == "psvita"
+        )
+
+    def test_psvita_psn_decrypted_maps_to_psvita(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Vita (PSN) (Decrypted)"
+            )
+            == "psvita"
+        )
+
+    def test_psvita_psn_encrypted_maps_to_psvita(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Vita (PSN) (Encrypted)"
+            )
+            == "psvita"
+        )
+
+    def test_ps3_psn_decrypted_maps_to_ps3(self, tmp_path: Path) -> None:
         assert (
             self._entry_system(
                 tmp_path, "Sony - PlayStation 3 (PSN) (Decrypted)"
             )
+            == "ps3"
+        )
+
+    def test_ps3_psn_encrypted_maps_to_ps3(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation 3 (PSN) (Encrypted)"
+            )
+            == "ps3"
+        )
+
+    def test_xbox360_digital_maps_to_xbox360(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Microsoft - XBOX 360 (Digital)")
+            == "xbox360"
+        )
+
+    def test_xbox360_title_updates_maps_to_xbox360(
+        self, tmp_path: Path
+    ) -> None:
+        assert (
+            self._entry_system(
+                tmp_path,
+                "Microsoft - XBOX 360 (Title Updates) (Discontinued)",
+            )
+            == "xbox360"
+        )
+
+    def test_psp_psn_decrypted_maps_to_psp(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Portable (PSN) (Decrypted)"
+            )
+            == "psp"
+        )
+
+    def test_psp_psn_encrypted_maps_to_psp(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Portable (PSN) (Encrypted)"
+            )
+            == "psp"
+        )
+
+    def test_psp_psx2psp_maps_to_psp(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Portable (PSX2PSP)"
+            )
+            == "psp"
+        )
+
+    def test_j2me_maps_to_j2me(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Mobile - J2ME") == "j2me"
+
+    def test_palm_os_maps_to_palmos(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Mobile - Palm OS") == "palmos"
+
+    # ---- Intentionally unmapped (still no playable path) ----
+
+    def test_ibm_pc_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "IBM - PC and Compatibles") is None
+
+    def test_mobile_symbian_is_intentionally_unmapped(
+        self, tmp_path: Path
+    ) -> None:
+        assert self._entry_system(tmp_path, "Mobile - Symbian") is None
+
+    def test_mobile_zeebo_is_intentionally_unmapped(
+        self, tmp_path: Path
+    ) -> None:
+        assert self._entry_system(tmp_path, "Mobile - Zeebo") is None
+
+    def test_ps4_psn_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation 4 (PSN) (Encrypted)"
+            )
             is None
         )
 
-    def test_wii_cdn_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+    def test_psp_umd_music_is_intentionally_unmapped(
+        self, tmp_path: Path
+    ) -> None:
         assert (
-            self._entry_system(tmp_path, "Nintendo - Wii (Digital) (CDN)") is None
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Portable (UMD Music)"
+            )
+            is None
         )
 
-    def test_mobile_j2me_is_intentionally_unmapped(self, tmp_path: Path) -> None:
-        assert self._entry_system(tmp_path, "Mobile - J2ME") is None
+    def test_psp_umd_video_is_intentionally_unmapped(
+        self, tmp_path: Path
+    ) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation Portable (UMD Video)"
+            )
+            is None
+        )

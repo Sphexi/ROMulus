@@ -122,147 +122,182 @@ systems:
     folder: "amstradcpc"
     extensions: [".dsk", ".cdt", ".cpr", ".zip"]
   # --- Extended registry (v0.1.0 DAT-driven expansion) ---
-  # These platforms entered SYSTEM_REGISTRY because No-Intro DATs
-  # for them ship in data/dats/. Folder mappings are deferred to a
-  # v0.2.0 profile pass; for now we list each one with
-  # supported: false so the exporter skips them explicitly rather
-  # than silently omitting them (session-10 carry-forward rule).
+  # Batocera is a full Linux distro with libretro + standalone cores for
+  # nearly every retro platform. Folder names below match the upstream
+  # Batocera EmulationStation system list at https://wiki.batocera.org/.
   # -- Atari --
   atari5200:
-    folder: ""
-    supported: false
+    folder: "atari5200"
+    extensions: [".a52", ".bin", ".rom", ".zip"]
   jaguar:
-    folder: ""
-    supported: false
+    folder: "jaguar"
+    extensions: [".j64", ".jag", ".rom", ".bin", ".zip"]
   # -- Bandai --
   wonderswan:
-    folder: ""
-    supported: false
+    folder: "wswan"
+    extensions: [".ws", ".zip"]
   wonderswancolor:
-    folder: ""
-    supported: false
+    folder: "wswanc"
+    extensions: [".wsc", ".ws", ".zip"]
   # -- Benesse --
   pocketchallengev2:
-    folder: ""
-    supported: false
+    # Batocera doesn't ship a PCv2-specific core, but the WonderSwan core
+    # (Mednafen / Cygne) reads PCv2 carts since the hardware is identical.
+    folder: "wswan"
+    extensions: [".pc2", ".ws", ".bin", ".zip"]
   # -- Casio --
   casioloopy:
-    folder: ""
-    supported: false
+    # MAME-driven, no dedicated folder; use libretro convention.
+    folder: "casloopy"
+    extensions: [".bin", ".zip"]
   pv1000:
-    folder: ""
-    supported: false
+    folder: "pv1000"
+    extensions: [".bin", ".zip"]
   # -- Coleco --
   colecovision:
-    folder: ""
-    supported: false
+    folder: "colecovision"
+    extensions: [".col", ".bin", ".rom", ".zip"]
   # -- Commodore --
   c64plus4:
-    folder: ""
-    supported: false
+    folder: "plus4"
+    extensions: [".prg", ".d64", ".t64", ".tap", ".crt", ".zip"]
   vic20:
-    folder: ""
-    supported: false
+    folder: "vic20"
+    extensions: [".prg", ".crt", ".t64", ".tap", ".d64", ".zip"]
   # -- Emerson --
   arcadia2001:
-    folder: ""
-    supported: false
+    folder: "arcadia"
+    extensions: [".bin", ".zip"]
   # -- Entex --
   adventurevision:
-    folder: ""
-    supported: false
+    folder: "advision"
+    extensions: [".bin", ".zip"]
   # -- Epoch --
   scv:
-    folder: ""
-    supported: false
+    folder: "scv"
+    extensions: [".bin", ".zip"]
   # -- Fairchild --
   channelf:
-    folder: ""
-    supported: false
+    folder: "channelf"
+    extensions: [".bin", ".chf", ".rom", ".zip"]
   # -- Funtech --
   superacan:
-    folder: ""
-    supported: false
+    folder: "supracan"
+    extensions: [".bin", ".zip"]
   # -- GCE --
   vectrex:
-    folder: ""
-    supported: false
+    folder: "vectrex"
+    extensions: [".vec", ".bin", ".gam", ".zip"]
   # -- GamePark --
   gp32:
-    folder: ""
-    supported: false
+    folder: "gp32"
+    extensions: [".gpk", ".smc", ".zip"]
   # -- Hartung --
   gamemaster:
-    folder: ""
-    supported: false
+    folder: "gmaster"
+    extensions: [".bin", ".zip"]
   # -- Konami --
   picno:
-    folder: ""
-    supported: false
+    # No dedicated core; folder retained so user-supplied dumps stay grouped.
+    folder: "picno"
+    extensions: [".bin", ".zip"]
   # -- LeapFrog --
   leappad:
-    folder: ""
-    supported: false
+    folder: "leappad"
+    extensions: [".bin", ".zip"]
   leapster:
-    folder: ""
-    supported: false
+    folder: "leapster"
+    extensions: [".bin", ".zip"]
   myfirstleappad:
-    folder: ""
-    supported: false
+    folder: "myfirstleappad"
+    extensions: [".bin", ".zip"]
   # -- Magnavox --
   odyssey2:
-    folder: ""
-    supported: false
+    folder: "o2em"
+    extensions: [".bin", ".zip"]
   # -- Mattel --
   intellivision:
-    folder: ""
-    supported: false
+    folder: "intellivision"
+    extensions: [".int", ".bin", ".rom", ".itv", ".zip"]
   # -- NEC --
   supergrafx:
-    folder: ""
-    supported: false
+    folder: "supergrafx"
+    extensions: [".sgx", ".pce", ".zip"]
   # -- Nintendo --
   ereader:
-    folder: ""
-    supported: false
+    # libretro-vba-next can read e-Reader dotcodes via the GBA core; the
+    # standalone Batocera folder is "ereader".
+    folder: "ereader"
+    extensions: [".bin", ".raw", ".zip"]
   n64dd:
-    folder: ""
-    supported: false
+    folder: "n64dd"
+    extensions: [".ndd", ".zip"]
   pokemini:
-    folder: ""
-    supported: false
+    folder: "pokemini"
+    extensions: [".min", ".zip"]
   satellaview:
-    folder: ""
-    supported: false
+    folder: "satellaview"
+    extensions: [".bs", ".sfc", ".zip"]
   sufami:
-    folder: ""
-    supported: false
+    folder: "sufami"
+    extensions: [".st", ".sfc", ".zip"]
   # -- RCA --
   studio2:
-    folder: ""
-    supported: false
+    folder: "studio2"
+    extensions: [".bin", ".zip"]
   # -- Sega --
   beena:
-    folder: ""
-    supported: false
+    folder: "beena"
+    extensions: [".bin", ".zip"]
   segapico:
-    folder: ""
-    supported: false
+    folder: "pico"
+    extensions: [".bin", ".md", ".zip"]
   sg1000:
-    folder: ""
-    supported: false
+    folder: "sg1000"
+    extensions: [".sg", ".bin", ".rom", ".zip"]
   # -- Tiger --
   gamecom:
-    folder: ""
-    supported: false
+    folder: "gamecom"
+    extensions: [".tgc", ".bin", ".zip"]
   # -- VTech --
   creativision:
-    folder: ""
-    supported: false
+    folder: "crvision"
+    extensions: [".bin", ".zip"]
   vsmile:
-    folder: ""
-    supported: false
+    folder: "vsmile"
+    extensions: [".bin", ".zip"]
   # -- Watara --
   supervision:
-    folder: ""
-    supported: false
+    folder: "supervision"
+    extensions: [".sv", ".bin", ".zip"]
+  # --- Digital-distribution / install-package era ---
+  # Batocera ships Dolphin (Wii), Cemu (Wii U), Citra/Lime3DS (3DS),
+  # melonDS (DSi/DSiWare), vita3k (PS Vita), RPCS3 (PS3), Xenia (Xbox 360).
+  wii:
+    folder: "wii"
+    extensions: [".iso", ".wbfs", ".rvz", ".wia", ".ciso", ".gcz", ".wad", ".nkit.iso"]
+  wiiu:
+    folder: "wiiu"
+    extensions: [".wud", ".wux", ".wua"]
+  n3ds:
+    folder: "3ds"
+    extensions: [".3ds", ".cia", ".cci", ".cxi", ".app"]
+  dsiware:
+    folder: "dsi"
+    extensions: [".nds", ".tad", ".bin"]
+  psvita:
+    folder: "psvita"
+    extensions: [".vpk", ".pkg", ".mai"]
+  ps3:
+    folder: "ps3"
+    extensions: [".iso", ".pkg", ".rap"]
+  xbox360:
+    folder: "xbox360"
+    extensions: [".iso", ".god", ".xex"]
+  # --- Mobile / PDA ---
+  j2me:
+    folder: "j2me"
+    extensions: [".jar", ".jad"]
+  palmos:
+    folder: "palm"
+    extensions: [".prc", ".pdb", ".pqa"]

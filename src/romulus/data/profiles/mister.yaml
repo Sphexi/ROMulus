@@ -128,29 +128,34 @@ systems:
     folder: "Amstrad"
     extensions: [".dsk", ".cdt", ".cpr", ".zip"]
   # --- Extended registry (v0.1.0 DAT-driven expansion) ---
-  # These platforms entered SYSTEM_REGISTRY because No-Intro DATs
-  # for them ship in data/dats/. Folder mappings are deferred to a
-  # v0.2.0 profile pass; for now we list each one with
-  # supported: false so the exporter skips them explicitly rather
-  # than silently omitting them (session-10 carry-forward rule).
+  # MiSTer is FPGA-only; a SystemDef gets ``supported: true`` here only if
+  # a real hardware core exists in the official MiSTer-devel GitHub set.
+  # Folder names are the published core release folder under /games/.
+  # Sources: https://github.com/MiSTer-devel and the wiki "Console Cores"
+  # / "Computer Cores" pages. Folder names verified against the 2026
+  # mister-devel monthly build manifest.
   # -- Atari --
   atari5200:
-    folder: ""
-    supported: false
+    # Official 5200 core released 2022 as "Atari5200_MiSTer".
+    folder: "ATARI5200"
+    extensions: [".a52", ".bin", ".rom", ".zip"]
   jaguar:
+    # The Jaguar core exists (Jaguar_MiSTer) but cartridge support is
+    # incomplete and CD support is broken; leaving disabled for v0.1.0.
     folder: ""
     supported: false
   # -- Bandai --
   wonderswan:
-    folder: ""
-    supported: false
+    folder: "WonderSwan"
+    extensions: [".ws", ".zip"]
   wonderswancolor:
-    folder: ""
-    supported: false
+    folder: "WonderSwan"
+    extensions: [".wsc", ".ws", ".zip"]
   # -- Benesse --
   pocketchallengev2:
-    folder: ""
-    supported: false
+    # No dedicated core; PCv2 carts run on the WonderSwan core.
+    folder: "WonderSwan"
+    extensions: [".pc2", ".ws", ".bin", ".zip"]
   # -- Casio --
   casioloopy:
     folder: ""
@@ -160,39 +165,42 @@ systems:
     supported: false
   # -- Coleco --
   colecovision:
-    folder: ""
-    supported: false
+    folder: "Coleco"
+    extensions: [".col", ".bin", ".rom", ".zip"]
   # -- Commodore --
   c64plus4:
+    # No Plus/4 core; only C64 and VIC-20 cores ship.
     folder: ""
     supported: false
   vic20:
-    folder: ""
-    supported: false
+    folder: "VIC20"
+    extensions: [".prg", ".crt", ".t64", ".tap", ".d64", ".zip"]
   # -- Emerson --
   arcadia2001:
-    folder: ""
-    supported: false
+    # "Arcadia_MiSTer" core; folder published as "Arcadia".
+    folder: "Arcadia"
+    extensions: [".bin", ".zip"]
   # -- Entex --
   adventurevision:
-    folder: ""
-    supported: false
+    # "AVision_MiSTer"; folder published as "AVision".
+    folder: "AVision"
+    extensions: [".bin", ".zip"]
   # -- Epoch --
   scv:
     folder: ""
     supported: false
   # -- Fairchild --
   channelf:
-    folder: ""
-    supported: false
+    folder: "ChannelF"
+    extensions: [".bin", ".chf", ".rom", ".zip"]
   # -- Funtech --
   superacan:
     folder: ""
     supported: false
   # -- GCE --
   vectrex:
-    folder: ""
-    supported: false
+    folder: "VECTREX"
+    extensions: [".vec", ".bin", ".gam", ".zip"]
   # -- GamePark --
   gp32:
     folder: ""
@@ -217,32 +225,39 @@ systems:
     supported: false
   # -- Magnavox --
   odyssey2:
-    folder: ""
-    supported: false
+    # "Odyssey2_MiSTer" core; folder "ODYSSEY2".
+    folder: "ODYSSEY2"
+    extensions: [".bin", ".zip"]
   # -- Mattel --
   intellivision:
-    folder: ""
-    supported: false
+    folder: "Intellivision"
+    extensions: [".int", ".bin", ".rom", ".itv", ".zip"]
   # -- NEC --
   supergrafx:
-    folder: ""
-    supported: false
+    # SuperGrafx is supported by the TGFX16 core directly.
+    folder: "TGFX16"
+    extensions: [".sgx", ".pce", ".zip"]
   # -- Nintendo --
   ereader:
+    # No e-Reader core; cards are normally read into a GBA, and the GBA
+    # core doesn't read dotcode dumps from disk. Skip for FPGA.
     folder: ""
     supported: false
   n64dd:
+    # The N64 core does not yet support 64DD disk loading.
     folder: ""
     supported: false
   pokemini:
-    folder: ""
-    supported: false
+    folder: "PokemonMini"
+    extensions: [".min", ".zip"]
   satellaview:
-    folder: ""
-    supported: false
+    # Satellaview ROMs play via the SNES core, but the asset routing here
+    # is system-distinct so users keep them grouped.
+    folder: "SNES"
+    extensions: [".bs", ".sfc", ".zip"]
   sufami:
-    folder: ""
-    supported: false
+    folder: "SNES"
+    extensions: [".st", ".sfc", ".zip"]
   # -- RCA --
   studio2:
     folder: ""
@@ -252,11 +267,14 @@ systems:
     folder: ""
     supported: false
   segapico:
+    # Sega Pico runs on the Mega Drive (Genesis) core but requires
+    # special-case BIOS; no separate FPGA folder, mark unsupported.
     folder: ""
     supported: false
   sg1000:
-    folder: ""
-    supported: false
+    # SG-1000 plays on the SMS core ("Mark III" mode).
+    folder: "SMS"
+    extensions: [".sg", ".bin", ".rom", ".zip"]
   # -- Tiger --
   gamecom:
     folder: ""
@@ -270,5 +288,35 @@ systems:
     supported: false
   # -- Watara --
   supervision:
+    folder: ""
+    supported: false
+  # --- Digital-distribution / install-package era ---
+  # MiSTer is FPGA; no core for any 3D-era / digital-distribution system.
+  wii:
+    folder: ""
+    supported: false
+  wiiu:
+    folder: ""
+    supported: false
+  n3ds:
+    folder: ""
+    supported: false
+  dsiware:
+    folder: ""
+    supported: false
+  psvita:
+    folder: ""
+    supported: false
+  ps3:
+    folder: ""
+    supported: false
+  xbox360:
+    folder: ""
+    supported: false
+  # --- Mobile / PDA ---
+  j2me:
+    folder: ""
+    supported: false
+  palmos:
     folder: ""
     supported: false

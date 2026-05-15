@@ -125,42 +125,43 @@ systems:
     folder: ""
     supported: false
   # --- Extended registry (v0.1.0 DAT-driven expansion) ---
-  # These platforms entered SYSTEM_REGISTRY because No-Intro DATs
-  # for them ship in data/dats/. Folder mappings are deferred to a
-  # v0.2.0 profile pass; for now we list each one with
-  # supported: false so the exporter skips them explicitly rather
-  # than silently omitting them (session-10 carry-forward rule).
+  # Onion OS targets the Miyoo Mini's ~1GHz Cortex-A7 SoC. The 8/16-bit
+  # cartridge era runs cleanly; 32-bit handhelds and anything 3D is out of
+  # scope. Folder names follow https://onionui.github.io/docs/emulators .
   # -- Atari --
   atari5200:
-    folder: ""
-    supported: false
+    folder: "FIFTYTWOHUNDRED"
+    extensions: [".a52", ".bin", ".rom", ".zip"]
   jaguar:
+    # Jaguar emulation isn't realistic at Miyoo Mini speeds; skip.
     folder: ""
     supported: false
   # -- Bandai --
   wonderswan:
-    folder: ""
-    supported: false
+    folder: "WS"
+    extensions: [".ws", ".zip"]
   wonderswancolor:
-    folder: ""
-    supported: false
+    folder: "WS"
+    extensions: [".wsc", ".ws", ".zip"]
   # -- Benesse --
   pocketchallengev2:
-    folder: ""
-    supported: false
+    folder: "WS"
+    extensions: [".pc2", ".ws", ".bin", ".zip"]
   # -- Casio --
   casioloopy:
-    folder: ""
-    supported: false
+    # MAME-driven, light; folder set so user-supplied dumps stay grouped.
+    folder: "CASLOOPY"
+    extensions: [".bin", ".zip"]
   pv1000:
-    folder: ""
-    supported: false
+    folder: "PV1000"
+    extensions: [".bin", ".zip"]
   # -- Coleco --
   colecovision:
-    folder: ""
-    supported: false
+    folder: "COLECO"
+    extensions: [".col", ".bin", ".rom", ".zip"]
   # -- Commodore --
   c64plus4:
+    # Onion's commodore core only really covers C64; Plus/4 unsupported.
     folder: ""
     supported: false
   vic20:
@@ -168,36 +169,36 @@ systems:
     supported: false
   # -- Emerson --
   arcadia2001:
-    folder: ""
-    supported: false
+    folder: "ARCADIA"
+    extensions: [".bin", ".zip"]
   # -- Entex --
   adventurevision:
-    folder: ""
-    supported: false
+    folder: "ADVISION"
+    extensions: [".bin", ".zip"]
   # -- Epoch --
   scv:
-    folder: ""
-    supported: false
+    folder: "SCV"
+    extensions: [".bin", ".zip"]
   # -- Fairchild --
   channelf:
-    folder: ""
-    supported: false
+    folder: "CHANNELF"
+    extensions: [".bin", ".chf", ".rom", ".zip"]
   # -- Funtech --
   superacan:
-    folder: ""
-    supported: false
+    folder: "SUPRACAN"
+    extensions: [".bin", ".zip"]
   # -- GCE --
   vectrex:
-    folder: ""
-    supported: false
+    folder: "VECTREX"
+    extensions: [".vec", ".bin", ".gam", ".zip"]
   # -- GamePark --
   gp32:
     folder: ""
     supported: false
   # -- Hartung --
   gamemaster:
-    folder: ""
-    supported: false
+    folder: "GMASTER"
+    extensions: [".bin", ".zip"]
   # -- Konami --
   picno:
     folder: ""
@@ -214,58 +215,89 @@ systems:
     supported: false
   # -- Magnavox --
   odyssey2:
-    folder: ""
-    supported: false
+    folder: "ODYSSEY"
+    extensions: [".bin", ".zip"]
   # -- Mattel --
   intellivision:
-    folder: ""
-    supported: false
+    folder: "INTELLIVISION"
+    extensions: [".int", ".bin", ".rom", ".itv", ".zip"]
   # -- NEC --
   supergrafx:
-    folder: ""
-    supported: false
+    folder: "SGFX"
+    extensions: [".sgx", ".pce", ".zip"]
   # -- Nintendo --
   ereader:
-    folder: ""
-    supported: false
+    # Plays via GBA core; sidebar grouping still distinct.
+    folder: "EREADER"
+    extensions: [".bin", ".raw", ".zip"]
   n64dd:
     folder: ""
     supported: false
   pokemini:
-    folder: ""
-    supported: false
+    folder: "POKE"
+    extensions: [".min", ".zip"]
   satellaview:
-    folder: ""
-    supported: false
+    folder: "SATELLAVIEW"
+    extensions: [".bs", ".sfc", ".zip"]
   sufami:
-    folder: ""
-    supported: false
+    folder: "SUFAMI"
+    extensions: [".st", ".sfc", ".zip"]
   # -- RCA --
   studio2:
-    folder: ""
-    supported: false
+    folder: "STUDIO2"
+    extensions: [".bin", ".zip"]
   # -- Sega --
   beena:
     folder: ""
     supported: false
   segapico:
-    folder: ""
-    supported: false
+    folder: "PICO"
+    extensions: [".bin", ".md", ".zip"]
   sg1000:
-    folder: ""
-    supported: false
+    folder: "SGFX"
+    extensions: [".sg", ".bin", ".rom", ".zip"]
   # -- Tiger --
   gamecom:
-    folder: ""
-    supported: false
+    folder: "GAMECOM"
+    extensions: [".tgc", ".bin", ".zip"]
   # -- VTech --
   creativision:
-    folder: ""
-    supported: false
+    folder: "CRVISION"
+    extensions: [".bin", ".zip"]
   vsmile:
-    folder: ""
-    supported: false
+    folder: "VSMILE"
+    extensions: [".bin", ".zip"]
   # -- Watara --
   supervision:
+    folder: "SUPERVISION"
+    extensions: [".sv", ".bin", ".zip"]
+  # --- Digital-distribution / install-package era ---
+  # Miyoo Mini's Cortex-A7 cannot emulate any of these; all unsupported.
+  wii:
+    folder: ""
+    supported: false
+  wiiu:
+    folder: ""
+    supported: false
+  n3ds:
+    folder: ""
+    supported: false
+  dsiware:
+    folder: ""
+    supported: false
+  psvita:
+    folder: ""
+    supported: false
+  ps3:
+    folder: ""
+    supported: false
+  xbox360:
+    folder: ""
+    supported: false
+  # --- Mobile / PDA ---
+  j2me:
+    folder: "J2ME"
+    extensions: [".jar", ".jad"]
+  palmos:
     folder: ""
     supported: false

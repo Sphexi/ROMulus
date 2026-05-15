@@ -124,147 +124,176 @@ systems:
     folder: "Amstrad CPC"
     extensions: [".dsk", ".cdt", ".cpr", ".zip"]
   # --- Extended registry (v0.1.0 DAT-driven expansion) ---
-  # These platforms entered SYSTEM_REGISTRY because No-Intro DATs
-  # for them ship in data/dats/. Folder mappings are deferred to a
-  # v0.2.0 profile pass; for now we list each one with
-  # supported: false so the exporter skips them explicitly rather
-  # than silently omitting them (session-10 carry-forward rule).
+  # muOS targets more capable Anbernic Cortex-A55 hardware (RG35XX, RG353,
+  # RG406, etc.) so it ships libretro cores for the full cartridge era plus
+  # PSP / NDS / DC at the upper bound. Folder names follow muOS conventions.
   # -- Atari --
   atari5200:
-    folder: ""
-    supported: false
+    folder: "Atari 5200"
+    extensions: [".a52", ".bin", ".rom", ".zip"]
   jaguar:
-    folder: ""
-    supported: false
+    folder: "Atari Jaguar"
+    extensions: [".j64", ".jag", ".rom", ".bin", ".zip"]
   # -- Bandai --
   wonderswan:
-    folder: ""
-    supported: false
+    folder: "Bandai WonderSwan"
+    extensions: [".ws", ".zip"]
   wonderswancolor:
-    folder: ""
-    supported: false
+    folder: "Bandai WonderSwan Color"
+    extensions: [".wsc", ".ws", ".zip"]
   # -- Benesse --
   pocketchallengev2:
-    folder: ""
-    supported: false
+    folder: "Bandai WonderSwan"
+    extensions: [".pc2", ".ws", ".bin", ".zip"]
   # -- Casio --
   casioloopy:
-    folder: ""
-    supported: false
+    folder: "Casio Loopy"
+    extensions: [".bin", ".zip"]
   pv1000:
-    folder: ""
-    supported: false
+    folder: "Casio PV-1000"
+    extensions: [".bin", ".zip"]
   # -- Coleco --
   colecovision:
-    folder: ""
-    supported: false
+    folder: "Coleco ColecoVision"
+    extensions: [".col", ".bin", ".rom", ".zip"]
   # -- Commodore --
   c64plus4:
-    folder: ""
-    supported: false
+    folder: "Commodore Plus-4"
+    extensions: [".prg", ".d64", ".t64", ".tap", ".crt", ".zip"]
   vic20:
-    folder: ""
-    supported: false
+    folder: "Commodore VIC-20"
+    extensions: [".prg", ".crt", ".t64", ".tap", ".d64", ".zip"]
   # -- Emerson --
   arcadia2001:
-    folder: ""
-    supported: false
+    folder: "Emerson Arcadia 2001"
+    extensions: [".bin", ".zip"]
   # -- Entex --
   adventurevision:
-    folder: ""
-    supported: false
+    folder: "Entex Adventure Vision"
+    extensions: [".bin", ".zip"]
   # -- Epoch --
   scv:
-    folder: ""
-    supported: false
+    folder: "Epoch Super Cassette Vision"
+    extensions: [".bin", ".zip"]
   # -- Fairchild --
   channelf:
-    folder: ""
-    supported: false
+    folder: "Fairchild Channel F"
+    extensions: [".bin", ".chf", ".rom", ".zip"]
   # -- Funtech --
   superacan:
-    folder: ""
-    supported: false
+    folder: "Funtech Super A'Can"
+    extensions: [".bin", ".zip"]
   # -- GCE --
   vectrex:
-    folder: ""
-    supported: false
+    folder: "GCE Vectrex"
+    extensions: [".vec", ".bin", ".gam", ".zip"]
   # -- GamePark --
   gp32:
-    folder: ""
-    supported: false
+    folder: "GamePark GP32"
+    extensions: [".gpk", ".smc", ".zip"]
   # -- Hartung --
   gamemaster:
-    folder: ""
-    supported: false
+    folder: "Hartung Game Master"
+    extensions: [".bin", ".zip"]
   # -- Konami --
   picno:
-    folder: ""
-    supported: false
+    folder: "Konami Picno"
+    extensions: [".bin", ".zip"]
   # -- LeapFrog --
   leappad:
-    folder: ""
-    supported: false
+    folder: "LeapFrog LeapPad"
+    extensions: [".bin", ".zip"]
   leapster:
-    folder: ""
-    supported: false
+    folder: "LeapFrog Leapster"
+    extensions: [".bin", ".zip"]
   myfirstleappad:
-    folder: ""
-    supported: false
+    folder: "LeapFrog My First LeapPad"
+    extensions: [".bin", ".zip"]
   # -- Magnavox --
   odyssey2:
-    folder: ""
-    supported: false
+    folder: "Magnavox Odyssey 2"
+    extensions: [".bin", ".zip"]
   # -- Mattel --
   intellivision:
-    folder: ""
-    supported: false
+    folder: "Mattel Intellivision"
+    extensions: [".int", ".bin", ".rom", ".itv", ".zip"]
   # -- NEC --
   supergrafx:
-    folder: ""
-    supported: false
+    folder: "NEC PC Engine SuperGrafx"
+    extensions: [".sgx", ".pce", ".zip"]
   # -- Nintendo --
   ereader:
-    folder: ""
-    supported: false
+    folder: "Nintendo e-Reader"
+    extensions: [".bin", ".raw", ".zip"]
   n64dd:
-    folder: ""
-    supported: false
+    folder: "Nintendo 64DD"
+    extensions: [".ndd", ".zip"]
   pokemini:
-    folder: ""
-    supported: false
+    folder: "Nintendo Pokemon Mini"
+    extensions: [".min", ".zip"]
   satellaview:
-    folder: ""
-    supported: false
+    folder: "Nintendo Satellaview"
+    extensions: [".bs", ".sfc", ".zip"]
   sufami:
-    folder: ""
-    supported: false
+    folder: "Nintendo Sufami Turbo"
+    extensions: [".st", ".sfc", ".zip"]
   # -- RCA --
   studio2:
-    folder: ""
-    supported: false
+    folder: "RCA Studio II"
+    extensions: [".bin", ".zip"]
   # -- Sega --
   beena:
-    folder: ""
-    supported: false
+    folder: "Sega Beena"
+    extensions: [".bin", ".zip"]
   segapico:
-    folder: ""
-    supported: false
+    folder: "Sega Pico"
+    extensions: [".bin", ".md", ".zip"]
   sg1000:
-    folder: ""
-    supported: false
+    folder: "Sega SG-1000"
+    extensions: [".sg", ".bin", ".rom", ".zip"]
   # -- Tiger --
   gamecom:
-    folder: ""
-    supported: false
+    folder: "Tiger Game.com"
+    extensions: [".tgc", ".bin", ".zip"]
   # -- VTech --
   creativision:
-    folder: ""
-    supported: false
+    folder: "VTech CreatiVision"
+    extensions: [".bin", ".zip"]
   vsmile:
-    folder: ""
-    supported: false
+    folder: "VTech V.Smile"
+    extensions: [".bin", ".zip"]
   # -- Watara --
   supervision:
+    folder: "Watara Supervision"
+    extensions: [".sv", ".bin", ".zip"]
+  # --- Digital-distribution / install-package era ---
+  # Anbernic Cortex-A55 handhelds can run melonDS (DSiWare) but not
+  # Wii/Wii U/3DS/PS Vita/PS3/Xbox 360.
+  wii:
     folder: ""
     supported: false
+  wiiu:
+    folder: ""
+    supported: false
+  n3ds:
+    folder: ""
+    supported: false
+  dsiware:
+    folder: "Nintendo DSi"
+    extensions: [".nds", ".tad", ".bin"]
+  psvita:
+    folder: ""
+    supported: false
+  ps3:
+    folder: ""
+    supported: false
+  xbox360:
+    folder: ""
+    supported: false
+  # --- Mobile / PDA ---
+  j2me:
+    folder: "Java J2ME"
+    extensions: [".jar", ".jad"]
+  palmos:
+    folder: "Palm OS"
+    extensions: [".prc", ".pdb", ".pqa"]

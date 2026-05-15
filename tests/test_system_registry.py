@@ -149,10 +149,12 @@ def test_systemdef_pydantic_validates():
 def test_registry_grew_to_cover_bundled_dats():
     """The v0.1.0 expansion adds ~38 SystemDefs to cover bundled No-Intro DATs.
 
+    The v0.1.0 final pass adds 9 more SystemDefs for the digital-install
+    era (Wii, Wii U, 3DS, DSiWare, PS Vita, PS3, Xbox 360, J2ME, Palm OS).
     Locking the count in prevents accidental deletions during refactors. If a
     legitimate addition or removal is made, update this number deliberately.
     """
-    assert len(SYSTEM_REGISTRY) == 71
+    assert len(SYSTEM_REGISTRY) == 80
 
 
 def test_expansion_ids_are_all_present():
@@ -215,3 +217,106 @@ def test_dsi_decrypted_aliased_to_nds():
     """DSi cart dumps share the DS cart slot — treat as the same logical system."""
     nds = next(s for s in SYSTEM_REGISTRY if s.id == "nds")
     assert "Nintendo - Nintendo DSi (Decrypted)" in nds.dat_name_aliases
+
+
+# ---------------------------------------------------------------------------
+# v0.1.0 final pass — digital-install / eShop / PSN / Xbox Live coverage
+# ---------------------------------------------------------------------------
+
+
+def test_digital_install_systems_all_present():
+    """The 9 digital-distribution SystemDefs added in the v0.1.0 final pass."""
+    ids = {s.id for s in SYSTEM_REGISTRY}
+    expected = {
+        "wii",
+        "wiiu",
+        "n3ds",
+        "dsiware",
+        "psvita",
+        "ps3",
+        "xbox360",
+        "j2me",
+        "palmos",
+    }
+    missing = expected - ids
+    assert not missing, f"missing digital-install ids: {sorted(missing)}"
+
+
+def test_wii_aliases_cover_cdn_and_wad():
+    """Both Wii (Digital) (CDN) and Wii (Digital) (WAD) must alias to ``wii``."""
+    wii = next(s for s in SYSTEM_REGISTRY if s.id == "wii")
+    assert "Nintendo - Wii (Digital) (CDN)" in wii.dat_name_aliases
+    assert "Nintendo - Wii (Digital) (WAD)" in wii.dat_name_aliases
+
+
+def test_n3ds_aliases_cover_all_3ds_variants():
+    """The 3DS catalog ships under five distinct No-Intro headers — all
+    must resolve to the single ``n3ds`` SystemDef.
+    """
+    n3ds = next(s for s in SYSTEM_REGISTRY if s.id == "n3ds")
+    expected = {
+        "Nintendo - Nintendo 3DS (Digital)",
+        # Real No-Intro file has literal "(CDN) (CDN)" double-suffix typo.
+        "Nintendo - Nintendo 3DS (Digital) (CDN) (CDN)",
+        "Nintendo - Nintendo 3DS (Encrypted)",
+        "Nintendo - New Nintendo 3DS (Digital)",
+        "Nintendo - New Nintendo 3DS (Encrypted)",
+    }
+    missing = expected - set(n3ds.dat_name_aliases)
+    assert not missing, f"3DS aliases missing: {sorted(missing)}"
+
+
+def test_psp_aliases_cover_psn_and_psx2psp():
+    """PSN (Decrypted/Encrypted) and PSX2PSP wrappers all play on PPSSPP —
+    same logical system, different delivery channel.
+    """
+    psp = next(s for s in SYSTEM_REGISTRY if s.id == "psp")
+    assert "Sony - PlayStation Portable (PSN) (Decrypted)" in psp.dat_name_aliases
+    assert "Sony - PlayStation Portable (PSN) (Encrypted)" in psp.dat_name_aliases
+    assert "Sony - PlayStation Portable (PSX2PSP)" in psp.dat_name_aliases
+
+
+def test_psvita_primary_is_vpk():
+    """PS Vita's canonical dat_name is the homebrew VPK header; PSN PKGs are aliases."""
+    vita = next(s for s in SYSTEM_REGISTRY if s.id == "psvita")
+    assert vita.dat_name == "Sony - PlayStation Vita (VPK)"
+    assert "Sony - PlayStation Vita (PSN) (Decrypted)" in vita.dat_name_aliases
+    assert "Sony - PlayStation Vita (PSN) (Encrypted)" in vita.dat_name_aliases
+
+
+# ---------------------------------------------------------------------------
+# Profile coverage — sanity check that the v0.1.0 final pass enables
+# new systems on at least Batocera (the broadest-coverage profile).
+# ---------------------------------------------------------------------------
+
+
+def test_batocera_enables_new_digital_install_systems():
+    """Batocera is the broadest-coverage built-in profile; the 9 new digital-
+    install SystemDefs should all have a non-empty folder there. This is a
+    sanity check that the profile YAML pass did not leave any of the new
+    systems stuck at ``supported: false``.
+    """
+    from romulus.core.exporter import BUILTIN_PROFILES_DIR, load_profile
+
+    profile = load_profile(BUILTIN_PROFILES_DIR / "batocera.yaml")
+    new_ids = {
+        "wii",
+        "wiiu",
+        "n3ds",
+        "dsiware",
+        "psvita",
+        "ps3",
+        "xbox360",
+        "j2me",
+        "palmos",
+    }
+    for sid in new_ids:
+        mapping = profile.systems.get(sid)
+        assert mapping is not None, f"batocera missing decision for {sid!r}"
+        assert mapping.is_supported, (
+            f"batocera should enable {sid!r} but has supported={mapping.supported}, "
+            f"folder={mapping.folder!r}"
+        )
+        assert mapping.folder, (
+            f"batocera enabled {sid!r} but folder is empty"
+        )

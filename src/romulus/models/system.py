@@ -292,6 +292,16 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Sony - PlayStation Portable",
         folder_aliases=["psp"],
         dat_name="Sony - PlayStation Portable",
+        dat_name_aliases=[
+            # PSN downloadable releases — same logical system, different
+            # delivery channel. PPSSPP loads decrypted PSN dumps directly;
+            # encrypted ones can be decrypted with user-supplied keys.
+            "Sony - PlayStation Portable (PSN) (Decrypted)",
+            "Sony - PlayStation Portable (PSN) (Encrypted)",
+            # PSX2PSP wrappers re-package PS1 discs inside a PSP EBOOT. The
+            # bundled libretro PPSSPP core handles them.
+            "Sony - PlayStation Portable (PSX2PSP)",
+        ],
     ),
     # --- Atari ---
     SystemDef(
@@ -981,6 +991,168 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         folder_aliases=["pv1000", "pv-1000"],
         dat_name="Casio - PV-1000",
     ),
+    # --- Digital-distribution / install-package era ---
+    #
+    # These platforms predate or post-date the cartridge era. Their No-Intro
+    # DATs catalog digital installs (eShop, PSN, Xbox Live, WiiWare/VC) rather
+    # than original-disc dumps, so the primary ``dat_name`` is set to the
+    # canonical retail header and the digital storefront variants are listed
+    # as ``dat_name_aliases``. Romulus organizes the files for the user; the
+    # user is responsible for any decryption keys required by the target
+    # emulator (Dolphin, Cemu, Citra, RPCS3, vita3k, etc.).
+    SystemDef(
+        id="wii",
+        display_name="Nintendo Wii",
+        short_name="Wii",
+        manufacturer="Nintendo",
+        generation=7,
+        extensions=[".iso", ".wbfs", ".rvz", ".wia", ".ciso", ".gcz", ".wad", ".nkit.iso"],
+        header_rule=None,
+        libretro_name="Nintendo - Wii",
+        folder_aliases=["wii"],
+        # No "Nintendo - Wii" disc DAT ships in No-Intro's set (Wii retail
+        # discs are catalogued by Redump). The bundled DATs are the WiiWare
+        # (.wad) and CDN install dumps; both route here.
+        dat_name="Nintendo - Wii",
+        dat_name_aliases=[
+            "Nintendo - Wii (Digital) (CDN)",
+            "Nintendo - Wii (Digital) (WAD)",
+        ],
+    ),
+    SystemDef(
+        id="wiiu",
+        display_name="Nintendo Wii U",
+        short_name="Wii U",
+        manufacturer="Nintendo",
+        generation=8,
+        extensions=[".wud", ".wux", ".wua"],
+        header_rule=None,
+        libretro_name="Nintendo - Wii U",
+        folder_aliases=["wiiu", "wii_u", "wii-u"],
+        dat_name="Nintendo - Wii U",
+        dat_name_aliases=[
+            "Nintendo - Wii U (Digital)",
+            "Nintendo - Wii U (Digital) (CDN)",
+        ],
+    ),
+    SystemDef(
+        id="n3ds",
+        display_name="Nintendo 3DS",
+        short_name="3DS",
+        manufacturer="Nintendo",
+        generation=8,
+        extensions=[".3ds", ".cia", ".cci", ".cxi", ".app"],
+        header_rule=None,
+        libretro_name="Nintendo - Nintendo 3DS",
+        folder_aliases=["3ds", "n3ds", "nintendo3ds"],
+        dat_name="Nintendo - Nintendo 3DS",
+        # No-Intro splits 3DS into retail-encrypted, decrypted, eShop, and
+        # New-3DS-exclusive variants. The CDN file even has a literal double
+        # "(CDN) (CDN)" in its header — preserved verbatim.
+        dat_name_aliases=[
+            "Nintendo - Nintendo 3DS (Digital)",
+            "Nintendo - Nintendo 3DS (Digital) (CDN) (CDN)",
+            "Nintendo - Nintendo 3DS (Encrypted)",
+            "Nintendo - New Nintendo 3DS (Digital)",
+            "Nintendo - New Nintendo 3DS (Encrypted)",
+        ],
+    ),
+    SystemDef(
+        id="dsiware",
+        display_name="Nintendo DSiWare",
+        short_name="DSiWare",
+        manufacturer="Nintendo",
+        generation=7,
+        extensions=[".nds", ".tad", ".bin"],
+        header_rule=None,
+        libretro_name="Nintendo - Nintendo DSi",
+        folder_aliases=["dsiware", "dsi"],
+        # DSi cartridge dumps (``Nintendo - Nintendo DSi (Decrypted)``) are
+        # aliased onto ``nds`` because they use the same cart slot and
+        # filesystem. DSiWare (digital-only shop titles) is its own thing:
+        # melonDS / mGBA handle them as ``.nds`` or ``.tad`` blobs.
+        dat_name="Nintendo - Nintendo DSi (Digital)",
+    ),
+    SystemDef(
+        id="psvita",
+        display_name="Sony PlayStation Vita",
+        short_name="Vita",
+        manufacturer="Sony",
+        generation=8,
+        extensions=[".vpk", ".pkg", ".mai"],
+        header_rule=None,
+        libretro_name="Sony - PlayStation Vita",
+        folder_aliases=["psvita", "vita"],
+        # ``(VPK)`` is the homebrew/packaged-install format used by vita3k.
+        # The PSN variants require keys; Romulus stores them either way.
+        dat_name="Sony - PlayStation Vita (VPK)",
+        dat_name_aliases=[
+            "Sony - PlayStation Vita (PSN) (Decrypted)",
+            "Sony - PlayStation Vita (PSN) (Encrypted)",
+        ],
+    ),
+    SystemDef(
+        id="ps3",
+        display_name="Sony PlayStation 3",
+        short_name="PS3",
+        manufacturer="Sony",
+        generation=7,
+        extensions=[".iso", ".pkg", ".rap"],
+        header_rule=None,
+        libretro_name="Sony - PlayStation 3",
+        folder_aliases=["ps3", "playstation3"],
+        # No retail-disc PS3 DAT ships in No-Intro (Redump covers those);
+        # the bundled DATs are the PSN packages. RPCS3 reads decrypted
+        # dumps; encrypted ones need keys.
+        dat_name="Sony - PlayStation 3 (PSN) (Decrypted)",
+        dat_name_aliases=[
+            "Sony - PlayStation 3 (PSN) (Encrypted)",
+        ],
+    ),
+    SystemDef(
+        id="xbox360",
+        display_name="Microsoft Xbox 360",
+        short_name="X360",
+        manufacturer="Microsoft",
+        generation=7,
+        extensions=[".iso", ".god", ".xex"],
+        header_rule=None,
+        libretro_name="Microsoft - Xbox 360",
+        folder_aliases=["xbox360", "x360"],
+        dat_name="Microsoft - XBOX 360 (Digital)",
+        dat_name_aliases=[
+            "Microsoft - XBOX 360 (Title Updates) (Discontinued)",
+        ],
+    ),
+    # --- Mobile / PDA ---
+    # J2ME and Palm OS predate or sit alongside the cartridge era. There are
+    # working emulators (FreeJ2ME, PHEM/MicroEmulator for J2ME; Mu / pocketsim
+    # for Palm). Symbian and Zeebo have no usable emulator in 2026 and remain
+    # unmapped below.
+    SystemDef(
+        id="j2me",
+        display_name="Java ME (Mobile)",
+        short_name="J2ME",
+        manufacturer="Sun/Oracle",
+        generation=None,
+        extensions=[".jar", ".jad"],
+        header_rule=None,
+        libretro_name="Mobile - J2ME",
+        folder_aliases=["j2me", "javame"],
+        dat_name="Mobile - J2ME",
+    ),
+    SystemDef(
+        id="palmos",
+        display_name="Palm OS",
+        short_name="Palm",
+        manufacturer="Palm",
+        generation=None,
+        extensions=[".prc", ".pdb", ".pqa"],
+        header_rule=None,
+        libretro_name="Mobile - Palm OS",
+        folder_aliases=["palm", "palmos"],
+        dat_name="Mobile - Palm OS",
+    ),
 ]
 
 
@@ -989,40 +1161,29 @@ SYSTEM_REGISTRY: list[SystemDef] = [
 #
 # The following DATs ship in ``data/dats/`` for completeness — so the bundled
 # DAT directory mirrors the upstream No-Intro set — but deliberately have no
-# ``SystemDef`` entry. They split into three categories:
+# ``SystemDef`` entry. They split into the following categories:
 #
 # 1. IBM PC / Compatibles (all storefronts: GOG, Steam, Humble Bundle,
 #    itch.io, Desura, GamersGate, MacGameStore, Microsoft Store, Misc).
 #    These are not consoles. DOS/Windows games have completely different
 #    identification semantics from cartridge ROMs (installers, multi-file
-#    distributions, DRM wrappers, patches). A future v0.2.0+ could add a
-#    DOSBox / Windows game-library expansion — at which point these DATs are
-#    already on disk and can be routed by adding SystemDef entries here.
+#    distributions, DRM wrappers, patches). A future v0.2.0+ DOSBox /
+#    Windows game-library expansion would route these by adding SystemDef
+#    entries above.
 #
-# 2. Mobile platforms (J2ME, Palm OS, Symbian, Zeebo). These are mobile
-#    phone / PDA platforms, not consoles, and out of scope for Romulus.
+# 2. Mobile platforms with no usable emulator path — ``Mobile - Symbian``
+#    and ``Mobile - Zeebo``. J2ME and Palm OS DO have working emulators
+#    (FreeJ2ME, Mu) and are mapped above. Symbian's emulation story is
+#    still essentially nonexistent in 2026; Zeebo titles aren't dumpable
+#    from the original DRM-bound delivery network.
 #
-# 3. Digital store / installer formats — Wii (WAD), Wii (CDN), Wii U
-#    (Digital, CDN), Nintendo 3DS (Digital, CDN, Encrypted), New Nintendo
-#    3DS (Digital, Encrypted), Nintendo DSi (Digital),
-#    Microsoft XBOX 360 (Digital, Title Updates), Sony PlayStation 3 (PSN
-#    Decrypted/Encrypted), PlayStation 4 (PSN Encrypted), PlayStation
-#    Portable (PSN Decrypted/Encrypted, PSX2PSP, UMD Music, UMD Video),
-#    PlayStation Vita (PSN Decrypted/Encrypted, VPK). These are digital-
-#    distribution install packages (eShop / PSN / Xbox Live downloads,
-#    title-update patches, music/video discs), not cartridge or original-
-#    disc ROMs. They use different containers, signing, and decryption
-#    pipelines than what Romulus is built around.
+# 3. Sony - PlayStation 4 (PSN) (Encrypted) — shadPS4 is still immature
+#    and decrypted PS4 dumps aren't well-distributed. Defer to v0.2.0+.
 #
-# 4. Niche educational toys with no real gaming library — LeapFrog
-#    (LeapPad, Leapster, My First LeapPad), Konami Picno, Benesse Pocket
-#    Challenge V2, Sega Beena. These are children's edutainment hardware
-#    rather than gaming systems; skipped to keep the registry's sidebar
-#    focused on platforms users actually scan.
-#
-# To extend coverage to any of the above, add a SystemDef entry above with
-# the appropriate ``dat_name`` set to the exact No-Intro header string, and
-# remove the corresponding line from this comment.
+# 4. ``Sony - PlayStation Portable (UMD Music)`` and ``(UMD Video)`` —
+#    these are PSP UMD audio and movie discs, not games. The PSP cart /
+#    eboot DATs are mapped above; UMD media isn't a ROM-management
+#    concern.
 # ---------------------------------------------------------------------------
 
 
