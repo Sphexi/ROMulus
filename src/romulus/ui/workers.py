@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from romulus.core import scan_library
+from romulus.core.organizer import OrganizeAction, execute_plan
 from romulus.db import get_connection
 from romulus.metadata import enrich_library
 
@@ -134,3 +135,69 @@ class EnrichWorker(QThread):
 
 class _EnrichCancelledError(Exception):
     """Internal marker exception raised from enrich progress on cancel."""
+
+
+class OrganizeWorker(QThread):
+    """Apply an approved set of :class:`OrganizeAction` items on a worker thread.
+
+    Mirrors the ScanWorker / EnrichWorker contract: opens a thread-local
+    sqlite3 connection inside ``run``, emits ``progress(current, total,
+    source_path)`` per action, ``finished_ok(applied, skipped, failed,
+    errors)`` on success, ``failed(msg)`` on exception. Cooperative cancel
+    works the same way as the other workers — a private exception raised from
+    the progress callback unwinds the executor.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int, int, list)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        actions: list[OrganizeAction],
+    ) -> None:
+        super().__init__()
+        self._db_path = db_path
+        self._actions = list(actions)
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation; checked on every progress tick."""
+        self._cancel_requested = True
+
+    def run(self) -> None:  # noqa: D401 - QThread API
+        """Open a thread-local DB connection, execute the plan, emit results."""
+        try:
+            conn = get_connection(self._db_path)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"Failed to open database: {exc}")
+            return
+
+        def _progress(current: int, total: int, source: str) -> None:
+            if self._cancel_requested:
+                raise _OrganizeCancelledError
+            self.progress.emit(current, total, source)
+
+        try:
+            summary = execute_plan(conn, self._actions, _progress)
+        except _OrganizeCancelledError:
+            conn.close()
+            self.failed.emit("Organize cancelled")
+            return
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            self.failed.emit(f"Organize failed: {exc}")
+            return
+
+        conn.close()
+        self.finished_ok.emit(
+            int(summary.get("applied", 0)),
+            int(summary.get("skipped", 0)),
+            int(summary.get("failed", 0)),
+            list(summary.get("errors", [])),
+        )
+
+
+class _OrganizeCancelledError(Exception):
+    """Internal marker exception raised from organize progress on cancel."""

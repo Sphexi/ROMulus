@@ -14,15 +14,17 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+from romulus.core.organizer import analyze_library
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
 from romulus.db import queries as q
 from romulus.ui.detail_panel import DetailPanel
 from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
+from romulus.ui.organize_preview import OrganizePreviewDialog
 from romulus.ui.scan_progress import ScanProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
 from romulus.ui.system_sidebar import SystemSidebar
-from romulus.ui.workers import EnrichWorker, ScanWorker
+from romulus.ui.workers import EnrichWorker, OrganizeWorker, ScanWorker
 
 
 class MainWindow(QMainWindow):
@@ -39,6 +41,8 @@ class MainWindow(QMainWindow):
         self._scan_dialog: ScanProgressDialog | None = None
         self._enrich_worker: EnrichWorker | None = None
         self._enrich_dialog: EnrichProgressDialog | None = None
+        self._organize_worker: OrganizeWorker | None = None
+        self._organize_dialog: OrganizePreviewDialog | None = None
 
         q.ensure_favorites_collection(conn)
 
@@ -109,10 +113,13 @@ class MainWindow(QMainWindow):
         enrich_action.setToolTip("Fetch cover art and metadata for matched games.")
         enrich_action.triggered.connect(self._on_enrich)
         tools_menu.addAction(enrich_action)
-        for label in ("Organize", "Export"):
-            placeholder = QAction(label, self, enabled=False)
-            placeholder.setToolTip("Available in a later session.")
-            tools_menu.addAction(placeholder)
+        organize_action = QAction("&Organize", self)
+        organize_action.setToolTip("Preview and apply library reorganization.")
+        organize_action.triggered.connect(self._on_organize)
+        tools_menu.addAction(organize_action)
+        export_placeholder = QAction("Export", self, enabled=False)
+        export_placeholder.setToolTip("Available in a later session.")
+        tools_menu.addAction(export_placeholder)
 
         help_menu = menu.addMenu("&Help")
         about_action = QAction("&About Romulus", self)
@@ -134,7 +141,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
         organize = QAction("Organize", self)
-        organize.setEnabled(False)
+        organize.triggered.connect(self._on_organize)
         toolbar.addAction(organize)
         enrich = QAction("Enrich", self)
         enrich.triggered.connect(self._on_enrich)
@@ -355,6 +362,64 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
 
     # ------------------------------------------------------------------
+    # Organize
+    # ------------------------------------------------------------------
+
+    def _on_organize(self) -> None:
+        """Build a plan, show the preview dialog, and (on Apply) run the worker."""
+        if self._organize_worker is not None and self._organize_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Organize already running",
+                "An organize operation is already in progress — "
+                "please wait for it to finish.",
+            )
+            return
+
+        plan = analyze_library(self._conn)
+        self._organize_dialog = OrganizePreviewDialog(plan, self)
+        self._organize_dialog.actions_approved.connect(
+            self._on_organize_actions_approved
+        )
+        self._organize_dialog.exec()
+
+    def _on_organize_actions_approved(self, actions: list[object]) -> None:
+        """Spawn an :class:`OrganizeWorker` once the user clicks Apply."""
+        if self._organize_dialog is None:
+            return
+        # `actions` arrives via a Qt signal as a generic list — narrow defensively.
+        from romulus.core.organizer import OrganizeAction
+
+        approved = [a for a in actions if isinstance(a, OrganizeAction)]
+        if not approved:
+            return
+
+        self._organize_worker = OrganizeWorker(DEFAULT_DB_PATH, approved)
+        self._organize_worker.progress.connect(self._organize_dialog.on_progress)
+        self._organize_worker.finished_ok.connect(
+            self._organize_dialog.on_finished
+        )
+        self._organize_worker.failed.connect(self._organize_dialog.on_failed)
+        self._organize_worker.finished_ok.connect(self._on_organize_finished_ok)
+        self._organize_worker.failed.connect(self._on_organize_failed)
+        self._organize_worker.finished.connect(
+            self._organize_worker.deleteLater
+        )
+        self._organize_worker.start()
+
+    def _on_organize_finished_ok(
+        self,
+        _applied: int,
+        _skipped: int,
+        _failed: int,
+        _errors: list[str],
+    ) -> None:
+        self.refresh_all()
+
+    def _on_organize_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -366,7 +431,11 @@ class MainWindow(QMainWindow):
         WAL files in an inconsistent state. We request cooperative cancel,
         then wait up to a few seconds for the thread to drain.
         """
-        for worker in (self._scan_worker, self._enrich_worker):
+        for worker in (
+            self._scan_worker,
+            self._enrich_worker,
+            self._organize_worker,
+        ):
             if worker is None or not worker.isRunning():
                 continue
             worker.cancel()

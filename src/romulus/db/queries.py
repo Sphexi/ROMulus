@@ -645,3 +645,150 @@ def is_game_in_collection(
         (collection_id, game_id),
     ).fetchone()
     return row is not None
+
+
+# ---------------------------------------------------------------------------
+# Organize / library reorganization
+# ---------------------------------------------------------------------------
+
+
+def get_alias_folder_pairs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return ROMs grouped by (system_id, folder) for alias-folder analysis.
+
+    Each row contains `system_id`, the lowercase basename of the parent folder
+    (`folder`), and a ROM count. The organizer compares this against the system
+    registry's `folder_aliases` list to detect non-canonical folders that should
+    be merged into the canonical one.
+    """
+    rows = conn.execute(
+        """
+        SELECT system_id,
+               LOWER(
+                   CASE
+                       WHEN INSTR(path, '/') > 0
+                           THEN SUBSTR(
+                               REPLACE(path, '\\', '/'),
+                               1,
+                               LENGTH(REPLACE(path, '\\', '/'))
+                                   - LENGTH(filename) - 1
+                           )
+                       ELSE ''
+                   END
+               ) AS folder_path,
+               COUNT(*) AS rom_count
+        FROM roms
+        WHERE system_id IS NOT NULL
+        GROUP BY system_id, folder_path
+        """
+    ).fetchall()
+    return list(rows)
+
+
+def get_duplicate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return groups of ROMs that share an identical SHA-1.
+
+    Joins `roms` with `hashes` and yields one row per (sha1, rom_id) for every
+    SHA-1 that appears on two or more ROMs. Hacks (games.is_hack=1) are excluded
+    so the organizer never proposes deduping a hack against its original even
+    if the hasher (incorrectly) reported identical content.
+    """
+    rows = conn.execute(
+        """
+        SELECT h.sha1, r.id AS rom_id, r.path, r.filename, r.extension,
+               r.system_id, r.game_id, r.size_bytes,
+               COALESCE(g.is_hack, 0) AS is_hack
+        FROM hashes h
+        JOIN roms r ON r.id = h.rom_id
+        LEFT JOIN games g ON g.id = r.game_id
+        WHERE h.sha1 IS NOT NULL
+          AND h.sha1 IN (
+              SELECT sha1
+              FROM hashes
+              WHERE sha1 IS NOT NULL
+              GROUP BY sha1
+              HAVING COUNT(*) > 1
+          )
+          AND COALESCE(g.is_hack, 0) = 0
+        ORDER BY h.sha1, r.id
+        """
+    ).fetchall()
+    return list(rows)
+
+
+def get_dat_matched_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return ROMs with a DAT-verified canonical name (Layer 3 match).
+
+    Used by the organizer to find rename candidates — only ROMs that survived
+    Layer 3 identification have a canonical name we trust enough to rename
+    against. Quick-scan (fuzzy/header) matches are NEVER renamed.
+    """
+    rows = conn.execute(
+        """
+        SELECT r.id, r.path, r.filename, r.extension, r.system_id,
+               r.game_id, r.dat_match, r.match_confidence
+        FROM roms r
+        WHERE r.match_confidence = 'dat_verified'
+          AND r.dat_match IS NOT NULL
+          AND r.dat_match != ''
+        ORDER BY r.id
+        """
+    ).fetchall()
+    return list(rows)
+
+
+def update_rom_path(
+    conn: sqlite3.Connection, rom_id: int, new_path: str, new_filename: str
+) -> None:
+    """Update a ROM's path/filename after a rename or move.
+
+    Caller is responsible for committing the surrounding transaction.
+    """
+    conn.execute(
+        "UPDATE roms SET path = ?, filename = ? WHERE id = ?",
+        (new_path, new_filename, rom_id),
+    )
+
+
+def delete_rom(conn: sqlite3.Connection, rom_id: int) -> None:
+    """Remove a ROM row (and its hash row) after a duplicate removal.
+
+    Caller is responsible for committing the surrounding transaction.
+    """
+    conn.execute("DELETE FROM hashes WHERE rom_id = ?", (rom_id,))
+    conn.execute("DELETE FROM roms WHERE id = ?", (rom_id,))
+
+
+def insert_organize_plan(
+    conn: sqlite3.Connection, plan_json: str, status: str = "pending"
+) -> int:
+    """Record an organize plan (its serialized JSON) and return its row id."""
+    cursor = conn.execute(
+        """
+        INSERT INTO organize_plans (created_at, status, plan_json)
+        VALUES (?, ?, ?)
+        """,
+        (
+            datetime_now_iso(),
+            status,
+            plan_json,
+        ),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+def update_plan_status(
+    conn: sqlite3.Connection, plan_id: int, status: str
+) -> None:
+    """Stamp an organize plan with its terminal status (applied/cancelled/failed)."""
+    conn.execute(
+        "UPDATE organize_plans SET status = ? WHERE id = ?", (status, plan_id)
+    )
+    conn.commit()
+
+
+def datetime_now_iso() -> str:
+    """Return the current UTC time as an ISO-8601 string (used by plan rows)."""
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat()

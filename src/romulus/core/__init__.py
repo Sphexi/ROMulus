@@ -14,6 +14,21 @@ from romulus.core.hasher import (
     normalize_rom_content,
 )
 from romulus.core.identifier import extract_header_title
+from romulus.core.organizer import (
+    ACTION_COLLISION,
+    ACTION_DELETE_DUPLICATE,
+    ACTION_MERGE_FOLDER,
+    ACTION_RENAME,
+    OrganizeAction,
+    OrganizePlan,
+    analyze_library,
+    detect_collisions,
+    execute_plan,
+    find_alias_merges,
+    find_cross_extension_dupes,
+    find_duplicates,
+    find_renameable_roms,
+)
 from romulus.core.scanner import (
     SIDE_FILE_EXTENSIONS,
     ParsedFilename,
@@ -28,13 +43,26 @@ from romulus.core.scanner import (
 )
 
 __all__ = [
+    "ACTION_COLLISION",
+    "ACTION_DELETE_DUPLICATE",
+    "ACTION_MERGE_FOLDER",
+    "ACTION_RENAME",
     "SIDE_FILE_EXTENSIONS",
     "DatEntry",
     "HashResult",
+    "OrganizeAction",
+    "OrganizePlan",
     "ParsedFilename",
     "ScanResult",
+    "analyze_library",
+    "detect_collisions",
     "detect_system",
+    "execute_plan",
     "extract_header_title",
+    "find_alias_merges",
+    "find_cross_extension_dupes",
+    "find_duplicates",
+    "find_renameable_roms",
     "generate_fuzzy_key",
     "group_into_games",
     "hash_library",
