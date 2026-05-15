@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from romulus.app import DEFAULT_LOG_PATH, set_log_level
 from romulus.db import get_config, set_config
 from romulus.metadata.screenscraper import test_connection as screenscraper_test_connection
 
@@ -180,6 +182,40 @@ class _ScanTab(QWidget):
         set_config(self._conn, "scan_threads", str(self.threads.value()))
 
 
+class _DiagnosticsTab(QWidget):
+    """Log level + log file location."""
+
+    LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        super().__init__()
+        self._conn = conn
+
+        self.level = QComboBox()
+        self.level.addItems(self.LEVELS)
+        current = (get_config(conn, "log_level") or "INFO").upper()
+        idx = max(0, self.level.findText(current))
+        self.level.setCurrentIndex(idx)
+
+        log_path_label = QLabel(str(DEFAULT_LOG_PATH))
+        log_path_label.setTextInteractionFlags(
+            log_path_label.textInteractionFlags()
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        log_path_label.setToolTip("Click to select; copy with Ctrl+C.")
+
+        form = QFormLayout(self)
+        form.addRow("Log level:", self.level)
+        form.addRow("Log file:", log_path_label)
+
+    def save(self) -> None:
+        chosen = self.level.currentText()
+        set_config(self._conn, "log_level", chosen)
+        # Apply immediately so the user sees the new level take effect
+        # without needing to restart the app.
+        set_log_level(chosen)
+
+
 class SettingsDialog(QDialog):
     """Top-level settings dialog with four tabs, writes back to the config table."""
 
@@ -192,12 +228,14 @@ class SettingsDialog(QDialog):
         self.dats = _DatTab(conn)
         self.metadata = _MetadataTab(conn)
         self.scan = _ScanTab(conn)
+        self.diagnostics = _DiagnosticsTab(conn)
 
         tabs = QTabWidget()
         tabs.addTab(self.general, "General")
         tabs.addTab(self.dats, "DATs")
         tabs.addTab(self.metadata, "Metadata")
         tabs.addTab(self.scan, "Scan")
+        tabs.addTab(self.diagnostics, "Diagnostics")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -214,4 +252,5 @@ class SettingsDialog(QDialog):
         self.dats.save()
         self.metadata.save()
         self.scan.save()
+        self.diagnostics.save()
         self.accept()

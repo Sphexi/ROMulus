@@ -22,9 +22,34 @@ from romulus.db import (
 from romulus.db import queries as q
 from romulus.models import seed_systems
 
-DEFAULT_LOG_PATH = Path.home() / ".romulus" / "romulus.log"
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+_VALID_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+
+def _resolve_install_dir() -> Path:
+    """Best-effort: find the directory where Romulus is installed.
+
+    Three lookup strategies, tried in order:
+
+    1. **PyInstaller-frozen exe** — ``sys.executable``'s parent.
+    2. **Editable install / dev clone** — walk up from this module looking
+       for ``pyproject.toml``.
+    3. **Fallback** — ``~/.romulus`` so logs still land somewhere writable.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    cursor = Path(__file__).resolve()
+    for candidate in cursor.parents:
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return Path.home() / ".romulus"
+
+
+INSTALL_DIR = _resolve_install_dir()
+DEFAULT_LOG_DIR = INSTALL_DIR / "logs"
+DEFAULT_LOG_PATH = DEFAULT_LOG_DIR / "romulus.log"
 
 # Third-party loggers whose DEBUG output is rarely useful even when we want
 # verbose app logs. ``httpcore`` emits 10+ lines per HTTP request describing
@@ -86,6 +111,21 @@ def setup_logging(log_path: Path | str | None = None) -> Path:
     return resolved
 
 
+def set_log_level(level_name: str) -> None:
+    """Adjust the root logger's level at runtime.
+
+    Used by Settings → Diagnostics so the user can switch verbosity without
+    restarting the app. Unknown level names silently fall back to INFO. The
+    noisy third-party loggers remain capped at INFO regardless.
+    """
+    normalized = (level_name or "").strip().upper()
+    if normalized not in _VALID_LOG_LEVELS:
+        normalized = "INFO"
+    logging.getLogger().setLevel(getattr(logging, normalized))
+    for noisy in _NOISY_THIRD_PARTY_LOGGERS:
+        logging.getLogger(noisy).setLevel(logging.INFO)
+
+
 def initialize_database(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open the app DB, create tables, and seed systems + defaults + favorites."""
     conn = get_connection(db_path)
@@ -126,6 +166,9 @@ def run() -> int:
     logger.info("Romulus starting up (log file: %s)", log_path)
     app = QApplication.instance() or QApplication(sys.argv)
     conn = initialize_database(DEFAULT_DB_PATH)
+    # Re-apply the user's configured log level now that the DB is up.
+    configured = get_config(conn, "log_level") or "INFO"
+    set_log_level(configured)
     # Late import is INTENTIONAL: ``MainWindow`` (and the chain of Qt widget
     # classes it pulls in) requires a live QApplication to exist before any
     # QWidget subclass is even imported on some Qt builds. Moving this back to

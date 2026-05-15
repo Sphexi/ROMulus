@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from romulus.app import setup_logging
+from romulus.app import (
+    DEFAULT_LOG_DIR,
+    DEFAULT_LOG_PATH,
+    INSTALL_DIR,
+    set_log_level,
+    setup_logging,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -96,3 +102,54 @@ def test_setup_logging_silences_httpcore_even_in_debug_mode(
             f"Expected {noisy} logger to be capped at INFO, "
             f"got {logging.getLogger(noisy).level}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Install-dir-relative log path
+# ---------------------------------------------------------------------------
+
+
+def test_default_log_path_lives_under_install_dir() -> None:
+    """DEFAULT_LOG_PATH points at <install_dir>/logs/romulus.log."""
+    assert DEFAULT_LOG_PATH == DEFAULT_LOG_DIR / "romulus.log"
+    assert DEFAULT_LOG_DIR == INSTALL_DIR / "logs"
+
+
+def test_install_dir_is_project_root_in_editable_install() -> None:
+    """In a dev clone (this test run), install dir must be the repo root.
+
+    Verified by asserting that pyproject.toml lives directly inside it.
+    """
+    assert (INSTALL_DIR / "pyproject.toml").is_file()
+
+
+# ---------------------------------------------------------------------------
+# set_log_level runtime adjustment
+# ---------------------------------------------------------------------------
+
+
+def test_set_log_level_changes_root_level(tmp_path: Path) -> None:
+    setup_logging(tmp_path / "romulus.log")
+    set_log_level("WARNING")
+    assert logging.getLogger().level == logging.WARNING
+    set_log_level("DEBUG")
+    assert logging.getLogger().level == logging.DEBUG
+
+
+def test_set_log_level_keeps_httpcore_quiet(tmp_path: Path) -> None:
+    """Switching to DEBUG via Settings must NOT re-enable httpcore noise."""
+    setup_logging(tmp_path / "romulus.log")
+    set_log_level("DEBUG")
+    assert logging.getLogger("httpcore").level == logging.INFO
+
+
+def test_set_log_level_falls_back_to_info_for_unknown(tmp_path: Path) -> None:
+    setup_logging(tmp_path / "romulus.log")
+    set_log_level("NONSENSE")
+    assert logging.getLogger().level == logging.INFO
+
+
+def test_set_log_level_falls_back_to_info_for_empty(tmp_path: Path) -> None:
+    setup_logging(tmp_path / "romulus.log")
+    set_log_level("")
+    assert logging.getLogger().level == logging.INFO

@@ -28,6 +28,7 @@ DEFAULT_CONFIG: dict[str, str] = {
     "theme": "system",
     "default_view": "table",
     "scan_threads": "8",
+    "log_level": "INFO",
     "last_scan_type": "",
     "last_scan_time": "",
 }

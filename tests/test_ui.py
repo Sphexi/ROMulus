@@ -610,6 +610,32 @@ class TestSettingsDialog:
         assert get_config(seeded_db, "scan_threads") == "12"
         assert get_config(seeded_db, "screenscraper_username") == "user1"
 
+    def test_diagnostics_tab_persists_and_applies_log_level(
+        self, qapp, seeded_db
+    ) -> None:
+        import logging as _logging
+
+        from romulus.app import setup_logging
+        from romulus.ui.settings_dialog import SettingsDialog
+
+        seed_defaults(seeded_db)
+        setup_logging()  # establish a baseline root level
+        dialog = SettingsDialog(seeded_db)
+        dialog.diagnostics.level.setCurrentText("WARNING")
+        dialog._accept_and_save()
+
+        assert get_config(seeded_db, "log_level") == "WARNING"
+        # Live runtime adjustment — the new level takes effect without restart.
+        assert _logging.getLogger().level == _logging.WARNING
+
+    def test_diagnostics_tab_loads_existing_level(self, qapp, seeded_db) -> None:
+        from romulus.ui.settings_dialog import SettingsDialog
+
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "log_level", "DEBUG")
+        dialog = SettingsDialog(seeded_db)
+        assert dialog.diagnostics.level.currentText() == "DEBUG"
+
 
 # ---------------------------------------------------------------------------
 # App initialization helper
