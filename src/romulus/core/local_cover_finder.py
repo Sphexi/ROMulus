@@ -53,7 +53,8 @@ COVER_TYPE_HINTS: dict[str, str] = {
 }
 
 # Relative subdirectory paths (from the system folder) to probe for images.
-# Ordered by priority: same dir first, then common media sub-trees.
+# Retained for backward-compat with older tests; the live discovery code now
+# walks the system folder recursively (see ``_BUCKET_WALK_DEPTH``).
 MEDIA_SUBDIRS: tuple[str, ...] = (
     "",  # same directory as the ROM (system folder root)
     "media",
@@ -66,7 +67,31 @@ MEDIA_SUBDIRS: tuple[str, ...] = (
     "snaps",
     "titles",
     "wheel",
+    "downloaded_images",
+    "downloaded_videos",
+    "default_images",
 )
+
+# Directories to skip when walking the system folder. Hidden dirs and these
+# names rarely contain user-facing cover images and walking them can be slow
+# (backup mirrors, ROM-manager scratch logs, version-control metadata).
+_BUCKET_SKIP_DIRS: frozenset[str] = frozenset(
+    {
+        "backup",
+        "backups",
+        "logs_arrm",
+        "logs",
+        ".git",
+        ".svn",
+        "__pycache__",
+        "node_modules",
+    }
+)
+
+# How deep to walk under the system folder when bucketing images. The user's
+# real-world layout has ``gb/downloaded_images/`` at depth 1; nested layouts
+# like ``gb/media/boxart/EU/`` are still covered up to depth 4.
+_BUCKET_WALK_DEPTH: int = 4
 
 
 # ---------------------------------------------------------------------------
@@ -145,10 +170,19 @@ def _infer_cover_type(image_path: Path) -> str:
 def _build_image_bucket(
     system_dir: Path,
 ) -> dict[str, list[tuple[str, str]]]:
-    """Walk all probe subdirs under ``system_dir`` and bucket images by fuzzy key.
+    """Recursively walk ``system_dir`` and bucket images by their fuzzy key.
 
-    The bucket maps ``fuzzy_key -> [(absolute_image_path, cover_type), ...]``.
-    Building once per system_dir makes per-ROM lookup O(1) instead of O(FS).
+    Walks up to ``_BUCKET_WALK_DEPTH`` levels under the system folder, skipping
+    directories listed in ``_BUCKET_SKIP_DIRS`` and any dotfile directory. This
+    catches conventional layouts (``media/boxart/``), tool-managed folders
+    (``downloaded_images/`` from WBM/Skraper), and nested arrangements
+    (``media/extra/EU/``) without a fixed allow-list.
+
+    Image fuzzy keys are computed **without** ``release_type`` so a generic
+    ``Sonic.png`` matches both the cartridge ``Sonic.zip`` and a
+    ``Sonic (Virtual Console).zip``. Cover selection (when a ROM matches
+    multiple candidates) is handled by the 1:N covers UI — every match is
+    recorded; the user picks which to display.
 
     Args:
         system_dir: The root directory for a single system (e.g. ``library/snes``).
@@ -158,31 +192,45 @@ def _build_image_bucket(
         ``(absolute_path_string, cover_type)`` pairs.
     """
     bucket: dict[str, list[tuple[str, str]]] = {}
+    try:
+        system_root = system_dir.resolve()
+    except OSError:
+        system_root = system_dir
 
-    for subdir in MEDIA_SUBDIRS:
-        probe_dir = system_dir / subdir if subdir else system_dir
-        if not probe_dir.is_dir():
-            continue
+    if not system_root.is_dir():
+        return bucket
+
+    for dirpath, dirnames, filenames in os.walk(system_root, followlinks=False):
+        current = Path(dirpath)
         try:
-            for entry in os.scandir(probe_dir):
-                if not entry.is_file(follow_symlinks=False):
-                    continue
-                img_path = Path(entry.path)
-                if img_path.suffix.lower() not in IMAGE_EXTENSIONS:
-                    continue
-                # Compute the fuzzy key for the image stem (tag-stripped like ROM names).
-                # release_type is included so a `Sonic (Virtual Console).png`
-                # bucket-keys differently from `Sonic.png` and matches its sibling ROM.
-                parsed = parse_filename(entry.name)
-                fkey = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
-                if not fkey:
-                    continue
-                cover_type = _infer_cover_type(img_path)
-                bucket.setdefault(fkey, []).append(
-                    (str(img_path.resolve()), cover_type)
-                )
-        except OSError as exc:
-            logger.debug("local_cover_finder: scandir failed dir=%s err=%s", probe_dir, exc)
+            depth = len(current.relative_to(system_root).parts)
+        except ValueError:
+            depth = 0
+        # Prune walk in-place: drop hidden + blocklisted dirs, and stop
+        # descending below the depth cap.
+        if depth >= _BUCKET_WALK_DEPTH:
+            dirnames[:] = []
+        else:
+            dirnames[:] = [
+                d for d in dirnames
+                if not d.startswith(".") and d.lower() not in _BUCKET_SKIP_DIRS
+            ]
+
+        for fname in filenames:
+            img_path = current / fname
+            if img_path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            parsed = parse_filename(fname)
+            # Loose key: drop release_type so generic images still match VC ROMs.
+            fkey = generate_fuzzy_key(parsed.clean_name)
+            if not fkey:
+                continue
+            try:
+                resolved = str(img_path.resolve())
+            except OSError:
+                resolved = str(img_path)
+            cover_type = _infer_cover_type(img_path)
+            bucket.setdefault(fkey, []).append((resolved, cover_type))
 
     return bucket
 
@@ -229,17 +277,28 @@ def find_local_covers_for_rom(
 
     rom_stem = Path(rom_path).stem
     stem_parsed = parse_filename(rom_stem)
-    stem_key = generate_fuzzy_key(stem_parsed.clean_name, stem_parsed.release_type)
-    clean_key = (
-        generate_fuzzy_key(clean_name, stem_parsed.release_type)
-        if clean_name
-        else ""
-    )
+    # Loose keys (no release_type) match the loose image bucket — a generic
+    # Sonic.png matches Sonic (Virtual Console).zip. Strict key (with
+    # release_type) is also kept as a candidate so an image with a matching
+    # release tag still wins when available.
+    stem_key_loose = generate_fuzzy_key(stem_parsed.clean_name)
+    stem_key_strict = generate_fuzzy_key(stem_parsed.clean_name, stem_parsed.release_type)
+    clean_key_loose = generate_fuzzy_key(clean_name) if clean_name else ""
+
+    # Strip the strict-key release suffix (e.g. ``__virtualconsole``) to get the
+    # loose form of the ROM's stored fuzzy_key.
+    fuzzy_key_loose = fuzzy_key.split("__", 1)[0] if fuzzy_key else ""
 
     # Deduplicate candidate keys while preserving priority order.
     seen: set[str] = set()
     candidate_keys: list[str] = []
-    for k in (fuzzy_key, stem_key, clean_key):
+    for k in (
+        fuzzy_key_loose,
+        stem_key_loose,
+        clean_key_loose,
+        fuzzy_key,
+        stem_key_strict,
+    ):
         if k and k not in seen:
             candidate_keys.append(k)
             seen.add(k)

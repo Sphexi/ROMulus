@@ -9,6 +9,7 @@ import pytest
 
 from romulus.core.local_cover_finder import (
     DiscoveryResult,
+    _build_image_bucket,
     _has_cover_for_path,
     _infer_cover_type,
     discover_local_covers,
@@ -484,3 +485,129 @@ class TestHasCoverForPath:
         )
         db.commit()
         assert _has_cover_for_path(db, game_id, "/img/sonic.png") is True
+
+
+# ---------------------------------------------------------------------------
+# Recursive walk + loose matching
+# ---------------------------------------------------------------------------
+
+
+class TestRecursiveImageBucket:
+    """The bucket builder must walk all subdirs of the system folder, not just a
+    fixed allow-list. User-reported: WBM puts covers in ``downloaded_images/``
+    which wasn't being found by the old fixed MEDIA_SUBDIRS list.
+    """
+
+    def test_finds_images_in_downloaded_images_folder(self, tmp_path) -> None:
+        gb = tmp_path / "gb"
+        downloaded = gb / "downloaded_images"
+        downloaded.mkdir(parents=True)
+        (downloaded / "Tetris (USA, Europe).png").write_bytes(b"PNG")
+        bucket = _build_image_bucket(gb)
+        # fuzzy_key for "Tetris" is "tetris" — release_type stripped.
+        assert "tetris" in bucket
+        assert len(bucket["tetris"]) == 1
+
+    def test_finds_images_in_arbitrary_nested_subdir(self, tmp_path) -> None:
+        """Anywhere within the system folder, up to the depth cap."""
+        gb = tmp_path / "gb"
+        nested = gb / "media" / "extras" / "EU" / "covers"
+        nested.mkdir(parents=True)
+        (nested / "Sonic.png").write_bytes(b"PNG")
+        bucket = _build_image_bucket(gb)
+        assert "sonic" in bucket
+
+    def test_skips_backup_folder(self, tmp_path) -> None:
+        """``backup/`` is in the skip list — its contents are ignored even
+        though they look like images."""
+        gb = tmp_path / "gb"
+        backup = gb / "backup" / "old_covers"
+        backup.mkdir(parents=True)
+        (backup / "Tetris.png").write_bytes(b"PNG")
+        bucket = _build_image_bucket(gb)
+        assert "tetris" not in bucket
+
+    def test_skips_logs_arrm_folder(self, tmp_path) -> None:
+        gb = tmp_path / "gb"
+        logs = gb / "logs_arrm"
+        logs.mkdir(parents=True)
+        (logs / "Sonic.png").write_bytes(b"PNG")
+        bucket = _build_image_bucket(gb)
+        assert "sonic" not in bucket
+
+    def test_skips_hidden_directories(self, tmp_path) -> None:
+        gb = tmp_path / "gb"
+        hidden = gb / ".cache"
+        hidden.mkdir(parents=True)
+        (hidden / "Sonic.png").write_bytes(b"PNG")
+        bucket = _build_image_bucket(gb)
+        assert "sonic" not in bucket
+
+    def test_respects_depth_cap(self, tmp_path) -> None:
+        """At depth > _BUCKET_WALK_DEPTH the walker stops descending."""
+        from romulus.core.local_cover_finder import _BUCKET_WALK_DEPTH
+
+        gb = tmp_path / "gb"
+        # Build a path one level deeper than the cap.
+        path = gb
+        for i in range(_BUCKET_WALK_DEPTH + 1):
+            path = path / f"d{i}"
+        path.mkdir(parents=True)
+        (path / "TooDeep.png").write_bytes(b"PNG")
+        bucket = _build_image_bucket(gb)
+        assert "toodeep" not in bucket
+
+
+class TestLooseFuzzyMatching:
+    """release_type tags are stripped when matching local covers so a generic
+    ``Sonic.png`` matches both ``Sonic.zip`` and ``Sonic (Virtual Console).zip``.
+    The strict-match path used by the scanner stays unchanged.
+    """
+
+    def test_generic_image_matches_vc_rom(self, tmp_path) -> None:
+        gb = tmp_path / "gb"
+        gb.mkdir()
+        (gb / "Sonic.png").write_bytes(b"PNG")
+        # ROM with VC suffix in its stored fuzzy_key.
+        matches = find_local_covers_for_rom(
+            rom_id=1,
+            game_id=1,
+            rom_path=str(gb / "Sonic (Virtual Console).gb"),
+            fuzzy_key="sonic__virtualconsole",
+            clean_name="Sonic",
+            system_dir=gb,
+        )
+        assert any(m.image_path.endswith("Sonic.png") for m in matches)
+
+    def test_vc_image_matches_generic_rom(self, tmp_path) -> None:
+        gb = tmp_path / "gb"
+        gb.mkdir()
+        (gb / "Sonic (Virtual Console).png").write_bytes(b"PNG")
+        matches = find_local_covers_for_rom(
+            rom_id=1,
+            game_id=1,
+            rom_path=str(gb / "Sonic.gb"),
+            fuzzy_key="sonic",
+            clean_name="Sonic",
+            system_dir=gb,
+        )
+        assert any("Virtual Console" in m.image_path for m in matches)
+
+    def test_multiple_images_all_returned_for_one_rom(self, tmp_path) -> None:
+        """Several images matching the same ROM all come back — 1:N data
+        layer is unchanged, just verifying the recursive walk surfaces all."""
+        gb = tmp_path / "gb"
+        (gb / "downloaded_images").mkdir(parents=True)
+        (gb / "boxart").mkdir()
+        (gb / "Sonic.png").write_bytes(b"PNG")
+        (gb / "downloaded_images" / "Sonic.png").write_bytes(b"PNG")
+        (gb / "boxart" / "Sonic.png").write_bytes(b"PNG")
+        matches = find_local_covers_for_rom(
+            rom_id=1,
+            game_id=1,
+            rom_path=str(gb / "Sonic.gb"),
+            fuzzy_key="sonic",
+            clean_name="Sonic",
+            system_dir=gb,
+        )
+        assert len(matches) == 3
