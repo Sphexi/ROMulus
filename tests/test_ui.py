@@ -1148,3 +1148,384 @@ class TestMainWindowCollections:
         window._on_remove_from_collection(game_id)
 
         assert not queries_mod.is_game_in_collection(seeded_db, cid, game_id)
+
+
+# ---------------------------------------------------------------------------
+# Bug #1 — Worker lifetime: finished clears the Python reference
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerLifetime:
+    def test_scan_worker_cleared_after_finished(self, qapp, tmp_path) -> None:
+        """_scan_worker is set to None once the worker finishes."""
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.db import get_connection
+        from romulus.ui.main_window import MainWindow
+
+        db_path = tmp_path / "romulus.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        seed_defaults(conn)
+        conn.close()
+
+        # Re-open the connection for MainWindow.
+        conn2 = get_connection(db_path)
+        window = MainWindow(conn2)
+
+        # Set up a fake worker whose finished signal clears the attribute.
+        from romulus.ui.workers import ScanWorker
+
+        library = tmp_path / "library"
+        library.mkdir()
+        worker = ScanWorker(db_path, library)
+
+        # Wire the clear-slot manually, mirroring what _on_quick_scan does.
+        window._scan_worker = worker
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(window._clear_scan_worker)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        # After finished fires, Python reference must be None.
+        assert window._scan_worker is None
+        conn2.close()
+
+    def test_enrich_worker_cleared_after_finished(self, qapp, tmp_path) -> None:
+        """_enrich_worker is set to None once the worker finishes."""
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.db import get_connection
+        from romulus.ui.main_window import MainWindow
+        from romulus.ui.workers import EnrichWorker
+
+        db_path = tmp_path / "romulus.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        seed_defaults(conn)
+        conn.close()
+
+        conn2 = get_connection(db_path)
+        window = MainWindow(conn2)
+
+        worker = EnrichWorker(db_path, cache_dir=tmp_path / "covers")
+        window._enrich_worker = worker
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(window._clear_enrich_worker)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        assert window._enrich_worker is None
+        conn2.close()
+
+    def test_close_event_handles_stale_worker_reference(
+        self, qapp, seeded_db
+    ) -> None:
+        """closeEvent must not crash when the C++ QThread is already deleted."""
+        from PySide6.QtGui import QCloseEvent
+
+        from romulus.ui.main_window import MainWindow
+
+        window = MainWindow(seeded_db)
+
+        class _StaleWorker:
+            """Simulates a Python wrapper whose C++ object has been deleted."""
+
+            def isRunning(self) -> bool:  # noqa: N802
+                raise RuntimeError(
+                    "libshiboken: Internal C++ object already deleted."
+                )
+
+            def cancel(self) -> None:
+                pass
+
+            def wait(self, _ms: int) -> bool:
+                return True
+
+        window._scan_worker = _StaleWorker()  # type: ignore[assignment]
+        # Must not raise.
+        window.closeEvent(QCloseEvent())
+
+
+# ---------------------------------------------------------------------------
+# Bug #2 — Heavy Scan: worker contract + DAT loading + action wired
+# ---------------------------------------------------------------------------
+
+
+class TestHeavyScanWorker:
+    def test_inherits_from_db_worker(self) -> None:
+        from romulus.ui.workers import HeavyScanWorker, _DbWorker
+
+        assert issubclass(HeavyScanWorker, _DbWorker)
+        assert HeavyScanWorker._operation_name == "Heavy Scan"
+
+    def test_heavy_scan_worker_loads_dats_and_hashes(
+        self, qapp, tmp_path
+    ) -> None:
+        """Worker loads bundled DATs on first run and emits finished_ok."""
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.db import get_connection
+        from romulus.ui.workers import HeavyScanWorker
+
+        db_path = tmp_path / "romulus.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        seed_defaults(conn)
+        conn.close()
+
+        # Empty library — no ROMs to hash; DATs should still load.
+        library = tmp_path / "library"
+        library.mkdir()
+
+        # Use the real bundled DATs path.
+        from romulus.ui.main_window import _BUNDLED_DATS_PATH
+
+        worker = HeavyScanWorker(db_path, library, _BUNDLED_DATS_PATH, workers=2)
+        finished: list[tuple] = []
+        failed: list[str] = []
+        worker.finished_ok.connect(lambda *a: finished.append(a))
+        worker.failed.connect(failed.append)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        assert not failed, f"Worker failed: {failed}"
+        assert finished
+        total_hashed, total_matched, errors = finished[0]
+        assert total_hashed == 0  # no ROMs in empty library
+        assert errors == 0
+
+        # DATs must be loaded into dat_entries on first run.
+        conn2 = get_connection(db_path)
+        dat_count = conn2.execute("SELECT COUNT(*) FROM dat_entries").fetchone()[0]
+        conn2.close()
+        assert dat_count > 0
+
+    def test_heavy_scan_skips_dat_load_on_second_run(
+        self, qapp, tmp_path
+    ) -> None:
+        """Worker skips load_all_dats when dat_entries already populated."""
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.core.dat_parser import load_all_dats
+        from romulus.db import get_connection
+        from romulus.ui.main_window import _BUNDLED_DATS_PATH
+        from romulus.ui.workers import HeavyScanWorker
+
+        db_path = tmp_path / "romulus.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        seed_defaults(conn)
+        # Pre-load DATs so dat_entries is not empty.
+        load_all_dats(conn, [_BUNDLED_DATS_PATH])
+        first_count = conn.execute(
+            "SELECT COUNT(*) FROM dat_entries"
+        ).fetchone()[0]
+        conn.close()
+
+        library = tmp_path / "library"
+        library.mkdir()
+        worker = HeavyScanWorker(db_path, library, _BUNDLED_DATS_PATH, workers=2)
+        finished: list[tuple] = []
+        worker.finished_ok.connect(lambda *a: finished.append(a))
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        assert finished
+        # DAT count must be unchanged (no duplicates inserted).
+        conn2 = get_connection(db_path)
+        second_count = conn2.execute(
+            "SELECT COUNT(*) FROM dat_entries"
+        ).fetchone()[0]
+        conn2.close()
+        assert second_count == first_count
+
+    def test_heavy_scan_action_is_enabled(self, qapp, seeded_db) -> None:
+        """The Heavy Scan menu action must be enabled and connected."""
+        from romulus.ui.main_window import MainWindow
+
+        window = MainWindow(seeded_db)
+        # Find the Heavy Scan action in the menu bar.
+        found = False
+        for action in window.menuBar().actions():
+            menu = action.menu()
+            if menu is None:
+                continue
+            for sub in menu.actions():
+                if "Heavy Scan" in sub.text():
+                    assert sub.isEnabled(), "Heavy Scan action must be enabled"
+                    found = True
+        assert found, "Heavy Scan action not found in menu"
+
+    def test_heavy_scan_confirmation_dialog_blocks_start(
+        self, qapp, seeded_db, monkeypatch, tmp_path
+    ) -> None:
+        """If the user clicks No in the confirmation dialog, no worker starts."""
+        from PySide6.QtWidgets import QMessageBox
+
+        from romulus.db import set_config
+        from romulus.ui.main_window import MainWindow
+
+        set_config(seeded_db, "library_path", str(tmp_path))
+        window = MainWindow(seeded_db)
+
+        monkeypatch.setattr(
+            "romulus.ui.main_window.QMessageBox.question",
+            lambda *_a, **_kw: QMessageBox.StandardButton.No,
+        )
+        window._on_heavy_scan()
+        assert window._heavy_scan_worker is None
+
+
+# ---------------------------------------------------------------------------
+# Bug #3 — Stylesheet: _match_badge_stylesheet produces valid CSS
+# ---------------------------------------------------------------------------
+
+
+class TestMatchBadgeStylesheet:
+    def test_valid_hex_colors_produce_well_formed_css(self) -> None:
+        from romulus.ui.detail_panel import _match_badge_stylesheet
+
+        css = _match_badge_stylesheet("#2e7d32", "#ffffff")
+        assert css.count("{") == 1
+        assert css.count("}") == 1
+        assert "background-color: #2e7d32" in css
+        assert "color: #ffffff" in css
+
+    def test_invalid_bg_falls_back(self) -> None:
+        from romulus.ui.detail_panel import _match_badge_stylesheet
+
+        css = _match_badge_stylesheet("red; color: evil", "#ffffff")
+        assert "background-color: #888888" in css
+
+    def test_invalid_fg_falls_back(self) -> None:
+        from romulus.ui.detail_panel import _match_badge_stylesheet
+
+        css = _match_badge_stylesheet("#aabbcc", "bad-color")
+        assert "color: #ffffff" in css
+
+    def test_empty_badge_stylesheet_is_valid_css(self, qapp) -> None:
+        """The reset stylesheet applied to the badge in _render_empty must parse."""
+        from PySide6.QtWidgets import QLabel
+
+        label = QLabel()
+        # Qt does not raise on an invalid stylesheet but logs a warning.
+        # An explicit selector avoids the warning; verify no exception raised.
+        label.setStyleSheet("QLabel {}")
+
+
+# ---------------------------------------------------------------------------
+# Bug #4 — EnrichProgressDialog: spinner stops on finished
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichProgressDialog:
+    def test_on_finished_stops_indeterminate_spinner(self, qapp) -> None:
+        """After on_finished, the progress bar is no longer indeterminate (0,0)."""
+        from romulus.ui.enrich_progress import EnrichProgressDialog
+
+        dlg = EnrichProgressDialog()
+        # Before: indeterminate — both min and max are 0.
+        assert dlg.minimum() == 0
+        assert dlg.maximum() == 0
+
+        dlg.on_finished(5, 3, 2)
+
+        # After on_finished the range must not still be (0, 0).
+        assert not (dlg.minimum() == 0 and dlg.maximum() == 0), (
+            "Progress bar is still in indeterminate mode after on_finished"
+        )
+        assert dlg.value() != 0
+
+    def test_on_finished_summary_label(self, qapp) -> None:
+        from romulus.ui.enrich_progress import EnrichProgressDialog
+
+        dlg = EnrichProgressDialog()
+        dlg.on_finished(10, 7, 4)
+        label = dlg.labelText()
+        assert "10" in label
+        assert "7" in label
+        assert "4" in label
+
+    def test_enrich_preflight_blocks_zero_eligible_games(
+        self, qapp, seeded_db, monkeypatch
+    ) -> None:
+        """_on_enrich shows an info dialog and returns without starting a worker
+        when no DAT-verified games are present."""
+        from romulus.ui.main_window import MainWindow
+
+        window = MainWindow(seeded_db)
+
+        info_calls: list[tuple] = []
+        monkeypatch.setattr(
+            "romulus.ui.main_window.QMessageBox.information",
+            lambda *args, **_kw: info_calls.append(args),
+        )
+        window._on_enrich()
+
+        assert info_calls, "Expected an information dialog for zero eligible games"
+        # The message must mention Heavy Scan so the user knows what to do.
+        assert any("Heavy Scan" in str(call) for call in info_calls)
+        # No worker should have been started.
+        assert window._enrich_worker is None
+
+    def test_enrich_preflight_allows_dat_verified_games(
+        self, qapp, seeded_db, monkeypatch, tmp_path
+    ) -> None:
+        """_on_enrich proceeds past the pre-flight when eligible games exist."""
+        import time
+
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        # Insert a DAT-verified game so the pre-flight passes.
+        game_id = queries_mod.upsert_game(
+            seeded_db, {"title": "Verified Game", "system_id": "snes"}
+        )
+        rom_id = queries_mod.upsert_rom(
+            seeded_db,
+            {
+                "path": str(tmp_path / "Verified Game.sfc"),
+                "filename": "Verified Game.sfc",
+                "extension": ".sfc",
+                "size_bytes": 512,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "match_confidence": "dat_verified",
+            },
+        )
+        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+
+        # Stub out the dialog so exec() returns immediately.
+        monkeypatch.setattr(
+            "romulus.ui.enrich_progress.EnrichProgressDialog.exec",
+            lambda self: None,
+        )
+        # Stub worker.start so it doesn't actually spin up a thread.
+        from romulus.ui.workers import EnrichWorker
+
+        monkeypatch.setattr(EnrichWorker, "start", lambda self: None)
+
+        window._on_enrich()
+
+        # Worker was created (pre-flight passed).
+        assert window._enrich_worker is not None

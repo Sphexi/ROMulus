@@ -64,7 +64,7 @@ def _match_badge_stylesheet(bg: str, fg: str) -> str:
         fg = "#ffffff"
     return (
         f"QLabel {{ background-color: {bg}; color: {fg}; "
-        "border-radius: 6px; padding: 2px 6px; }}"
+        "border-radius: 6px; padding: 2px 6px; }"
     )
 
 
@@ -110,7 +110,7 @@ class DetailPanel(QWidget):
 
         # System line.
         self.system_label = QLabel("", self)
-        self.system_label.setStyleSheet("color: #888;")
+        self.system_label.setStyleSheet("QLabel { color: #888; }")
         outer.addWidget(self.system_label)
 
         # Match badge.
@@ -153,7 +153,7 @@ class DetailPanel(QWidget):
 
         # ROM list (one row per linked ROM).
         self.rom_list_label = QLabel("ROM files:", self)
-        self.rom_list_label.setStyleSheet("color: #888;")
+        self.rom_list_label.setStyleSheet("QLabel { color: #888; }")
         outer.addWidget(self.rom_list_label)
         self.rom_list = QTextEdit(self)
         self.rom_list.setReadOnly(True)
@@ -223,7 +223,7 @@ class DetailPanel(QWidget):
         self.description.clear()
         self.rom_list.clear()
         self.match_badge.setText("")
-        self.match_badge.setStyleSheet("")
+        self.match_badge.setStyleSheet("QLabel {}")
         self.favorite_button.setChecked(False)
         self.favorite_button.setEnabled(False)
         self.collection_button.setEnabled(False)

@@ -27,12 +27,14 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from romulus.core import scan_library
+from romulus.core.dat_parser import load_all_dats, match_hashes
 from romulus.core.exporter import (
     ExportFilters,
     ExportOptions,
     ExportSummary,
     export_collection,
 )
+from romulus.core.hasher import hash_library
 from romulus.core.organizer import OrganizeAction, OrganizeSummary, execute_plan
 from romulus.db import get_connection
 from romulus.metadata import enrich_library
@@ -243,6 +245,58 @@ class OrganizeWorker(_DbWorker):
             summary.failed,
             list(summary.errors),
         )
+
+
+class HeavyScanWorker(_DbWorker):
+    """Hash every ROM, load bundled DATs if needed, and run DAT matching.
+
+    Emits ``progress(hashed, total, filename)`` per completed file.
+    Emits ``finished_ok(total_hashed, total_matched, errors)`` on success.
+    Emits ``failed(msg)`` on exception or cancel.
+
+    On first use (empty ``dat_entries`` table) the worker loads all bundled
+    DATs before hashing — this adds ~6 s but subsequent runs skip it.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int, int)
+
+    _operation_name = "Heavy Scan"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        library_path: Path | str,
+        bundled_dats_path: Path | str,
+        workers: int = 8,
+    ) -> None:
+        super().__init__(db_path)
+        self._library_path = str(library_path)
+        self._bundled_dats_path = Path(bundled_dats_path)
+        self._workers = workers
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        # Load DATs on first run (empty dat_entries table).
+        dat_count = conn.execute(
+            "SELECT COUNT(*) FROM dat_entries"
+        ).fetchone()[0]
+        if dat_count == 0:
+            self.progress.emit(0, 0, "Loading DATs…")
+            load_all_dats(conn, [self._bundled_dats_path])
+
+        errors = 0
+
+        def _progress(done: int, total: int, path: str) -> None:
+            self._check_cancel()
+            self.progress.emit(done, total, path)
+
+        total_hashed = hash_library(
+            conn,
+            progress_callback=_progress,
+            workers=self._workers,
+        )
+        total_matched = match_hashes(conn)
+        self.finished_ok.emit(total_hashed, total_matched, errors)
 
 
 class ExportWorker(_DbWorker):

@@ -36,6 +36,8 @@ class EnrichProgressDialog(QProgressDialog):
         covers_added: int,
     ) -> None:
         """Slot — show the final summary and switch Cancel into Close."""
+        self.setRange(0, 1)
+        self.setValue(1)
         self.setLabelText(
             f"Enrichment complete.\n"
             f"Games processed: {games_processed}\n"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
@@ -22,6 +23,7 @@ from romulus.ui.detail_panel import DetailPanel
 from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.export_dialog import ExportDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
+from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
 from romulus.ui.organize_preview import OrganizePreviewDialog
 from romulus.ui.scan_progress import ScanProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
@@ -29,8 +31,15 @@ from romulus.ui.system_sidebar import SystemSidebar
 from romulus.ui.workers import (
     EnrichWorker,
     ExportWorker,
+    HeavyScanWorker,
     OrganizeWorker,
     ScanWorker,
+)
+
+# Bundled DATs directory — resolved at import time relative to this file so the
+# path is correct whether the app is run from source or installed as a package.
+_BUNDLED_DATS_PATH = (
+    Path(__file__).resolve().parent.parent.parent.parent / "data" / "dats"
 )
 
 
@@ -46,6 +55,8 @@ class MainWindow(QMainWindow):
         self._selected_collection: int | None = None
         self._scan_worker: ScanWorker | None = None
         self._scan_dialog: ScanProgressDialog | None = None
+        self._heavy_scan_worker: HeavyScanWorker | None = None
+        self._heavy_scan_dialog: HeavyScanProgressDialog | None = None
         self._enrich_worker: EnrichWorker | None = None
         self._enrich_dialog: EnrichProgressDialog | None = None
         self._organize_worker: OrganizeWorker | None = None
@@ -114,8 +125,11 @@ class MainWindow(QMainWindow):
         quick_scan = QAction("&Quick Scan", self)
         quick_scan.triggered.connect(self._on_quick_scan)
         tools_menu.addAction(quick_scan)
-        heavy_scan = QAction("&Heavy Scan", self, enabled=False)
-        heavy_scan.setToolTip("Available in a later session.")
+        heavy_scan = QAction("&Heavy Scan", self)
+        heavy_scan.setToolTip(
+            "Hash and identify every ROM against the bundled DAT database."
+        )
+        heavy_scan.triggered.connect(self._on_heavy_scan)
         tools_menu.addAction(heavy_scan)
         tools_menu.addSeparator()
         enrich_action = QAction("&Enrich", self)
@@ -146,7 +160,10 @@ class MainWindow(QMainWindow):
         toolbar.addAction(quick)
 
         heavy = QAction("Heavy Scan", self)
-        heavy.setEnabled(False)
+        heavy.setToolTip(
+            "Hash and identify every ROM against the bundled DAT database."
+        )
+        heavy.triggered.connect(self._on_heavy_scan)
         toolbar.addAction(heavy)
 
         toolbar.addSeparator()
@@ -292,6 +309,26 @@ class MainWindow(QMainWindow):
             f"Romulus v{__version__}\nLocal-first ROM collection manager.",
         )
 
+    # ------------------------------------------------------------------
+    # Worker lifetime — clear-slots
+    # ------------------------------------------------------------------
+
+    def _clear_scan_worker(self) -> None:
+        """Slot — nulls the Python reference once the QThread has been deleted."""
+        self._scan_worker = None
+
+    def _clear_heavy_scan_worker(self) -> None:
+        self._heavy_scan_worker = None
+
+    def _clear_enrich_worker(self) -> None:
+        self._enrich_worker = None
+
+    def _clear_organize_worker(self) -> None:
+        self._organize_worker = None
+
+    def _clear_export_worker(self) -> None:
+        self._export_worker = None
+
     def _on_quick_scan(self) -> None:
         if self._scan_worker is not None and self._scan_worker.isRunning():
             QMessageBox.information(
@@ -319,6 +356,7 @@ class MainWindow(QMainWindow):
         self._scan_worker.failed.connect(self._on_scan_failed)
         self._scan_dialog.canceled.connect(self._scan_worker.cancel)
         self._scan_worker.finished.connect(self._scan_worker.deleteLater)
+        self._scan_worker.finished.connect(self._clear_scan_worker)
 
         self._scan_worker.start()
         self._scan_dialog.exec()
@@ -336,6 +374,83 @@ class MainWindow(QMainWindow):
     def _on_scan_failed(self, message: str) -> None:
         self.status_label.setText(message)
 
+    def _on_heavy_scan(self) -> None:
+        if (
+            self._heavy_scan_worker is not None
+            and self._heavy_scan_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Heavy Scan already running",
+                "A heavy scan is already in progress — "
+                "please wait for it to finish.",
+            )
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Start Heavy Scan?",
+            "Heavy Scan hashes every ROM and matches it against the bundled "
+            "DAT database.\n\n"
+            "This can take 30+ minutes for a large library over a network "
+            "drive. On first run it also loads the bundled DATs (~6 s).\n\n"
+            "Continue?",
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        library_path = get_config(self._conn, "library_path") or ""
+        if not library_path:
+            QMessageBox.warning(
+                self,
+                "No library configured",
+                "Set a library folder via File > Open Library first.",
+            )
+            return
+
+        scan_threads = int(get_config(self._conn, "scan_threads") or 8)
+
+        self._heavy_scan_dialog = HeavyScanProgressDialog(self)
+        self._heavy_scan_worker = HeavyScanWorker(
+            DEFAULT_DB_PATH,
+            library_path,
+            _BUNDLED_DATS_PATH,
+            workers=scan_threads,
+        )
+
+        self._heavy_scan_worker.progress.connect(
+            self._heavy_scan_dialog.on_progress
+        )
+        self._heavy_scan_worker.finished_ok.connect(
+            self._heavy_scan_dialog.on_finished
+        )
+        self._heavy_scan_worker.failed.connect(
+            self._heavy_scan_dialog.on_failed
+        )
+        self._heavy_scan_worker.finished_ok.connect(
+            self._on_heavy_scan_finished_ok
+        )
+        self._heavy_scan_worker.failed.connect(self._on_heavy_scan_failed)
+        self._heavy_scan_dialog.canceled.connect(self._heavy_scan_worker.cancel)
+        self._heavy_scan_worker.finished.connect(
+            self._heavy_scan_worker.deleteLater
+        )
+        self._heavy_scan_worker.finished.connect(self._clear_heavy_scan_worker)
+
+        self._heavy_scan_worker.start()
+        self._heavy_scan_dialog.exec()
+
+    def _on_heavy_scan_finished_ok(
+        self,
+        _total_hashed: int,
+        _total_matched: int,
+        _errors: int,
+    ) -> None:
+        self.refresh_all()
+
+    def _on_heavy_scan_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
     def _on_enrich(self) -> None:
         if self._enrich_worker is not None and self._enrich_worker.isRunning():
             QMessageBox.information(
@@ -344,6 +459,19 @@ class MainWindow(QMainWindow):
                 "Enrichment is already in progress — please wait for it to finish.",
             )
             return
+
+        # Pre-flight: enrichment only works on DAT-verified games. Surface this
+        # early so the user isn't confused by an instant "Completed (0 games)".
+        eligible = len(q.get_games_needing_enrichment(self._conn))
+        if eligible == 0:
+            QMessageBox.information(
+                self,
+                "No games ready for enrichment",
+                "Enrichment requires DAT-verified ROMs, and none were found.\n\n"
+                "Run Heavy Scan first to match your ROMs against the DAT database.",
+            )
+            return
+
         cover_cache = get_config(self._conn, "cover_cache_path") or None
 
         self._enrich_dialog = EnrichProgressDialog(self)
@@ -356,6 +484,7 @@ class MainWindow(QMainWindow):
         self._enrich_worker.failed.connect(self._on_enrich_failed)
         self._enrich_dialog.canceled.connect(self._enrich_worker.cancel)
         self._enrich_worker.finished.connect(self._enrich_worker.deleteLater)
+        self._enrich_worker.finished.connect(self._clear_enrich_worker)
 
         self._enrich_worker.start()
         self._enrich_dialog.exec()
@@ -415,6 +544,7 @@ class MainWindow(QMainWindow):
         self._organize_worker.finished.connect(
             self._organize_worker.deleteLater
         )
+        self._organize_worker.finished.connect(self._clear_organize_worker)
         self._organize_worker.start()
 
     def _on_organize_finished_ok(
@@ -490,6 +620,7 @@ class MainWindow(QMainWindow):
         self._export_worker.finished_ok.connect(self._on_export_finished_ok)
         self._export_worker.failed.connect(self._on_export_failed)
         self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_worker.finished.connect(self._clear_export_worker)
         self._export_worker.start()
 
     def _on_export_finished_ok(
@@ -518,16 +649,29 @@ class MainWindow(QMainWindow):
         window without waiting on them leaks the thread and (worse) can leave
         WAL files in an inconsistent state. We request cooperative cancel,
         then wait up to a few seconds for the thread to drain.
+
+        The ``try/except RuntimeError`` guards against the rare case where the
+        Python worker reference is still set (the clear-slot hasn't fired yet)
+        but the underlying C++ QThread object has already been deleted by Qt's
+        event loop. Calling ``isRunning()`` on a dead wrapper raises
+        ``RuntimeError: libshiboken: Internal C++ object already deleted``.
         """
         for worker in (
             self._scan_worker,
+            self._heavy_scan_worker,
             self._enrich_worker,
             self._organize_worker,
             self._export_worker,
         ):
-            if worker is None or not worker.isRunning():
+            if worker is None:
                 continue
-            worker.cancel()
-            # Bounded wait so a wedged worker never freezes shutdown forever.
-            worker.wait(5000)
+            try:
+                if not worker.isRunning():
+                    continue
+                worker.cancel()
+                # Bounded wait so a wedged worker never freezes shutdown forever.
+                worker.wait(5000)
+            except RuntimeError:
+                # Underlying C++ object already deleted — nothing to wait on.
+                pass
         super().closeEvent(event)
