@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>IBM - PC and Compatibles (Digital) (Desura)</name>
+		<description>IBM - PC and Compatibles (Digital) (Desura)</description>
+		<version>20190228-093151</version>
+		<author>FakeShemp</author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+	</header>
+	<game name="100% Orange Juice (World) (v1.1)">
+		<description>100% Orange Juice (World) (v1.1)</description>
+		<rom name="100_orange_installer_v11.exe" size="93924728" crc="EDAF94C8" md5="4CA88B142996093DBDE02ADB065913E9" sha1="32B16EF303D77E78A15A90A01F115291C02264D1" status="verified"/>
+	</game>
+	<game name="AaaaaAAaaaAAAaaAAAAaAAAAA! - A Reckless Disregard for Gravity (World)">
+		<description>AaaaaAAaaaAAAaaAAAAaAAAAA! - A Reckless Disregard for Gravity (World)</description>
+		<rom name="AaaaaAAaaaAAAaaAAAAaAAAAA_Setup_Indie_Royale.exe" size="197707274" crc="0B3B8082" md5="FFD4FBA21DA575B48CDA4C7DF190258D" sha1="0F9B861A651DE9A22458C105C7758625235CD5CE" status="verified"/>
+	</game>
+	<game name="Aquadelic GT (World) (v1.3.1)">
+		<description>Aquadelic GT (World) (v1.3.1)</description>
+		<rom name="AquadelicGT-setup-1.3.1.exe" size="404957892" crc="8AC9FAD5" md5="B61320F305775EA3F36F960A08673F27" sha1="C81BCC6EE6B9161ECA25C0F6CB8BB8CEEE881BEF" status="verified"/>
+	</game>
+	<game name="Aquadelic GT (World) (v1.3)">
+		<description>Aquadelic GT (World) (v1.3)</description>
+		<rom name="AquadelicGT-setup-1.3.exe" size="404411735" crc="495B4524" md5="420F2AC4B4B453A719A340170BD6DAA2" sha1="4FDAEF51134BEAEEFBF846108594B823A03B3D09" status="verified"/>
+	</game>
+	<game name="Arkadianax (World)">
+		<description>Arkadianax (World)</description>
+		<rom name="ARKADIANAX__Windows.exe" size="174542559" crc="CC4222C1" md5="780304B3122DC573219411FD76610258" sha1="DCA55EDC650E6D16AEADE5CCAF5D053E32663DC7" status="verified"/>
+	</game>
+	<game name="Arkhelom 3D (World) (v1.40)">
+		<description>Arkhelom 3D (World) (v1.40)</description>
+		<rom name="Arkhelom3DFullVersion1.40.exe" size="137220261" crc="107CF8DA" md5="5AD67B1E406C2575CDF3479831F0FF11" sha1="D988E35480A1243D2996C7C67D7B33C183E160E9" status="verified"/>
+	</game>
+	<game name="Atonement (World)">
+		<description>Atonement (World)</description>
+		<rom name="Atonement_setup.exe" size="444425136" crc="D54F8717" md5="E66528A0EF627255E462E72AF1C131EB" sha1="2371F37B6CD00DF049B7A5EB0510EC3E69DA472F" status="verified"/>
+	</game>
+</datafile>

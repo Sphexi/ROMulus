@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>Mobile - Symbian</name>
+		<description>Mobile - Symbian</description>
+		<version>20190228-093151</version>
+		<author></author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+	</header>
+</datafile>

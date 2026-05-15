@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>IBM - PC and Compatibles (Digital) (Humble Bundle)</name>
+		<description>IBM - PC and Compatibles (Digital) (Humble Bundle)</description>
+		<version>20190331-085627</version>
+		<author>Hiccup</author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+	</header>
+	<game name="Tacoma (World) (Windows)">
+		<description>Tacoma (World) (Windows)</description>
+		<rom name="tacoma-windows-64_05092018.zip" size="2782854494" crc="91F4BE37" md5="79BE1867113A51CBE5DD6BEA3FC29F31" sha1="04FE33BA075158E4AF8F3B8880A74849D06FF2AA" status="verified"/>
+	</game>
+	<game name="Tacoma (World) (Mac)">
+		<description>Tacoma (World) (Mac)</description>
+		<rom name="tacoma-osx-64_05092018.zip" size="2790218779" crc="BF97B47B" md5="E0BB92ADBDFD02D66FC5B71F2EB57509" sha1="8AEEF29021C30345E3D9E2FC10BAD003C13D51B2" status="verified"/>
+	</game>
+</datafile>

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>IBM - PC and Compatibles (Digital) (Steam) (Torrentzip)</name>
+		<description>IBM - PC and Compatibles (Digital) (Steam) (Torrentzip)</description>
+		<version>20190324-055211</version>
+		<author>Hiccup</author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+	</header>
+	<game name="Mighty Switch Force! Hyper Drive Edition (World)">
+		<description>Mighty Switch Force! Hyper Drive Edition (World)</description>
+		<rom name="ALI213.ini" size="1688" crc="46473260" md5="822F08C240D39553CBE1E25767AF248C" sha1="2871064087C39EC9DC63E6389450CA8F0DBEC1EF"/>
+		<rom name="MSF_HD.data" size="685437952" crc="22A92D51" md5="DCAE50CCB8E632AD0B2C92F17DE945CA" sha1="C3BCD3AF15793C2905067379B73691F574B20745"/>
+		<rom name="MSF_HD.exe" size="2277392" crc="C98F030A" md5="0EFE7563C2D47E660FCC4907B03A43C2" sha1="75BCD7955274306694AA9F23BD6AA9A8DEF54183"/>
+		<rom name="options.txt" size="352" crc="62DAAEC7" md5="6AA6E97912D4BB808178291F82BDA7C8" sha1="91C895EAE3538F2CB42001DC37E1DF1D044E1E3F"/>
+		<rom name="steam_api.dll" size="788480" crc="1E3A87A1" md5="BBBA363C7B9C42065B3660444C3CB37C" sha1="0B31C8547585FECD0D2393AEFED6E430873D0EDA"/>
+		<rom name="Profile\ALI123\Saves\save" size="18" crc="CCF855B4" md5="429847D62F464B234FC2F718706FD131" sha1="A0872225A3F7C518C6EC3892EFC9B499336AB259"/>
+		<rom name="Mighty Switch Force! Hyper Drive Edition (World).zip" size="678125173" crc="7D6F9768" md5="BB989EF55DAD114EA7590E5086784F11" sha1="91B466760DE6E94EC7451DA6103127C2C7226A4C"/>
+	</game>
+</datafile>

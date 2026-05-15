@@ -1,0 +1,288 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>IBM - PC and Compatibles (Digital) (GOG)</name>
+		<description>IBM - PC and Compatibles (Digital) (GOG)</description>
+		<version>20190307-194150</version>
+		<author>FakeShemp, niemand</author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+	</header>
+	<game name="1nsane (World) (En,Fr,De,Es,It) (v1.0)">
+		<description>1nsane (World) (En,Fr,De,Es,It) (v1.0)</description>
+		<rom name="setup_1nsane_1.0_(18948).exe" size="536501224" crc="80178F05" md5="474BAF6ECD61BA503A3440AE7186424A" sha1="0618E4900641A109A6D2A4BD127F1175C79D171A" status="verified"/>
+	</game>
+	<game name="1nsane (World) (En,Fr,De,Es,It) (v2.1.0.6)">
+		<description>1nsane (World) (En,Fr,De,Es,It) (v2.1.0.6)</description>
+		<rom name="setup_1nsane_2.1.0.6.exe" size="494551520" crc="7D1B261E" md5="F0F075B9420667359B16D9A8B3CB0E02" sha1="F3F768CE98E04F27FF24C2C440A41B17E2BE3DAB" status="verified"/>
+	</game>
+	<game name="Age of Wonders (World) (1.36.0053) (22161)">
+		<description>Age of Wonders (World) (1.36.0053) (22161)</description>
+		<game_id>age_of_wonders</game_id>
+		<rom name="setup_age_of_wonders_1.36.0053_(22161).exe" size="194681768" crc="24964358" md5="E9C045B1A915D0AF6F838EC0AD27D910" sha1="42C5FA2D5DD56C011533057F4940C9E7CD55295A" status="verified"/>
+	</game>
+	<game name="Age of Wonders - HD Wallpaper (World) (Extra)">
+		<description>Age of Wonders - HD Wallpaper (World) (Extra)</description>
+		<rom name="AoW_wallpaper.zip" size="4954872" crc="A8387EF9" md5="A11279FBE7928E1D7AB24D53F3B70367" sha1="E17400E226F47D64D1D574241E3FCA502F94A8A1" status="verified"/>
+	</game>
+	<game name="Age of Wonders - Soundtrack (World) (Extra)">
+		<description>Age of Wonders - Soundtrack (World) (Extra)</description>
+		<rom name="AoW_Soundtrack.zip" size="147831695" crc="AC8C8593" md5="F75BFB52D34C2BDE6F2333E6B1346FBE" sha1="48B478828AB104DCFA17871586FAA1982BFC7C87" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom (World) (2.0.0.1) (Linux)">
+		<description>Akalabeth - World of Doom (World) (2.0.0.1) (Linux)</description>
+		<rom name="gog_akalabeth_world_of_doom_2.0.0.3.sh" size="7569960" crc="0D6819DF" md5="11A770DB592AF2AC463E6CDC453B555B" sha1="B54157599BB2009BFC238DDDFE2A58153DF0C0B0" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom (World) (2.0.0.1) (Mac)">
+		<description>Akalabeth - World of Doom (World) (2.0.0.1) (Mac)</description>
+		<rom name="akalabeth_2.0.0.58.dmg" size="13634413" crc="411F7952" md5="3310B5B7322A6EE696D8001975DEE422" sha1="0856B949E2CB02A6A0C509855D652E9299D6CE92" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom (World) (2.0.0.1) (Windows)">
+		<description>Akalabeth - World of Doom (World) (2.0.0.1) (Windows)</description>
+		<rom name="setup_akalabeth_2.0.0.1.exe" size="19005672" crc="0E911ED6" md5="C9421B7F1F0BDE9A17796D346008B3AD" sha1="7DE351555AF2D0993745CB7AE12FE0B344B16999" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom - Akalabeth 1998 (World) (Linux) (Extra)">
+		<description>Akalabeth - World of Doom - Akalabeth 1998 (World) (Linux) (Extra)</description>
+		<rom name="akalabeth_1998_linux.zip" size="6418088" crc="0F91E755" md5="9C549339B300C3BFE73F8430D8FC74AF" sha1="0526B6A93208D6228A84A8174C1FBB85DDC34CFA" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom - Akalabeth 1998 (World) (Mac) (Extra)">
+		<description>Akalabeth - World of Doom - Akalabeth 1998 (World) (Mac) (Extra)</description>
+		<rom name="akalabeth_1998_mac.zip" size="13949380" crc="6B248CC0" md5="6FC5A250913BB5BF4616A66B1DECBE8F" sha1="2EA23A8C3174692BF9498E0087F3C4EBF2CBA231" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom - Akalabeth 1998 (World) (Windows) (Extra)">
+		<description>Akalabeth - World of Doom - Akalabeth 1998 (World) (Windows) (Extra)</description>
+		<rom name="akalabeth_1998_windows.zip" size="15869432" crc="384A213C" md5="391A4E62CFB301FE9510FC47DAB1553C" sha1="D1076B659B9FA3624AE128448662B77E5261DC25" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom - Manual (World) (Extra)">
+		<description>Akalabeth - World of Doom - Manual (World) (Extra)</description>
+		<rom name="akalabeth_manual.zip" size="1769425" crc="67F8AD23" md5="4F8317DC475974E3F34B80F47567BABB" sha1="9B81413C9DD54523BBEC08144454E9A566B7D1D7" status="verified"/>
+	</game>
+	<game name="Akalabeth - World of Doom - Wallpaper (World) (Extra)">
+		<description>Akalabeth - World of Doom - Wallpaper (World) (Extra)</description>
+		<rom name="akalabeth_wallpaper.zip" size="1876995" crc="604CA1E4" md5="546E0AFBC7FB8FE7B789D15D78760FC3" sha1="5D8CBBBA135B532790A21F5983CBFD1AB9856555" status="verified"/>
+	</game>
+	<game name="Alan Wake (World) (1.0 Hotfix) (24778)">
+		<description>Alan Wake (World) (1.0 Hotfix) (24778)</description>
+		<rom name="setup_alan_wake_1.0_hotfix_(24778)-1.bin" size="4294015998" crc="D2FEE11F" md5="7BB310B189A4F7AEF50E337289B91EC5" sha1="E6FAB2B828526E1E3AAFC9B225B970249718C9FE" status="verified"/>
+		<rom name="setup_alan_wake_1.0_hotfix_(24778)-2.bin" size="4143821500" crc="4572CC55" md5="0EE5C367E77693726BF4E2BAAEA92039" sha1="4E2B4AD96577947704595F10D48764F8E0CDE8C9" status="verified"/>
+		<rom name="setup_alan_wake_1.0_hotfix_(24778).exe" size="958560" crc="3951EC3C" md5="406B8F128570C01E2504D07707EEFE89" sha1="A028B08A7533F30C222CA2FC70888CB7F5ABD2AC" status="verified"/>
+	</game>
+	<game name="Alan Wake - Alan Wake Files Book (World) (Extra)">
+		<description>Alan Wake - Alan Wake Files Book (World) (Extra)</description>
+		<rom name="alan_wake_files_book.zip" size="4637638" crc="9B9F8325" md5="0F8B0F03A917C9F3F4362471E9F881D7" sha1="14B6416BE4A3AE0B003220660B90E6FFBA54195B" status="verified"/>
+	</game>
+	<game name="Alan Wake - Making of Videos (World) (Extra)">
+		<description>Alan Wake - Making of Videos (World) (Extra)</description>
+		<rom name="alan_wake_making_of.zip" size="358505470" crc="FA20A27B" md5="6D013B8AC5A36342CFD61FCA574AD783" sha1="40189EA053329D6694A944D2E7BF0E787B7D0E25" status="verified"/>
+	</game>
+	<game name="Alan Wake - Manual (World) (Extra)">
+		<description>Alan Wake - Manual (World) (Extra)</description>
+		<rom name="alan_wake_manual.zip" size="1906260" crc="6BD2495F" md5="0861441E6EA7EDF4052589D04A8B3D8C" sha1="A511F53EB35FC2E674D00AC6BC6EB0DC8E1C7B2D" status="verified"/>
+	</game>
+	<game name="Alan Wake - Night Springs Episodes (World) (Extra)">
+		<description>Alan Wake - Night Springs Episodes (World) (Extra)</description>
+		<rom name="alan_wake_night_springs.zip" size="485884742" crc="47D1A255" md5="6992AE95A18E748907724EADCDB5FC69" sha1="63E22AB1D6AF398AB66101D796575A291E615EAA" status="verified"/>
+	</game>
+	<game name="Alan Wake - Poets of the Fall - War Music Video (World) (Extra)">
+		<description>Alan Wake - Poets of the Fall - War Music Video (World) (Extra)</description>
+		<rom name="alan_wake_music_video.zip" size="209482783" crc="8DE5FF33" md5="061AF8F8A97C60453478CF845D23F594" sha1="B42CD29A25567DC81981280D9A65D3714A8287B5" status="verified"/>
+	</game>
+	<game name="Alan Wake - Wallpaper (World) (Extra)">
+		<description>Alan Wake - Wallpaper (World) (Extra)</description>
+		<rom name="alan_wake_wallpaper.zip" size="976505" crc="16EBDCD8" md5="0A2FD0797A8549C881192FB1E357AD84" sha1="A66F4B1B6264C0B5AA32C152A9BC0168F531E82E" status="verified"/>
+	</game>
+	<game name="Alan Wake - Writer in the Cabin Videos (World) (Extra)">
+		<description>Alan Wake - Writer in the Cabin Videos (World) (Extra)</description>
+		<rom name="alan_wake_writer_in_the_cabin.zip" size="233592017" crc="E54B3611" md5="A31EDDDEF277CD08B299DC86878BA5D0" sha1="DC64377E122AAD41B66DBA55CAA54D76DC9E8C34" status="verified"/>
+	</game>
+	<game name="Alan Wake’s American Nightmare (World) (2.1.0.24)">
+		<description>Alan Wake’s American Nightmare (World) (2.1.0.24)</description>
+		<rom name="setup_alan_wake_american_nightmare_2.1.0.24.exe" size="1970356736" crc="EA56FCF6" md5="DC500730B639A48897C00F5791E5B2F3" sha1="C7E115542E317C22DDA54952E43FF707DDC820CB" status="verified"/>
+	</game>
+	<game name="Alan Wake’s American Nightmare - Avatars (World) (Extra)">
+		<description>Alan Wake’s American Nightmare - Avatars (World) (Extra)</description>
+		<rom name="alan_wake_an_avatars.zip" size="184118" crc="E1039B8B" md5="2E64474F207EE93CEF602CBB4267CD60" sha1="58E8D2B7A65198F5699808F861C30DF64ECA8A71" status="verified"/>
+	</game>
+	<game name="Alan Wake’s American Nightmare - Developers Diaries (World) (Extra)">
+		<description>Alan Wake’s American Nightmare - Developers Diaries (World) (Extra)</description>
+		<rom name="alan_wake_developers_diaries.zip" size="181672663" crc="B3300C4E" md5="8DDCE5C2F7FC30104DCAB6496A369728" sha1="308286B9EAF2F380A5FAD5FA27AAFB6614736116" status="verified"/>
+	</game>
+	<game name="Alan Wake’s American Nightmare - Night Springs Episodes (World) (Extra)">
+		<description>Alan Wake’s American Nightmare - Night Springs Episodes (World) (Extra)</description>
+		<rom name="alan_wake_night_springs.zip" size="485884742" crc="47D1A255" md5="6992AE95A18E748907724EADCDB5FC69" sha1="63E22AB1D6AF398AB66101D796575A291E615EAA" status="verified"/>
+	</game>
+	<game name="Alan Wake’s American Nightmare - Wallpapers (World) (Extra)">
+		<description>Alan Wake’s American Nightmare - Wallpapers (World) (Extra)</description>
+		<rom name="alan_wake_an_wallpaper_.zip" size="3137327" crc="3529E213" md5="ECE9ED4E130B3FDB671FC646964B4C8E" sha1="D020D54B4C745043B7DEA74F7E3CFD41461E36BD" status="verified"/>
+	</game>
+	<game name="Alien Shooter + Expansions (World) (1.2) (18275)">
+		<description>Alien Shooter + Expansions (World) (1.2) (18275)</description>
+		<rom name="setup_alien_shooter_1.2_(18275).exe" size="58462384" crc="58D5B84C" md5="76BAE6FEA22628FED918D60797618E28" sha1="467686B08A1996D79463CA38252875286F21E701" status="verified"/>
+	</game>
+	<game name="Alien Shooter + Expansions (World) (Ru) (1.2) (18275)">
+		<description>Alien Shooter + Expansions (World) (Ru) (1.2) (18275)</description>
+		<rom name="setup_alien_shooter_russian_1.2_(18275).exe" size="58581568" crc="6A968A18" md5="728D7582146CAD3F2FCEBE11B0374C1B" sha1="60D40A2D7007E7A279D2B2C378DE741084EDF65F" status="verified"/>
+	</game>
+	<game name="Alien Shooter + Expansions - Manual (World) (Extra)">
+		<description>Alien Shooter + Expansions - Manual (World) (Extra)</description>
+		<rom name="alien_shooter_manual.zip" size="310565" crc="2DA22401" md5="DBCA8837648B8D72132562855CB9F9B0" sha1="2E0063548F4153C685F57BF166857E91050ED977" status="verified"/>
+	</game>
+	<game name="Alien Shooter + Expansions - Soundtrack (World) (Extra)">
+		<description>Alien Shooter + Expansions - Soundtrack (World) (Extra)</description>
+		<rom name="alien_shooter_music.zip" size="36421158" crc="48BE173B" md5="1534896E21D84902C8AC80DB80068AEB" sha1="CC42D06ABA7C338925D4B3181283916114A3A774" status="verified"/>
+	</game>
+	<game name="Aliens versus Predator Classic 2000 (World) (20160330) (2149)">
+		<description>Aliens versus Predator Classic 2000 (World) (20160330) (2149)</description>
+		<rom name="setup_avp_classic_20160330_(2149).exe" size="495713336" crc="DEBBC475" md5="D3B9CD1052BC2214D68DDF9AFB01F933" sha1="6A4001AA7C4C3198EC7D560F51995435AF3A9A19" status="verified"/>
+	</game>
+	<game name="Aliens versus Predator Classic 2000 - Avatars (World) (Extra)">
+		<description>Aliens versus Predator Classic 2000 - Avatars (World) (Extra)</description>
+		<rom name="avp_avatars.zip" size="634600" crc="9ECCB51C" md5="776870969D48666E5172D2F4F9F7CCBE" sha1="C73094758FA78CC768B0D28AC7E29429678B50EB" status="verified"/>
+	</game>
+	<game name="Aliens versus Predator Classic 2000 - Keyguide (World) (Extra)">
+		<description>Aliens versus Predator Classic 2000 - Keyguide (World) (Extra)</description>
+		<rom name="avp_controls_guide.zip" size="72496" crc="24C94188" md5="44BB62128CD938A2FCA521980AECD8F0" sha1="8F97D53688F33943202C6B2D92FA009698E69B44" status="verified"/>
+	</game>
+	<game name="Aliens versus Predator Classic 2000 - Manual (World) (Extra)">
+		<description>Aliens versus Predator Classic 2000 - Manual (World) (Extra)</description>
+		<rom name="avp_manual.zip" size="1598528" crc="ADD3647E" md5="C330A6F6CCB8CA6169DFEABD37BE90E7" sha1="5ADFD0A647F560A6CD13288A99C553282A14FFE5" status="verified"/>
+	</game>
+	<game name="Aliens versus Predator Classic 2000 - Wallpaper (World) (Extra)">
+		<description>Aliens versus Predator Classic 2000 - Wallpaper (World) (Extra)</description>
+		<rom name="avp_wallpaper.zip" size="1764317" crc="EBA0FE96" md5="BDE32D5791BB02B40019E4003CDCFE57" sha1="0BFF22DBEB92179DF899C3EE30F205685C66397D" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 1 (World) (2.2.0.7)">
+		<description>American McGee’s Grimm - Season 1 (World) (2.2.0.7)</description>
+		<rom name="setup_american_mcgees_grimm_season1_2.2.0.7.exe" size="1542784640" crc="43A79F3F" md5="6451B70BB9F0D977C35757EA612C169F" sha1="12D22BF9336B3EA4F00DF934586CEC98F0A542B2" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 1 - Artworks (World) (Extra)">
+		<description>American McGee’s Grimm - Season 1 - Artworks (World) (Extra)</description>
+		<rom name="american_grimm_artworks.zip" size="12990513" crc="8F81F928" md5="C3456A46737F1C54B9272916573F7A55" sha1="31263FDF14583A6F825A6E95497172144A088923" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 1 - Avatars (World) (Extra)">
+		<description>American McGee’s Grimm - Season 1 - Avatars (World) (Extra)</description>
+		<rom name="american_grimm_avatars.zip" size="6074376" crc="FDD0A361" md5="A3205D6F004108D1FF1B0A318DB96AE4" sha1="8CF784C73FFB6C91749A6CCA7A7094A8C856F203" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 2 (World) (2.2.0.7)">
+		<description>American McGee’s Grimm - Season 2 (World) (2.2.0.7)</description>
+		<rom name="setup_american_mcgees_grimm_season2_2.2.0.7.exe" size="1927304568" crc="FD7BB056" md5="CAF2F10E988C510EEFFFD7A1CCB2310B" sha1="E78D73DDC6ED541AD9E19026ACDD58C5CE0C8250" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 2 - Artworks (World) (Extra)">
+		<description>American McGee’s Grimm - Season 2 - Artworks (World) (Extra)</description>
+		<rom name="american_grimm_artworks.zip" size="12990513" crc="8F81F928" md5="C3456A46737F1C54B9272916573F7A55" sha1="31263FDF14583A6F825A6E95497172144A088923" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 2 - Avatars (World) (Extra)">
+		<description>American McGee’s Grimm - Season 2 - Avatars (World) (Extra)</description>
+		<rom name="american_grimm_avatars.zip" size="6074376" crc="FDD0A361" md5="A3205D6F004108D1FF1B0A318DB96AE4" sha1="8CF784C73FFB6C91749A6CCA7A7094A8C856F203" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 3 (World) (2.2.0.7)">
+		<description>American McGee’s Grimm - Season 3 (World) (2.2.0.7)</description>
+		<rom name="setup_american_mcgees_grimm_season3_2.2.0.7.bin" size="2275672514" crc="3AFB8F68" md5="C411CC8C2FC9D0A166C09E4E8E120A76" sha1="DE31DA383026D38C6EBE06C7A782ECBD5835E868" status="verified"/>
+		<rom name="setup_american_mcgees_grimm_season3_2.2.0.7.exe" size="35052464" crc="4A9A78CA" md5="B50961DD2D4F44AC28630B474BA7763B" sha1="21C2977979615CBD670C3F5A08DAA303328D702E" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 3 - Artworks (World) (Extra)">
+		<description>American McGee’s Grimm - Season 3 - Artworks (World) (Extra)</description>
+		<rom name="american_grimm_artworks.zip" size="12990513" crc="8F81F928" md5="C3456A46737F1C54B9272916573F7A55" sha1="31263FDF14583A6F825A6E95497172144A088923" status="verified"/>
+	</game>
+	<game name="American McGee’s Grimm - Season 3 - Avatars (World) (Extra)">
+		<description>American McGee’s Grimm - Season 3 - Avatars (World) (Extra)</description>
+		<rom name="american_grimm_avatars.zip" size="6074376" crc="FDD0A361" md5="A3205D6F004108D1FF1B0A318DB96AE4" sha1="8CF784C73FFB6C91749A6CCA7A7094A8C856F203" status="verified"/>
+	</game>
+	<game name="Amnesia - The Dark Descent (World) ((1.4) (23985) to (1.41) (24278)) (Windows) (Patch)">
+		<description>Amnesia - The Dark Descent (World) ((1.4) (23985) to (1.41) (24278)) (Windows) (Patch)</description>
+		<rom name="patch_amnesia_the_dark_descent_1.4_(23985)_to_1.41_(24278).exe" size="6371808" crc="CE5091B0" md5="4B2F41C52EE65950D7EEE4322469C57A" sha1="0B9E9A7B26FD132307097EAE8E00B5D03B6C98C5" status="verified"/>
+	</game>
+	<game name="Amnesia - The Dark Descent (World) (1.41) (24278) (Windows)">
+		<description>Amnesia - The Dark Descent (World) (1.41) (24278) (Windows)</description>
+		<rom name="setup_amnesia_the_dark_descent_1.41_(24278).exe" size="1391823816" crc="4F4F0E78" md5="0DC46A81C3AFEFB334633778155D5EC6" sha1="A254E97EBC3D9E64CA103FF47F7E54E92223A590" status="verified"/>
+	</game>
+	<game name="Amnesia - The Dark Descent (World) (1.41) (24296) (Linux)">
+		<description>Amnesia - The Dark Descent (World) (1.41) (24296) (Linux)</description>
+		<rom name="amnesia_the_dark_descent_1_41_24296.sh" size="1371946385" crc="D15995DF" md5="FCA01A73C92E40B1D948DB3ABF50353E" sha1="9E4348848D456C5A074B613B095CD494D44641AD" status="verified"/>
+	</game>
+	<game name="Amnesia - The Dark Descent (World) (1.41) (24301) (Mac)">
+		<description>Amnesia - The Dark Descent (World) (1.41) (24301) (Mac)</description>
+		<rom name="amnesia__the_dark_descent_enUS_1_41_gog_24301.pkg" size="1344587256" crc="81F34F12" md5="E930FFF506E52A8AEDBF485B47A4100C" sha1="D4E221D4212BFE1E70A2A92D24E80838E47563D3" status="verified"/>
+	</game>
+	<game name="Amnesia - The Dark Descent - Manual (World) (Extra)">
+		<description>Amnesia - The Dark Descent - Manual (World) (Extra)</description>
+		<rom name="amnesia_tdd_manual.zip" size="168582" crc="439A4B3D" md5="C7A491C7BA9FE66C3AE4DAC0A9AD51A0" sha1="81226FE7CC3AAD9AD6AA614BB2A903324D2D1546" status="verified"/>
+	</game>
+	<game name="Amnesia - The Dark Descent - Short Story Collection (World) (Extra)">
+		<description>Amnesia - The Dark Descent - Short Story Collection (World) (Extra)</description>
+		<rom name="amnesia_tdd_short_story.zip" size="1146724" crc="71AA6A7B" md5="54060BD56FE8C51AE74AF64EE1C55581" sha1="1428373D98C9ECFEEA7687C5E293AF1ABF2E8DDE" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender (World) (1.0) (20629)">
+		<description>Aqua Kitty - Milk Mine Defender (World) (1.0) (20629)</description>
+		<rom name="setup_aqua_kitty_-_milk_mine_defender_1.0_(20629).exe" size="162429688" crc="5A6F1CC9" md5="66A3530A0A4C323D8B181C0A0CBE2689" sha1="9A1E75FB451F557C13FC525FF9B46FD6F6809E40" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender - Art Creation Booklet (World) (Extra)">
+		<description>Aqua Kitty - Milk Mine Defender - Art Creation Booklet (World) (Extra)</description>
+		<rom name="aqua_kitty_art_creation.zip" size="2222379" crc="BAE68550" md5="7DBA59E22545966CE9C23225F098D96F" sha1="A41D4432D4851737A411CA45B6BBCA68D8C5E4A1" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender - Avatars (World) (Extra)">
+		<description>Aqua Kitty - Milk Mine Defender - Avatars (World) (Extra)</description>
+		<rom name="aqua_kitty_avatars.zip" size="325231" crc="D932A1AC" md5="F83343F410F11C0AB6AC6F73FB142F86" sha1="B8FE4700C276E42D445CDD7F0A37A22901F4B408" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender - Manual (World) (Extra)">
+		<description>Aqua Kitty - Milk Mine Defender - Manual (World) (Extra)</description>
+		<rom name="aqua_kitty_instructions.zip" size="1257742" crc="5A8A0263" md5="332D598792EB692A6480781174065AB8" sha1="8375763B520CB61324DBDDD0154BB2DFF62B3FAB" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender - Poster (World) (Extra)">
+		<description>Aqua Kitty - Milk Mine Defender - Poster (World) (Extra)</description>
+		<rom name="aqua_kitty_poster.zip" size="1381486" crc="F7FE5E7E" md5="4E925C0ACE81B992564D9E7B25179DE7" sha1="9F3D858AB1168FF80E50F137D9BFAA6F860DB4B7" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender - Soundtrack Sample (World) (Extra)">
+		<description>Aqua Kitty - Milk Mine Defender - Soundtrack Sample (World) (Extra)</description>
+		<rom name="aqua_kitty_soundtrack_2_tracks.zip" size="12792512" crc="7FCDF0F2" md5="15DEFF9D0B441C7C0621844FE388A5D6" sha1="E3550637C06754095B1A81CDD943BDB05B343147" status="verified"/>
+	</game>
+	<game name="Aqua Kitty - Milk Mine Defender - Wallpaper (World) (Extra)">
+		<description>Aqua Kitty - Milk Mine Defender - Wallpaper (World) (Extra)</description>
+		<rom name="aqua_kitty_wallpaper.zip" size="537199" crc="7311658B" md5="F3282112FBE81BC60FB15CD18BF803E8" sha1="9652993EAE819A204ABB65C8E7B4009403C15A9F" status="verified"/>
+	</game>
+	<game name="TeenAgent (World) (v2.1.0.16)">
+		<description>TeenAgent (World) (v2.1.0.16)</description>
+		<rom name="setup_teenagent_2.1.0.16.exe" size="19429296" crc="A638A078" md5="F55BDE36B2C8184033DF8BA7CD39E046" sha1="165FA63774C072F7D913853C61EF829D6EE7B06C" status="verified"/>
+	</game>
+	<game name="TeenAgent (World) (v1.0.0.4) (macOS)">
+		<description>TeenAgent (World) (v1.0.0.4) (macOS)</description>
+		<rom name="teenagent_1.0.0.4.dmg" size="8952794" crc="D6836FDA" md5="259DC335CBA2AD6788293B349398643C" sha1="9CF99987561BD7136F6BF86CAC11BC9ADE44F2CF" status="verified"/>
+	</game>
+	<game name="Tomb Raider - The Last Revelation (World) (v2.1.0.7)">
+		<description>Tomb Raider - The Last Revelation (World) (v2.1.0.7)</description>
+		<rom name="setup_tomb_raider4_2.1.0.7.exe" size="768518104" crc="69F93465" md5="9D5DB9A270D7AC1D3213ACF27BAA5787" sha1="676A868E15A6BBC858D65835581200635340C091" status="verified"/>
+	</game>
+	<game name="Tomb Raider - The Last Revelation (World) (20170914)">
+		<description>Tomb Raider - The Last Revelation (World) (20170914)</description>
+		<rom name="setup_tomb_raider_4_20170914_(14963).exe" size="807597008" crc="23A46505" md5="4CA09F29E4BE3FCB538EB1E28A937660" sha1="495C9B4297F7D0CCD255B7C5873600F0D87ABBF0" status="verified"/>
+	</game>
+	<game name="Tomb Raider - The Last Revelation (World) (Fr) (20170914)">
+		<description>Tomb Raider - The Last Revelation (World) (Fr) (20170914)</description>
+		<rom name="setup_tomb_raider_4_french_20170914_(14963).exe" size="808196824" crc="B328087F" md5="A613A034F2D1FD0EA031F74274757304" sha1="CAB9B4C4B290C6FE15DCBA37157DF4C228FC1283" status="verified"/>
+	</game>
+	<game name="Tomb Raider - The Last Revelation (World) (De) (20170914)">
+		<description>Tomb Raider - The Last Revelation (World) (De) (20170914)</description>
+		<rom name="setup_tomb_raider_4_german_20170914_(14963).exe" size="811485880" crc="4AB3E135" md5="66A6E0FE359684E6E64F9536B63AC88F" sha1="6FE93FB7A7FF2671AC6900096F91BB824E7135F4" status="verified"/>
+	</game>
+	<game name="Tomb Raider - The Last Revelation - The Times Exclusive Bonus Level (World) (DLC)">
+		<description>Tomb Raider - The Last Revelation - The Times Exclusive Bonus Level (World) (DLC)</description>
+		<rom name="_INST32I.EX_" size="297989" crc="CAC45F4D" md5="E69E71765D982275679EA0CBA6DD332C" sha1="C7B9FB2C9CAA3394547EA0E706E6F2DD49E17805" status="verified"/>
+		<rom name="_ISDel.exe" size="27648" crc="C26DC85B" md5="17B2090FB102634BD1324342933856D3" sha1="3A127285920F9F04D3718180C399FCE085D5C9F6" status="verified"/>
+		<rom name="_Setup.dll" size="34816" crc="046903A6" md5="ECACC9AB09D7E8898799FE5C4EBBBDD2" sha1="BE255FE9B6C9D638A40A5C1E88F2D5F4E37654E6" status="verified"/>
+		<rom name="_sys1.cab" size="181565" crc="6206ACC7" md5="7F5D6E21472FF270D7D9B7F092CC1E5B" sha1="420BDC6F8118E1FA206BCD390D9A57881E85B822" status="verified"/>
+		<rom name="_sys1.hdr" size="3905" crc="73CE7753" md5="81E4A05604DDC6C135D95906739AD216" sha1="9D79F655EE863AD1A3992464D03B178A953FF31C" status="verified"/>
+		<rom name="_user1.cab" size="2269" crc="10D43598" md5="367FD8040334B77B9CF99BAD63B037C0" sha1="842D6D1C97E3F15896A7EC83EE165FC808F6B402" status="verified"/>
+		<rom name="_user1.hdr" size="4293" crc="6214D134" md5="E3B7753A6412675F67FEC1B6B76F8E16" sha1="EC3E4B6810C6C6FB081772CB9E7B7756BF990F4F" status="verified"/>
+		<rom name="DATA.TAG" size="126" crc="2C492493" md5="A55C8FA2D86C701A3E66A3EF73C84EA2" sha1="6E9CDE0544AA0DEECECCCEA898EE53F736329DB7" status="verified"/>
+		<rom name="data1.cab" size="33956044" crc="EACF8717" md5="598B6C1EBDD3AB9011A12664D7F43E17" sha1="82A7612907F9C7C9E3FCB1CC8FA3D26EB8589945" status="verified"/>
+		<rom name="data1.hdr" size="5767" crc="E04FB443" md5="61C139CDE78FFB50139AF32B74DB5A3A" sha1="62FE84668B01638CA07A1321C9B36892F55A0C44" status="verified"/>
+		<rom name="lang.dat" size="4679" crc="68D98FB7" md5="CCCAAE5C8A23EAE65DF80531A235F6E8" sha1="D312101FBC3C477F471A5C85E63BE415D7E3EC6D" status="verified"/>
+		<rom name="layout.bin" size="590" crc="EF8E6795" md5="C1F33C5BF1F1587A408AB5CCA08BD6AF" sha1="480DF466ABEFD15E6B05AB5C5F91CD66868D02E9" status="verified"/>
+		<rom name="os.dat" size="450" crc="2D71E76E" md5="478F65A0B922B6BA0A6CE99E1D15C336" sha1="577BB092378B8E4522EFF40335FF7A50040170B7" status="verified"/>
+		<rom name="Setup.exe" size="71680" crc="D3B40B34" md5="1E013F8D89F59CE39C7FA9BC8BD3A166" sha1="BDBCBD779BC62D6729FCC72B2966A45AB674099C" status="verified"/>
+		<rom name="SETUP.INI" size="122" crc="DE867051" md5="F16798C639F793DECEB0589E8DCA2CDE" sha1="3C8F711FC545F8120B348CEA3444E3A046A11990" status="verified"/>
+		<rom name="setup.ins" size="57426" crc="93D31225" md5="38C138DB13CE49FF5AF7BAE5BC8160E7" sha1="E0CC7391AB6D528335C28AC280404672BD547584" status="verified"/>
+		<rom name="setup.lid" size="49" crc="3637907D" md5="1B79748E93A541CC1590505B6C72828A" sha1="1DDEFEE04DC9E9B2576DC34EEBCFA3DE4AA82AF9" status="verified"/>
+	</game>
+</datafile>

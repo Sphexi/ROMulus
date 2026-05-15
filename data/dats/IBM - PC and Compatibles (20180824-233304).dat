@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>IBM - PC and Compatibles</name>
+		<description>IBM - PC and Compatibles</description>
+		<version>20180824-233304</version>
+		<author>xuom2</author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+		<comment>Software Preservation Society (http://www.softpres.org/games)</comment>
+	</header>
+	<game name="Action Fighter (Europe) (Budget - Kixx) (Amiga + PC)">
+		<description>Action Fighter (Europe) (Budget - Kixx) (Amiga + PC)</description>
+		<rom name="Action Fighter (Europe) (Budget - Kixx) (Amiga + PC) (Disk 2 - PC).ipf" size="918252" crc="809BFB3B" md5="67A643A319BEF77FAEEE896DAF45C2CB" sha1="A6B2A61B6FD30F671706BF3DA37F479BF24FD0D3"/>
+	</game>
+	<game name="Rick Dangerous (Europe) (Budget - Kixx) (Amiga + PC)">
+		<description>Rick Dangerous (Europe) (Budget - Kixx) (Amiga + PC)</description>
+		<rom name="Rick Dangerous (Europe) (Budget - Kixx) (Amiga + PC) (Disk 2 - PC).ipf" size="918252" crc="CFDFD024" md5="4D0BDCB816889B89998FD6D9BC641650" sha1="1D572A14B923BE34D1E92FEFEE11DA045299B307"/>
+	</game>
+	<game name="Street Fighter (Europe) (Budget - Kixx) (Amiga + PC)">
+		<description>Street Fighter (Europe) (Budget - Kixx) (Amiga + PC)</description>
+		<rom name="Street Fighter (Europe) (Budget - Kixx) (Amiga + PC) (Disk 2 - PC).ipf" size="918252" crc="AE97B7E1" md5="7ACF66EE72500CE15A435981E8EF4653" sha1="9FC6CEBE832E0E19192C428FB93F4AD9A827B2A3"/>
+	</game>
+</datafile>

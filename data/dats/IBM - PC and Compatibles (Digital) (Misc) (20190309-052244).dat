@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<!DOCTYPE datafile PUBLIC "-//Logiqx//DTD ROM Management Datafile//EN" "http://www.logiqx.com/Dats/datafile.dtd">
+<datafile>
+	<header>
+		<name>IBM - PC and Compatibles (Digital) (Misc)</name>
+		<description>IBM - PC and Compatibles (Digital) (Misc)</description>
+		<version>20190309-052244</version>
+		<author>FakeShemp, Hiccup, niemand</author>
+		<homepage>No-Intro</homepage>
+		<url>http://www.no-intro.org</url>
+	</header>
+	<game name="5 Days a Stranger (World) (v1.3)">
+		<description>5 Days a Stranger (World) (v1.3)</description>
+		<rom name="5days.exe" size="4440143" crc="4680BE20" md5="0709112BED3EAC88D46484F02C282C40" sha1="A28FCB323BD314E482603CF83B268116FD86591A" status="verified"/>
+		<rom name="5days_readme.txt" size="3291" crc="AEA78850" md5="056AD6E5C8CD0FB04D3EA2972CD01DE4" sha1="457D73A0F84B82817213290F4D422536E3B81AC9" status="verified"/>
+		<rom name="winsetup.exe" size="49174" crc="9C63304F" md5="4FA50CAC562C2DBE0FB121E934BC6B49" sha1="8A3B754D8B19BA5DDEA8DD571B2B061322088F2A" status="verified"/>
+	</game>
+	<game name="6 Days a Sacrifice - Special Edition (World)">
+		<description>6 Days a Sacrifice - Special Edition (World)</description>
+		<rom name="6days_se.zip" size="4030785" crc="68E1D5DB" md5="20F43B12CA6844CB66DDDDEC96308BD8" sha1="C7E74C2495F0A4E9250E4A74E6885B88E623FB1A" status="verified"/>
+	</game>
+	<game name="DAYTONA Championship USA (World) (171206) (Update)">
+		<description>DAYTONA Championship USA (World) (171206) (Update)</description>
+		<rom name="SEGA_DAYTONA_UPDATE_171206.exe" size="4070621133" crc="EBBBDF84" md5="720A3B661E911902F19497E99C45DCFD" sha1="AD50BFE409B714F99D6F9D2EC107C7F81B561849" status="verified"/>
+	</game>
+	<game name="DAYTONA Championship USA - Daytona Software Update Installation Manual (World) (171206) (DYTSU20171204) (Manual)">
+		<description>DAYTONA Championship USA - Daytona Software Update Installation Manual (World) (171206) (DYTSU20171204) (Manual)</description>
+		<rom name="Daytona Software Update Installation Manual (171206).pdf" size="325622" crc="149B9CEE" md5="10A29428CD394503F8625AAA80D9E4D0" sha1="A03054FEED125C00405971E2A8CF0F9E34026886" status="verified"/>
+	</game>
+	<game name="DAYTONA Championship USA - Software Download Guide (World) (DYTSU20171204) (Manual)">
+		<description>DAYTONA Championship USA - Software Download Guide (World) (DYTSU20171204) (Manual)</description>
+		<rom name="Software Download Guide.pdf" size="268789" crc="9B6CC57F" md5="5E9F1AE95FA21BD67A63FAFACFA4CB83" sha1="F9850DEDFBC1A5E4CD572D8856F8C9CAA36701F4" status="verified"/>
+	</game>
+	<game name="Katawa Shoujo (World) (v1.3.1) (Linux)">
+		<description>Katawa Shoujo (World) (v1.3.1) (Linux)</description>
+		<rom name="[4ls]_katawa_shoujo_1.3.1-[linux-x86][18161880].tar.bz2" size="496188604" crc="18161880" md5="8511B385C755E810893D05E5264B363D" sha1="B2125F74EFE25D736C0C4973087842F90F43EAC3" status="verified"/>
+	</game>
+	<game name="Katawa Shoujo (World) (v1.3.1) (macOS)">
+		<description>Katawa Shoujo (World) (v1.3.1) (macOS)</description>
+		<rom name="[4ls]_katawa_shoujo_1.3.1-[mac][1DFC84A6].dmg" size="495732031" crc="1DFC84A6" md5="4BCF53D9598438F67D8B2C865909E4A8" sha1="540FF65556E4F8654772045C7FBCCE219FDAA8E4" status="verified"/>
+	</game>
+	<game name="Katawa Shoujo (World) (v1.3.1) (Windows)">
+		<description>Katawa Shoujo (World) (v1.3.1) (Windows)</description>
+		<rom name="[4ls]_katawa_shoujo_1.3.1-[windows][A6A47E20].exe" size="454465443" crc="A6A47E20" md5="054C788E97303AC19949CA852DB83F99" sha1="68E0AC88ED3B2F474CB0527429C19D0AC46F0364" status="verified"/>
+	</game>
+	<game name="Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.03)">
+		<description>Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.03)</description>
+		<rom name="mgtnsynchro_1.03.zip" size="74871565" crc="6BAA3BD2" md5="82A0204AE9EDF1F1523B15406643F2C5" sha1="48EDB68142BE4F7378AAA68F9DE255B83AD7A0DD" status="verified"/>
+	</game>
+	<game name="Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.00)">
+		<description>Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.00)</description>
+		<rom name="mgtnsynchro_1.00.zip" size="74383351" crc="E5499FA3" md5="7AEB08C106D0A7557A168F21A3A84002" sha1="06B6E84F2D44BEA3768A8B97A1F28B05D2BB2189" status="verified"/>
+	</game>
+	<game name="Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.01)">
+		<description>Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.01)</description>
+		<rom name="mgtnsynchro_1.01.zip" size="74385418" crc="7989659A" md5="1B314DF9F3DA8E415B84BEAE40E43C9A" sha1="9D14F508D92A747380AE8495ACEAE96102CFE761" status="verified"/>
+	</game>
+	<game name="Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.02)">
+		<description>Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.02)</description>
+		<rom name="mgtnsynchro_1.02.zip" size="74871469" crc="89E84E26" md5="9A0A87583BA3543225407508F0833224" sha1="0C4CE4901DF406AB92347FDFABD8C9F4A8392296" status="verified"/>
+	</game>
+	<game name="Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.04)">
+		<description>Shin Megami Tensei SYNCHRONICITY PROLOGUE (World) (Ja) (v1.04)</description>
+		<rom name="mgtnsynchro_1.04.zip" size="74871586" crc="85D85DFF" md5="0573A708B7220BEA3C8B50AF857C13AE" sha1="4AAF96259B6E835B86C63460193AF1C8C9893CB4" status="verified"/>
+	</game>
+	<game name="The Plan (World) (Linux)">
+		<description>The Plan (World) (Linux)</description>
+		<rom name="libsteam_api.so" size="66598" crc="23B7F4C9" md5="5708C3FB70DB4E7911E78234EC2F9154" sha1="F788CEB733B3F7C490A049544D1F9CA5CE97A2A4" status="verified"/>
+		<rom name="libSteamworksNative.so" size="468336" crc="9F52851A" md5="5D38BD000BEAB5A7BAE552A64C4CE680" sha1="6B55872D150FB6F410399AF4F6CE9087D156538B" status="verified"/>
+		<rom name="steam_appid.txt" size="6" crc="B8E3572F" md5="6185B9FB1B55BE4B8F000E9F23733598" sha1="108CE0C894185EF2C464899A9E059D5BBBB2A751" status="verified"/>
+		<rom name="The Plan.x86" size="17918104" crc="B22AA316" md5="1FC113A0EE6BE1AE9CC01DD4F6B611D5" sha1="17E62FC4BA9C4E73D8B42E9283733F0F6BF36590" status="verified"/>
+		<rom name="The Plan.x86_64" size="20386024" crc="A589F66B" md5="481C2F9C685FD86AB18715E73C513361" sha1="ECB710621E3821AF706777337348BD61DF51027D" status="verified"/>
+		<rom name="The Plan_Data\mainData" size="928776" crc="9D0AD9AC" md5="33104244DF5EEE971117314BBA6E0132" sha1="575E058853266A7DC05AC43A65AA8A61CE8D17AB" status="verified"/>
+		<rom name="The Plan_Data\Managed\Assembly-CSharp-firstpass.dll" size="88576" crc="594A0A24" md5="7A2F4CFB0681A0BFB26603E32D0FF232" sha1="1F8C05C1664C7E8A3C1D19AFDD1B4A0AA6FAF8DA" status="verified"/>
+		<rom name="The Plan_Data\Managed\Assembly-CSharp.dll" size="132096" crc="ED45BECB" md5="299A490E8FCCEB50DF262976D026C14D" sha1="2483B5F60E4DAE597EBB61B26CB9BE7C5FA7B78D" status="verified"/>
+		<rom name="The Plan_Data\Managed\Assembly-UnityScript-firstpass.dll" size="82432" crc="67F51054" md5="D1CE4119564B583B59DCF8A517929385" sha1="2CB887BD9BA8D80009124A4E7BCDEE4EC8DDD7F8" status="verified"/>
+		<rom name="The Plan_Data\Managed\Boo.Lang.dll" size="126976" crc="1D96FA41" md5="D5AB1DCA6EA6ACE709F1CF14ADAE92D9" sha1="E0E4AE457E789003E0D7E362E926A7A5C8FD4C72" status="verified"/>
+		<rom name="The Plan_Data\Managed\Mono.Security.dll" size="292864" crc="921DF8EA" md5="B02F14580FB0D960C446AC586C0E5FD3" sha1="8E5CB1815F02B9EDE5DC09DBA2CDA0B1903B7105" status="verified"/>
+		<rom name="The Plan_Data\Managed\mscorlib.dll" size="2496512" crc="8E4C1225" md5="06386CD3835D9B14192A8936C06B4258" sha1="1D5B2FA07878D7CE813D218A6F75BDEE86F5C575" status="verified"/>
+		<rom name="The Plan_Data\Managed\SteamworksManaged.dll" size="331776" crc="BD739893" md5="387C0BBDB11675DEC510D16343237F06" sha1="D14E8743FEEF6BB63BF0EFB765F1814B1F2A2BA2" status="verified"/>
+		<rom name="The Plan_Data\Managed\System.Core.dll" size="268288" crc="0270409D" md5="D882706B64AA9A622C03A22ED402C9A0" sha1="6856B7B8A39EBA7BBF0799283826316B77D402CF" status="verified"/>
+		<rom name="The Plan_Data\Managed\System.dll" size="1069568" crc="4B73CF9B" md5="DDAE75E5409FD5842CBABA4918CCD1E9" sha1="2153CFF2ED9F60722BCF251B7F15AFF8311DA9C0" status="verified"/>
+		<rom name="The Plan_Data\Managed\UnityEngine.dll" size="593408" crc="AB45F4E3" md5="E39DA3C915ED022832E700F7FF492800" sha1="91B96CB5A2512B88AC0D6D1462CC4FF14E4F67DE" status="verified"/>
+		<rom name="The Plan_Data\Managed\UnityEngine.dll.mdb" size="204099" crc="35A71C9F" md5="1664BFDA5E007C9C93B5AB6D94386ED7" sha1="26334806CF62CE79050E4F5C4A9B95F0FEE084C5" status="verified"/>
+		<rom name="The Plan_Data\Managed\UnityScript.Lang.dll" size="14336" crc="089C52C5" md5="5F22D89A74DA7F13199B9054D9A3EA73" sha1="0942638BF9144FF16B9EA011AF2240222640BD39" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\1.0\DefaultWsdlHelpGenerator.aspx" size="58196" crc="10E814BF" md5="66FED2411C14A0FC8CE4C593EF601BFB" sha1="4680A34AAE1193F1E4A6AAC1A5DD3C307DE257FB" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\1.0\machine.config" size="17259" crc="82F1AD8B" md5="8DCCD9A98D2575162AA366224A983C08" sha1="4EEDCAA785182201857134D8432807BC30742F6A" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\Browsers\Compat.browser" size="1605" crc="2E178A0B" md5="0D831C1264B5B32A39FA347DE368FE48" sha1="187DFF516F9448E63EA5078190B3347922C4B3EB" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\DefaultWsdlHelpGenerator.aspx" size="60453" crc="F3869A34" md5="3B3452C399F27A24EA5A589C7BFE750B" sha1="B06CB1D09AD3BBDF1D8214C910E3DA2A228D113C" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\machine.config" size="27626" crc="4F6C3F79" md5="603173D56ACE47A2D90B87FFBC3BFA91" sha1="889D20428D2F8A60F7AEEAD5D0DA4009200E5365" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\settings.map" size="2618" crc="A1A3C29F" md5="55DAC562878B7DD98EE8A7AD203A26E6" sha1="D16BAA15E7D3042BCF9D7318209C696F4DAF2CB0" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\web.config" size="11686" crc="534A9960" md5="2B6303C4F12762B71051DB6E947F90A4" sha1="A4D7E05516F63D6AB67327B299D4FB2852CB840B" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\browscap.ini" size="311984" crc="CE6C0AB3" md5="378BE809DF7D15AAC75A175693E25FBB" sha1="2D5454E161DE8A5B65910F27BD70D9D0AD8FA476" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\config" size="1655" crc="87383AD2" md5="63D81836A195C2BBFE31B2DE5F31FED8" sha1="3996E251B245CDC4F1AC74F92B2848EAB20C8E65" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\mconfig\config.xml" size="25817" crc="80B2033A" md5="F34B330F20DCE1BDCCE9058FCA287099" sha1="936520D5BB5C00A1985D7A4C4F0EF763A9031862" status="verified"/>
+		<rom name="The Plan_Data\Mono\x86_64\libmono.so" size="2852032" crc="D7DE0A05" md5="3BADE477850F2BCF66E8C89AF8866AC5" sha1="1C474EED3468A0B368CC7B38458CDAC9D6DD723B" status="verified"/>
+		<rom name="The Plan_Data\Mono\x86\libmono.so" size="2499976" crc="912226CD" md5="42DBEF796E209B2EBB109152F6613286" sha1="5355E40C23226C5B76CE6B759670508E86403A32" status="verified"/>
+		<rom name="The Plan_Data\PlayerConnectionConfigFile" size="21" crc="14A41DFA" md5="5AE77A044B3397138B3EB93FA730ED2D" sha1="BD868AAC078FDEED36093872FD83D31BEAFA3662" status="verified"/>
+		<rom name="The Plan_Data\Plugins\x86_64\ScreenSelector.so" size="53423" crc="741C9084" md5="B812D8045A2A8542EAB2944237F6120C" sha1="C4192BCFF7C3A8541A9968BF25958485CD220E81" status="verified"/>
+		<rom name="The Plan_Data\Plugins\x86\ScreenSelector.so" size="50826" crc="B5A7D039" md5="86FB824B5720DF4B66D9AC9E09E2430D" sha1="29A29A81F3BA7E15C195CFC969E6AB24BC97CF84" status="verified"/>
+		<rom name="The Plan_Data\resources.assets" size="13040228" crc="88DDA5EB" md5="9798B26B3CD60053A38E86D679236B91" sha1="9D65CCDBF17472D0E3AD59DCA8408A7D2A5CCE63" status="verified"/>
+		<rom name="The Plan_Data\Resources\unity default resources" size="1594013" crc="DC6BDBA3" md5="1C0CF9FC7D2C7469CC4D6756D598B7BE" sha1="23C13472B0E39B080BF2C8A266412025F4923BD3" status="verified"/>
+		<rom name="The Plan_Data\Resources\unity_builtin_extra" size="52876" crc="3D7CAE45" md5="4FCE0C2195CD825BE24C046B39D6451D" sha1="1D645FB9F9F120D1A14B0EB632B3D5DFCBB095F5" status="verified"/>
+		<rom name="The Plan_Data\Resources\UnityPlayer.png" size="15185" crc="168E339A" md5="2F3685F25720671E6B78F3E87039FF67" sha1="8AF06855963C695B129D84ACC6A6E7843AA50CBA" status="verified"/>
+		<rom name="The Plan_Data\ScreenSelector.png" size="76788" crc="5B8183C9" md5="5BC7831AC5E570142EB1FF5AE6813673" sha1="E5FC14F459CFD9995BDB5E03294BD2CA43C0B390" status="verified"/>
+		<rom name="The Plan_Data\sharedassets0.assets" size="77386112" crc="3A56D8E7" md5="24EF0282DFEF2026FD57F234A2E95C18" sha1="2D77CB099DF650943D41600A4C18838B2127F158" status="verified"/>
+		<rom name="The Plan_Data\sharedassets0.assets.resS" size="3272307" crc="658E6A89" md5="18A91C10C754FA07F59D4669DABA1C50" sha1="0ACC5F8BBE41DAA3DE069B01131C84650433BE66" status="verified"/>
+	</game>
+	<game name="The Plan (World) (macOS)">
+		<description>The Plan (World) (macOS)</description>
+		<rom name="The Plan.app\Contents\Data\mainData" size="891504" crc="A414F701" md5="3FA68009C2BA69AF249D97B908533BE0" sha1="3D57159C478F0D7BA0C9762EF285CCBE1077F976" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\Assembly-CSharp-firstpass.dll" size="88576" crc="854CA6D2" md5="78C362DF8F8F04FDEC811BDDD1AB9150" sha1="B6D69D34DFB0D88A4DA08F4F35E245193C8BE509" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\Assembly-CSharp.dll" size="132096" crc="1ED754D4" md5="F1FF8125750337CA73F67170D6D88912" sha1="A22817C992CA31BC0B77A469A3E8D018C00981B9" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\Assembly-UnityScript-firstpass.dll" size="82432" crc="6055F330" md5="25BB4FE83DACC962504C9D52DED6EC5F" sha1="A4515D42AE12A9F5731E9457794D4ED07D0F0B3A" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\Boo.Lang.dll" size="126976" crc="1D96FA41" md5="D5AB1DCA6EA6ACE709F1CF14ADAE92D9" sha1="E0E4AE457E789003E0D7E362E926A7A5C8FD4C72" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\1.0\DefaultWsdlHelpGenerator.aspx" size="58196" crc="10E814BF" md5="66FED2411C14A0FC8CE4C593EF601BFB" sha1="4680A34AAE1193F1E4A6AAC1A5DD3C307DE257FB" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\1.0\machine.config" size="17259" crc="82F1AD8B" md5="8DCCD9A98D2575162AA366224A983C08" sha1="4EEDCAA785182201857134D8432807BC30742F6A" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\2.0\Browsers\Compat.browser" size="1605" crc="2E178A0B" md5="0D831C1264B5B32A39FA347DE368FE48" sha1="187DFF516F9448E63EA5078190B3347922C4B3EB" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\2.0\DefaultWsdlHelpGenerator.aspx" size="60453" crc="F3869A34" md5="3B3452C399F27A24EA5A589C7BFE750B" sha1="B06CB1D09AD3BBDF1D8214C910E3DA2A228D113C" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\2.0\machine.config" size="27626" crc="4F6C3F79" md5="603173D56ACE47A2D90B87FFBC3BFA91" sha1="889D20428D2F8A60F7AEEAD5D0DA4009200E5365" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\2.0\settings.map" size="2618" crc="A1A3C29F" md5="55DAC562878B7DD98EE8A7AD203A26E6" sha1="D16BAA15E7D3042BCF9D7318209C696F4DAF2CB0" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\2.0\web.config" size="11686" crc="534A9960" md5="2B6303C4F12762B71051DB6E947F90A4" sha1="A4D7E05516F63D6AB67327B299D4FB2852CB840B" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\browscap.ini" size="311984" crc="CE6C0AB3" md5="378BE809DF7D15AAC75A175693E25FBB" sha1="2D5454E161DE8A5B65910F27BD70D9D0AD8FA476" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\config" size="1691" crc="A635914A" md5="F95C345C1C53B820487F6B72E62D5485" sha1="957E4E50E74C50347AF92ABF240C2C7AAB3F3F79" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\etc\mono\mconfig\config.xml" size="25817" crc="80B2033A" md5="F34B330F20DCE1BDCCE9058FCA287099" sha1="936520D5BB5C00A1985D7A4C4F0EF763A9031862" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\Mono.Security.dll" size="292864" crc="921DF8EA" md5="B02F14580FB0D960C446AC586C0E5FD3" sha1="8E5CB1815F02B9EDE5DC09DBA2CDA0B1903B7105" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\mscorlib.dll" size="2496512" crc="8E4C1225" md5="06386CD3835D9B14192A8936C06B4258" sha1="1D5B2FA07878D7CE813D218A6F75BDEE86F5C575" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\SteamworksManaged.dll" size="331776" crc="BD739893" md5="387C0BBDB11675DEC510D16343237F06" sha1="D14E8743FEEF6BB63BF0EFB765F1814B1F2A2BA2" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\System.Core.dll" size="268288" crc="0270409D" md5="D882706B64AA9A622C03A22ED402C9A0" sha1="6856B7B8A39EBA7BBF0799283826316B77D402CF" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\System.dll" size="1069568" crc="4B73CF9B" md5="DDAE75E5409FD5842CBABA4918CCD1E9" sha1="2153CFF2ED9F60722BCF251B7F15AFF8311DA9C0" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\UnityEngine.dll" size="600064" crc="55C62F0A" md5="9F8B8D3EEE4C85A58668627DF310922C" sha1="769C721A4C71C04E6BDE02A4C8D84EC845F170F1" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Managed\UnityScript.Lang.dll" size="14336" crc="089C52C5" md5="5F22D89A74DA7F13199B9054D9A3EA73" sha1="0942638BF9144FF16B9EA011AF2240222640BD39" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\PlayerConnectionConfigFile" size="21" crc="E5844127" md5="E78DC4C7FF74ED6689FDBD738DA5C839" sha1="B99C9398F430C346E44135B37F7B94708B1496AF" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\resources.assets" size="13040228" crc="1A8312E8" md5="FE3D099CB61AF998F91E94E005D1AABA" sha1="DD7C4A798306270B841538645ED2BD31E98047CE" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\Resources\unity_builtin_extra" size="52876" crc="3144BE07" md5="DCE9BA13DC3F432E267816C3EF9DCB4A" sha1="A2789E8AC1B347F75E1940A7FF4117BC29789D6F" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\sharedassets0.assets" size="77386112" crc="F3F3C34A" md5="F829DD441D7DEAF81A1B80DBC3293171" sha1="B53D314B71A9C7F934C3FC518F2C814F33A27758" status="verified"/>
+		<rom name="The Plan.app\Contents\Data\sharedassets0.assets.resS" size="3272307" crc="658E6A89" md5="18A91C10C754FA07F59D4669DABA1C50" sha1="0ACC5F8BBE41DAA3DE069B01131C84650433BE66" status="verified"/>
+		<rom name="The Plan.app\Contents\Frameworks\MonoEmbedRuntime\osx\libmono.0.dylib" size="3111996" crc="D5E7B9CF" md5="669AD377ABECAD6C6E68B07E40634FCC" sha1="1C8E0EF5C3AAED1E1577AD4D7D3F49B5044AF23A" status="verified"/>
+		<rom name="The Plan.app\Contents\Frameworks\MonoEmbedRuntime\osx\libMonoPosixHelper.dylib" size="350392" crc="658BD061" md5="B917C586F7B3C6300FA04C90A8398464" sha1="A32FE405B0E5E390B7EEED22524549A1DCDB6DDA" status="verified"/>
+		<rom name="The Plan.app\Contents\Info.plist" size="1181" crc="E8EF39AB" md5="2C8FF0A2461DFD02143E0D4BB6BD7E9C" sha1="A0890FD536F8A0B9728FAB86990A3E3EB9A9AAFA" status="verified"/>
+		<rom name="The Plan.app\Contents\MacOS\The Plan" size="22454900" crc="969B6A8B" md5="AD368C5668E870C2FC8F615BE0B6F60C" sha1="180969CC2970846C09ED2D4746DF3FE837AC7AA9" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\Ageia.tif" size="20908" crc="4CFC9C32" md5="99F78AF145C7D1F4A5D41909BA1F73EE" sha1="DEFB79CDE0D2998099D0F1887CF65AFA8D551C59" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\KeyConfig.nib\classes.nib" size="309" crc="D89886CE" md5="71C91CA09396CA63BDF27AE88F8A1A6B" sha1="3D8BEC1838B696A2842F665662AEB9FCB497140F" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\KeyConfig.nib\info.nib" size="450" crc="3F397D5F" md5="7A25EE0B4E3A66E3E5FA37B08AF50079" sha1="7084B06F76AA5AB2047B63F38ADC2CFB2E722F17" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\KeyConfig.nib\keyedobjects.nib" size="3934" crc="6D2386DF" md5="2666F9FB169BDAB695EC24A03DB33C33" sha1="3C1BD0C142F94D083885A4E9AE8FAAEBDDE78183" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\MainMenu.nib\classes.nib" size="787" crc="222975D3" md5="985AE865290C731E4E37FE30DD6CA902" sha1="3CF6BAAA8239ADA4A178C8EBA181FB9CB00FF670" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\MainMenu.nib\info.nib" size="622" crc="0D9BA77B" md5="C782E9A45D37727D482029DEDFCB0BC5" sha1="F45BAEBF6BBC1DB9544E678DBB10FC6A2B1B7FA4" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\MainMenu.nib\keyedobjects.nib" size="10428" crc="6EA4E251" md5="E9C35FD61BB1BFE2ABFD92859035F17D" sha1="BB7772F938FDB7BCEE0BE19A3723DE64B9206C11" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\Mono.tif" size="22702" crc="63D6DD91" md5="54721EB146BCB4F80F36AA21ADD9CFB5" sha1="A02EAE8ADE9848846829392C513C76E1BF63FCEA" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\PlayerIcon.icns" size="458426" crc="8565E436" md5="148F80F23573DE27F11EAE385ABCCD6F" sha1="9CA132589852910AFB6FD43DE13DED342E41A8ED" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\ScreenSelector.nib\classes.nib" size="1299" crc="5A75F273" md5="F8E2C2A4313B6F45482864B080ACD98D" sha1="1DAC39824C3F93B47ACA29A272FFE96426E46819" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\ScreenSelector.nib\info.nib" size="471" crc="6FA523DD" md5="7B9CBE87239FEC519DA7810BC69343EA" sha1="FE064576E71F44AEF9E4CC45BFB9661668FB632D" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\ScreenSelector.nib\keyedobjects.nib" size="17556" crc="D80093A4" md5="12E28E6525DABC4DEA122A9993665B9F" sha1="612B7B9AB935687FB1A8F11D2FE5A2CC0FAB3CE5" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\ScreenSelector.tif" size="122948" crc="4C4DB5D0" md5="7FFF106DACBA0ABC67344310E9419151" sha1="F8EEB166E651F0811E361248831BE959DEB46666" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\unity default resources" size="1594013" crc="DC6BDBA3" md5="1C0CF9FC7D2C7469CC4D6756D598B7BE" sha1="23C13472B0E39B080BF2C8A266412025F4923BD3" status="verified"/>
+		<rom name="The Plan.app\Contents\Resources\UnityPlayerIcon.png" size="4397" crc="A919C5C9" md5="6C337A0157DC78ADBD250F0804FC7AF3" sha1="409FC4C3BB7903CAD49800D77A5620F8FB76C00C" status="verified"/>
+	</game>
+	<game name="The Plan (World) (Windows)">
+		<description>The Plan (World) (Windows)</description>
+		<rom name="steam_api.dll" size="107432" crc="49C72061" md5="57A21B316C015C80FE41B6099E1613C7" sha1="594B8EF2E46BA673211972A45E2A3F7FAFCB456B" status="verified"/>
+		<rom name="steam_appid.txt" size="6" crc="B8E3572F" md5="6185B9FB1B55BE4B8F000E9F23733598" sha1="108CE0C894185EF2C464899A9E059D5BBBB2A751" status="verified"/>
+		<rom name="SteamworksNative.dll" size="126976" crc="B0EB9011" md5="F205C39D60EC501368781AC9C6611175" sha1="3BFD280E899BA5A36F5B4D4537CDAC23BA3AE98E" status="verified"/>
+		<rom name="The Plan.exe" size="11549696" crc="78D4CF8E" md5="A8666346727802CA59C15C0B34C75ADD" sha1="02515BAF6FC08D001AD5BB54E4BFABC0B87BD5A6" status="verified"/>
+		<rom name="The Plan_Data\mainData" size="928776" crc="25D0C3C8" md5="DD92FC1130BADD08278002F16E6EE8FE" sha1="F8D6974B53D4C302F8C4FCB12126A7E4364F7737" status="verified"/>
+		<rom name="The Plan_Data\Managed\Assembly-CSharp-firstpass.dll" size="88576" crc="F78AC999" md5="40FE46C61341A90FE888F026776290B1" sha1="C5C4C8FD5FDB40EFDFCA01BC62CB9570050BBF19" status="verified"/>
+		<rom name="The Plan_Data\Managed\Assembly-CSharp.dll" size="132096" crc="FBD34018" md5="9AB15F5362DD82FE8B05BA7F326FCE77" sha1="FF303D16261AB7BD17E1BF1B21C66E692910FC39" status="verified"/>
+		<rom name="The Plan_Data\Managed\Assembly-UnityScript-firstpass.dll" size="82432" crc="D12E44F5" md5="4A9CFA3A4F6144CF3C21A4AF0049609A" sha1="976AA71E5D13D78565E78EF51343ADB7CFC8034F" status="verified"/>
+		<rom name="The Plan_Data\Managed\Boo.Lang.dll" size="126976" crc="1D96FA41" md5="D5AB1DCA6EA6ACE709F1CF14ADAE92D9" sha1="E0E4AE457E789003E0D7E362E926A7A5C8FD4C72" status="verified"/>
+		<rom name="The Plan_Data\Managed\Mono.Security.dll" size="292864" crc="921DF8EA" md5="B02F14580FB0D960C446AC586C0E5FD3" sha1="8E5CB1815F02B9EDE5DC09DBA2CDA0B1903B7105" status="verified"/>
+		<rom name="The Plan_Data\Managed\mscorlib.dll" size="2496512" crc="8E4C1225" md5="06386CD3835D9B14192A8936C06B4258" sha1="1D5B2FA07878D7CE813D218A6F75BDEE86F5C575" status="verified"/>
+		<rom name="The Plan_Data\Managed\SteamworksManaged.dll" size="331776" crc="BD739893" md5="387C0BBDB11675DEC510D16343237F06" sha1="D14E8743FEEF6BB63BF0EFB765F1814B1F2A2BA2" status="verified"/>
+		<rom name="The Plan_Data\Managed\System.Core.dll" size="268288" crc="0270409D" md5="D882706B64AA9A622C03A22ED402C9A0" sha1="6856B7B8A39EBA7BBF0799283826316B77D402CF" status="verified"/>
+		<rom name="The Plan_Data\Managed\System.dll" size="1069568" crc="4B73CF9B" md5="DDAE75E5409FD5842CBABA4918CCD1E9" sha1="2153CFF2ED9F60722BCF251B7F15AFF8311DA9C0" status="verified"/>
+		<rom name="The Plan_Data\Managed\UnityEngine.dll" size="593408" crc="7BF8FE34" md5="9833DADDEF7DF17EFFE15915D6B77A97" sha1="BD0FC28972D8013489FC2348DAD86A73C722094A" status="verified"/>
+		<rom name="The Plan_Data\Managed\UnityScript.Lang.dll" size="14336" crc="089C52C5" md5="5F22D89A74DA7F13199B9054D9A3EA73" sha1="0942638BF9144FF16B9EA011AF2240222640BD39" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\1.0\DefaultWsdlHelpGenerator.aspx" size="58196" crc="10E814BF" md5="66FED2411C14A0FC8CE4C593EF601BFB" sha1="4680A34AAE1193F1E4A6AAC1A5DD3C307DE257FB" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\1.0\machine.config" size="17259" crc="82F1AD8B" md5="8DCCD9A98D2575162AA366224A983C08" sha1="4EEDCAA785182201857134D8432807BC30742F6A" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\Browsers\Compat.browser" size="1605" crc="2E178A0B" md5="0D831C1264B5B32A39FA347DE368FE48" sha1="187DFF516F9448E63EA5078190B3347922C4B3EB" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\DefaultWsdlHelpGenerator.aspx" size="60453" crc="F3869A34" md5="3B3452C399F27A24EA5A589C7BFE750B" sha1="B06CB1D09AD3BBDF1D8214C910E3DA2A228D113C" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\machine.config" size="27626" crc="4F6C3F79" md5="603173D56ACE47A2D90B87FFBC3BFA91" sha1="889D20428D2F8A60F7AEEAD5D0DA4009200E5365" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\settings.map" size="2618" crc="A1A3C29F" md5="55DAC562878B7DD98EE8A7AD203A26E6" sha1="D16BAA15E7D3042BCF9D7318209C696F4DAF2CB0" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\2.0\web.config" size="11686" crc="534A9960" md5="2B6303C4F12762B71051DB6E947F90A4" sha1="A4D7E05516F63D6AB67327B299D4FB2852CB840B" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\browscap.ini" size="311984" crc="CE6C0AB3" md5="378BE809DF7D15AAC75A175693E25FBB" sha1="2D5454E161DE8A5B65910F27BD70D9D0AD8FA476" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\config" size="1691" crc="A635914A" md5="F95C345C1C53B820487F6B72E62D5485" sha1="957E4E50E74C50347AF92ABF240C2C7AAB3F3F79" status="verified"/>
+		<rom name="The Plan_Data\Mono\etc\mono\mconfig\config.xml" size="25817" crc="80B2033A" md5="F34B330F20DCE1BDCCE9058FCA287099" sha1="936520D5BB5C00A1985D7A4C4F0EF763A9031862" status="verified"/>
+		<rom name="The Plan_Data\Mono\mono.dll" size="2101760" crc="D5899F15" md5="DA26DF5F915A5D90F689CA47D0F4101C" sha1="8AD343A35A66B28CDDF12E229C50D978FBA2E4EB" status="verified"/>
+		<rom name="The Plan_Data\PlayerConnectionConfigFile" size="21" crc="14A41DFA" md5="5AE77A044B3397138B3EB93FA730ED2D" sha1="BD868AAC078FDEED36093872FD83D31BEAFA3662" status="verified"/>
+		<rom name="The Plan_Data\resources.assets" size="13040228" crc="1A2BB6FD" md5="1EFCB0410B261FCC7E88F4B7D0EC7AA8" sha1="A1A51E86C555062A9013D9F2343F44F099DD641F" status="verified"/>
+		<rom name="The Plan_Data\Resources\unity default resources" size="1594013" crc="DC6BDBA3" md5="1C0CF9FC7D2C7469CC4D6756D598B7BE" sha1="23C13472B0E39B080BF2C8A266412025F4923BD3" status="verified"/>
+		<rom name="The Plan_Data\Resources\unity_builtin_extra" size="355352" crc="DA87E473" md5="6E0788082CB2A2295F21E3941E745F57" sha1="6AED3CCA61EB37869579A4F452C1B46015E08361" status="verified"/>
+		<rom name="The Plan_Data\ScreenSelector.bmp" size="393270" crc="E4800563" md5="9CE861D400996DEA75C73045AA189FCD" sha1="0E3CF6A3BE917D3D92EFC4EE8B1896C125997ABD" status="verified"/>
+		<rom name="The Plan_Data\sharedassets0.assets" size="80128128" crc="CFDC3EBF" md5="8D670D9CC7CACCEC5AB9DACB79526A0E" sha1="F35BB1D499308F1C0BD69668FD5C4F9F72356A33" status="verified"/>
+		<rom name="The Plan_Data\sharedassets0.assets.resS" size="3272307" crc="658E6A89" md5="18A91C10C754FA07F59D4669DABA1C50" sha1="0ACC5F8BBE41DAA3DE069B01131C84650433BE66" status="verified"/>
+	</game>
+	<game name="Treasure Adventure Game (World) (v1.0.1)">
+		<description>Treasure Adventure Game (World) (v1.0.1)</description>
+		<rom name="treasure_adventure_game_1.0.1.zip" size="109047808" crc="07F5D64C" md5="B8A93D39E72DC2E08A6EB86A2F73FE6D" sha1="F1CED5D91C0913F9CCBA6A4D74F2BA0ABC46D5A0" status="verified"/>
+	</game>
+</datafile>
