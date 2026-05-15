@@ -126,7 +126,7 @@ class DetailPanel(QWidget):
         self.next_button.clicked.connect(self._on_next_cover)
         nav_row.addWidget(self.next_button)
 
-        self.preferred_button = QPushButton("★ Make preferred", self)
+        self.preferred_button = QPushButton("☆ Make preferred", self)
         self.preferred_button.setToolTip(
             "Set this cover as the default for this game"
         )
@@ -357,16 +357,48 @@ class DetailPanel(QWidget):
         self.cover_label.setToolTip("")
 
     def _update_cover_nav(self) -> None:
-        """Refresh the navigation bar (index label + button states)."""
+        """Refresh the navigation bar (index label + button states).
+
+        The Make-preferred button reflects the state of the *currently
+        displayed* cover: filled star + disabled when this cover is already
+        preferred, hollow star + enabled when clicking would promote it.
+        Without this feedback the button felt no-op'y because nothing
+        visibly changed on click.
+        """
         n = len(self._covers)
         has_multiple = n > 1
         self.prev_button.setEnabled(has_multiple)
         self.next_button.setEnabled(has_multiple)
-        self.preferred_button.setEnabled(n > 0)
+
         if n == 0:
             self.cover_index_label.setText("")
+            self.preferred_button.setEnabled(False)
+            self.preferred_button.setText("☆ Make preferred")
+            return
+
+        idx = max(0, min(self._cover_index, n - 1))
+        current = self._covers[idx]
+        # ``is_preferred`` is guaranteed by the schema migration in
+        # ``db/schema.py:_migrate_covers_add_is_preferred`` which runs at
+        # startup; an IndexError on a malformed Row would be a real bug.
+        try:
+            is_pref = bool(current["is_preferred"])
+        except (IndexError, KeyError):
+            is_pref = False
+
+        marker = "★ " if is_pref else ""
+        self.cover_index_label.setText(f"{marker}{idx + 1} of {n}")
+
+        if is_pref:
+            self.preferred_button.setText("★ Preferred")
+            self.preferred_button.setEnabled(False)
+            self.preferred_button.setToolTip("This cover is already the default for this game.")
         else:
-            self.cover_index_label.setText(f"{self._cover_index + 1} of {n}")
+            self.preferred_button.setText("☆ Make preferred")
+            self.preferred_button.setEnabled(True)
+            self.preferred_button.setToolTip(
+                "Set this cover as the default for this game"
+            )
 
     # ------------------------------------------------------------------
     # Cover navigation slots

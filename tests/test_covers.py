@@ -399,6 +399,56 @@ class TestDetailPanelCovers:
         assert not panel.next_button.isEnabled()
         assert not panel.preferred_button.isEnabled()
 
+    def test_preferred_button_disabled_when_viewing_preferred_cover(
+        self, panel, panel_db
+    ) -> None:
+        """User feedback: clicking Make Preferred had no visible effect.
+        With 3 covers, index 0 is the preferred one — the button must
+        show its filled-star state and be disabled.
+        """
+        game_id = _make_game(panel_db, n_covers=3)
+        panel.update_game(game_id)
+        # Initial state: viewing index 0 = the preferred cover.
+        assert not panel.preferred_button.isEnabled()
+        assert panel.preferred_button.text() == "★ Preferred"
+        # Index label shows the star marker for the preferred cover.
+        assert panel.cover_index_label.text().startswith("★ 1 of 3")
+
+    def test_preferred_button_enabled_when_viewing_non_preferred_cover(
+        self, panel, panel_db
+    ) -> None:
+        game_id = _make_game(panel_db, n_covers=3)
+        panel.update_game(game_id)
+        panel._on_next_cover()  # move to index 1 (not preferred)
+        assert panel.preferred_button.isEnabled()
+        assert panel.preferred_button.text() == "☆ Make preferred"
+        # No star marker on non-preferred index.
+        assert panel.cover_index_label.text() == "2 of 3"
+
+    def test_clicking_preferred_updates_button_state(
+        self, panel, panel_db
+    ) -> None:
+        """End-to-end: navigate to a non-preferred cover, click Make
+        Preferred, and verify the button now reads "★ Preferred" — proving
+        the state change actually persisted and the UI reflects it.
+        """
+        game_id = _make_game(panel_db, n_covers=3)
+        panel.update_game(game_id)
+        panel._on_next_cover()  # index 1, was not preferred
+        cover_id_before = int(panel._covers[panel._cover_index]["id"])
+        assert panel.preferred_button.text() == "☆ Make preferred"
+        panel._on_make_preferred()
+        # The just-preferred cover is now sorted to index 0.
+        assert int(panel._covers[0]["id"]) == cover_id_before
+        # Button state reflects: "I'm viewing the preferred cover now."
+        assert not panel.preferred_button.isEnabled()
+        assert panel.preferred_button.text() == "★ Preferred"
+        # And it's persisted in the DB.
+        row = panel_db.execute(
+            "SELECT is_preferred FROM covers WHERE id = ?", (cover_id_before,)
+        ).fetchone()
+        assert row["is_preferred"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Discovery — _ensure_preferred integration
