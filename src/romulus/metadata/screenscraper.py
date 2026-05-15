@@ -111,10 +111,11 @@ def test_connection(
     }
     url = f"{SCREENSCRAPER_BASE_URL}/ssuserInfos.php"
 
-    # NB: ``test_connection`` intentionally does NOT call ``_respect_rate_
-    # limit`` — the settings dialog disables the "Test" button while a test is
-    # in flight (ui/settings_dialog.py), giving us UI-side throttling already.
-    # The 1s server-side spacing only matters for bulk lookups.
+    # Honour the same 1 req/sec spacing as bulk lookups: the settings-dialog
+    # button is disabled during an in-flight request, but a user can still
+    # click Test back-to-back across separate dialog opens and rate-limit
+    # their own account. See security audit v0.1.0 finding #6.
+    _respect_rate_limit()
     with http_client(client, timeout) as http:
         try:
             response = http.get(url, params=params)

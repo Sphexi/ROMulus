@@ -41,11 +41,23 @@ def http_client(
     screenscraper. When ``client`` is None a fresh one is constructed with
     the supplied timeout and closed on exit; when ``client`` is supplied it
     is yielded as-is and the caller retains ownership.
+
+    Security defaults pinned explicitly (audit v0.1.0 — networking notes):
+
+    * ``verify=True`` — full TLS certificate verification against the system
+      trust store. This is httpx's default, but pinned in code so a future
+      refactor can't accidentally toggle it off.
+    * ``follow_redirects=False`` — also the default; pinned so a malicious
+      response can't redirect a cover-art GET to an attacker host. The
+      metadata clients never expect a redirect; if one fires, we treat it as
+      a miss.
     """
     if client is not None:
         yield client
         return
-    with httpx.Client(timeout=timeout) as owned:
+    with httpx.Client(
+        timeout=timeout, verify=True, follow_redirects=False
+    ) as owned:
         yield owned
 
 

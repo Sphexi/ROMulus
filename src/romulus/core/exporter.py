@@ -265,6 +265,10 @@ def preview_export(
     unsupported: set[str] = set()
     by_system: Counter[str] = Counter()
     folder_tree: defaultdict[str, list[str]] = defaultdict(list)
+    # Cache the per-system destination so the security guard in
+    # ``_system_dest_dir`` runs once per (profile, system) rather than once per
+    # ROM — same validation, less ``resolve()`` overhead on large libraries.
+    dest_cache: dict[str, Path] = {}
     for row in _candidate_roms(conn, filters):
         system_id = str(row["system_id"])
         mapping = profile.systems.get(system_id)
@@ -274,9 +278,9 @@ def preview_export(
         preview.file_count += 1
         preview.total_size_bytes += int(row["size_bytes"] or 0)
         by_system[system_id] += 1
-        folder_key = str(
-            target / profile.base_path / mapping.folder
-        ).replace("\\", "/")
+        if system_id not in dest_cache:
+            dest_cache[system_id] = _system_dest_dir(target, profile, mapping)
+        folder_key = str(dest_cache[system_id]).replace("\\", "/")
         folder_tree[folder_key].append(str(row["filename"]))
     preview.by_system = dict(by_system)
     preview.folder_tree = dict(folder_tree)
@@ -292,8 +296,36 @@ def preview_export(
 def _system_dest_dir(
     target: Path, profile: DestinationProfile, mapping: SystemMapping
 ) -> Path:
-    """Compute the destination directory for a system under ``target``."""
-    return target / profile.base_path / mapping.folder
+    """Compute the destination directory for a system under ``target``.
+
+    Defense-in-depth (security audit v0.1.0 finding #1): even though
+    :class:`DestinationProfile` field validators reject absolute paths,
+    ``..`` traversal, drive-letter prefixes, and Windows reserved names at
+    load time, we resolve the final path and assert it stays inside the
+    requested target directory. A user-supplied profile that somehow
+    bypasses the load-time check (or a bug in a future validator change)
+    cannot cause writes outside ``target``.
+    """
+    dest_dir = target / profile.base_path / mapping.folder
+    try:
+        resolved = dest_dir.resolve()
+        target_resolved = target.resolve()
+    except OSError as exc:
+        # ``resolve()`` can fail on Windows when the path contains characters
+        # the filesystem cannot represent. Refuse the export rather than
+        # writing to an unexpected location.
+        raise ValueError(
+            f"cannot resolve export destination {dest_dir!s}: {exc}"
+        ) from exc
+    if (
+        resolved != target_resolved
+        and target_resolved not in resolved.parents
+    ):
+        raise ValueError(
+            f"profile would write outside target: "
+            f"resolved={resolved!s} target={target_resolved!s}"
+        )
+    return dest_dir
 
 
 def export_collection(
@@ -353,12 +385,27 @@ def export_collection(
         dest_dir = _system_dest_dir(target, profile, mapping)
         dest = dest_dir / str(row["filename"])
         size_bytes = int(row["size_bytes"] or 0)
-        if dest.exists() and dest.stat().st_size == size_bytes:
-            # Already exported — treat as a successful no-op so re-running the
-            # exporter against a partially-populated SD card is idempotent.
+        if dest.exists():
+            existing_size = dest.stat().st_size
+            if existing_size == size_bytes:
+                # Already exported — treat as a successful no-op so re-running
+                # the exporter against a partially-populated SD card is
+                # idempotent.
+                summary.files_skipped += 1
+                systems_touched.add(system_id)
+                by_system[system_id].append(row)
+                continue
+            # Security audit v0.1.0 finding #4: refuse to silently overwrite a
+            # pre-existing file whose size differs from the source. The
+            # destination almost certainly belongs to something else (the user
+            # picked the wrong target folder, or a profile escaped its base).
+            # Skip + report so the user can investigate rather than losing
+            # data.
             summary.files_skipped += 1
-            systems_touched.add(system_id)
-            by_system[system_id].append(row)
+            summary.errors.append(
+                f"refusing to overwrite existing file at {dest} "
+                f"(existing={existing_size}B, source={size_bytes}B)"
+            )
             continue
         try:
             atomic.atomic_copy(source, dest)

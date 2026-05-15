@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege default for GITHUB_TOKEN — lint+test only need to read
+# the repo. Per security audit v0.1.0 finding #10.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Lint and test (Python 3.12)
@@ -20,11 +25,15 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        # SHA-pinned (v4.2.2) per security audit v0.1.0 finding #10 —
+        # major-version tags are mutable and could be re-pointed by a
+        # compromised actions org.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       - name: Set up Python 3.12
         id: setup-python
-        uses: actions/setup-python@v5
+        # SHA-pinned (v5.3.0) per security audit v0.1.0 finding #10.
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
         with:
           python-version: "3.12"
           cache: pip

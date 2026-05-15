@@ -11,6 +11,7 @@ Layer 3 (hashing + DAT matching) lives in `core.identifier` and `core.hasher`.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import sqlite3
@@ -23,6 +24,8 @@ from pathlib import Path
 from romulus.core._no_intro_tokens import FILENAME_REGION_TOKENS, REVISION_RE
 from romulus.db import queries
 from romulus.models.system import get_extensions_by_system, get_systems_by_alias
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -574,11 +577,18 @@ def scan_library(
             file_path = root_path / filename
             try:
                 stat = file_path.stat()
-            except OSError:
+            except OSError as exc:
                 # Real failure to read file metadata — permission denied,
                 # broken symlink, file vanished between listing and stat.
                 # Count separately from "wrong extension" skips so the scan
-                # history surfaces partial failures to the UI.
+                # history surfaces partial failures to the UI. Log at debug
+                # level so operators investigating a "N errors" badge can
+                # surface which files failed without leaking error volume
+                # into the default info-level log stream (audit v0.1.0
+                # finding #13).
+                logger.debug(
+                    "scan stat failed: path=%s err=%s", file_path, exc
+                )
                 errors += 1
                 continue
 

@@ -376,3 +376,59 @@ class TestMatchHashes:
         ).fetchone()
         # Should still be the original name (no re-stamp).
         assert row["dat_match"] == "Existing Name"
+
+
+# ---------------------------------------------------------------------------
+# Security regression — XML entity-expansion DoS (audit v0.1.0 finding #3)
+# ---------------------------------------------------------------------------
+
+
+_BILLION_LAUGHS_DAT = """<?xml version="1.0"?>
+<!DOCTYPE datafile [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+]>
+<datafile>
+    <header><name>Evil</name></header>
+    <game name="&lol4;"></game>
+</datafile>
+"""
+
+
+class TestXmlEntityExpansionGuard:
+    """A malicious DAT XML must not be parsable into expanded entities.
+
+    With stdlib ``xml.etree.ElementTree`` this XML would inflate ``&lol4;`` to
+    10^4 = 10,000 ``lol`` strings on parse — and at depth-6 (which a
+    real-world bomb uses) it's a billion. ``defusedxml`` blocks the entity
+    expansion before any inflation happens, raising a defusedxml-specific
+    exception or returning a parse error.
+    """
+
+    def test_billion_laughs_dat_is_rejected(self, tmp_path: Path) -> None:
+        # defusedxml raises ``EntitiesForbidden`` (a subclass of ParseError /
+        # the stdlib XML errors). ``parse_dat_file`` catches parse errors and
+        # returns an empty list — so the assertion is that the parser DID
+        # refuse rather than expand the entities into the canonical game name.
+        bomb = tmp_path / "bomb.dat"
+        bomb.write_text(_BILLION_LAUGHS_DAT, encoding="utf-8")
+        entries = parse_dat_file(bomb)
+        # Either empty (caught + skipped) or, if defusedxml raised an
+        # exception subclass we don't catch yet, that exception would have
+        # bubbled — we want the catch to remain comprehensive.
+        assert entries == [], (
+            f"defusedxml must block entity expansion, got {len(entries)} "
+            f"entries"
+        )
+
+    def test_billion_laughs_via_load_all_dats(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Bulk loader must skip the bomb without consuming gigabytes of RAM."""
+        bomb = tmp_path / "bomb.dat"
+        bomb.write_text(_BILLION_LAUGHS_DAT, encoding="utf-8")
+        # Should complete near-instantly and insert zero rows.
+        inserted = load_all_dats(seeded_db, [tmp_path])
+        assert inserted == 0

@@ -4,11 +4,17 @@ version = "0.1.0"
 description = "Local-first desktop ROM collection manager for retro game consoles"
 requires-python = ">=3.12"
 dependencies = [
-    "PySide6",
-    "httpx",
-    "pydantic",
-    "structlog",
-    "pyyaml",
+    # Minimum version bounds pinned per security audit v0.1.0 finding #9:
+    # without them a fresh resolve could install pydantic v1 (the code uses v2
+    # idioms) or an httpx version with known CVEs. defusedxml is required to
+    # block XML billion-laughs DoS against user-supplied DAT and LaunchBox
+    # XMLs (finding #3).
+    "PySide6>=6.6",
+    "httpx>=0.27",
+    "pydantic>=2.5",
+    "structlog>=24.1",
+    "pyyaml>=6.0",
+    "defusedxml>=0.7",
 ]
 
 [project.optional-dependencies]

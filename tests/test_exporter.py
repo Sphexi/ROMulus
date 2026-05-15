@@ -889,3 +889,151 @@ class TestAtomicWrite:
             assert leftovers == [], f"unexpected leftovers: {leftovers}"
         # Source is untouched.
         assert rom_path.read_bytes() == b"src-bytes"
+
+
+# ---------------------------------------------------------------------------
+# Security regression — profile path traversal (audit v0.1.0 finding #1)
+# ---------------------------------------------------------------------------
+
+
+class TestProfilePathTraversal:
+    """End-to-end check that a malicious profile YAML cannot escape ``target``.
+
+    Pydantic validators reject the profile at load time, but ``_system_dest_dir``
+    also resolves the final path at export time as a belt-and-suspenders
+    guard. Both layers are tested here.
+    """
+
+    def test_load_profile_rejects_absolute_base_path(self, tmp_path: Path) -> None:
+        """A profile YAML with absolute ``base_path`` is refused at load time."""
+        import pytest
+        from pydantic import ValidationError
+
+        bad = tmp_path / "evil.yaml"
+        bad.write_text(
+            "id: evil\nname: Evil\nbase_path: /etc\nsystems: {}\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValidationError):
+            load_profile(bad)
+
+    def test_load_profile_rejects_traversal_folder(self, tmp_path: Path) -> None:
+        """A system mapping with ``..`` traversal is refused at load time."""
+        import pytest
+        from pydantic import ValidationError
+
+        bad = tmp_path / "evil.yaml"
+        bad.write_text(
+            "id: evil\nname: Evil\nbase_path: roms\n"
+            "systems:\n  snes:\n    folder: '../../etc'\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ValidationError):
+            load_profile(bad)
+
+    def test_load_all_profiles_skips_malicious_yaml(self, tmp_path: Path) -> None:
+        """``load_all_profiles`` logs+skips a bad profile, doesn't crash."""
+        builtin = tmp_path / "builtin"
+        user = tmp_path / "user"
+        builtin.mkdir()
+        user.mkdir()
+        (builtin / "ok.yaml").write_text(
+            "id: ok\nname: OK\nbase_path: roms\nsystems: {}\n", encoding="utf-8"
+        )
+        (user / "evil.yaml").write_text(
+            "id: evil\nname: Evil\nbase_path: /etc\nsystems: {}\n",
+            encoding="utf-8",
+        )
+        profiles = load_all_profiles(builtin_dir=builtin, user_dir=user)
+        assert "ok" in profiles
+        assert "evil" not in profiles
+
+    def test_export_runtime_guard_blocks_constructed_escape(
+        self, tmp_path: Path
+    ) -> None:
+        """Even if a profile bypasses validators, ``_system_dest_dir`` refuses.
+
+        We construct the malicious profile via ``model_construct`` (skipping
+        validators) to simulate a hypothetical future bug in the load-time
+        check. ``_system_dest_dir`` resolves the final path and raises rather
+        than writing outside ``target``.
+        """
+        import pytest
+
+        from romulus.core.exporter import _system_dest_dir
+
+        evil_profile = DestinationProfile.model_construct(
+            id="evil",
+            name="Evil",
+            description=None,
+            case_sensitive=True,
+            base_path="../../../tmp_evil_escape",
+            gamelist_format=None,
+            artwork_subdir=None,
+            multi_disc=None,
+            systems={},
+        )
+        evil_mapping = SystemMapping.model_construct(
+            folder="snes", extensions=[], supported=True
+        )
+        target = tmp_path / "out"
+        target.mkdir()
+        with pytest.raises(ValueError, match="outside target"):
+            _system_dest_dir(target, evil_profile, evil_mapping)
+
+    def test_builtin_profiles_still_load(self) -> None:
+        """All 6 shipped profiles must validate cleanly with new rules."""
+        profiles = load_all_profiles()
+        assert set(profiles.keys()) == {
+            "analogue-pocket",
+            "batocera",
+            "mister",
+            "muos",
+            "onionos",
+            "retropie",
+        }
+
+
+# ---------------------------------------------------------------------------
+# Security regression — overwrite refusal (audit v0.1.0 finding #4)
+# ---------------------------------------------------------------------------
+
+
+class TestRefuseOverwriteDifferentSize:
+    """``export_collection`` must NOT clobber an existing file of a different size."""
+
+    def test_refuses_to_overwrite_size_mismatch(
+        self, seeded_db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """An existing destination file with a different size is kept intact."""
+        rom_path = tmp_path / "src" / "snes" / "Game.sfc"
+        _make_rom_file(rom_path, b"new-rom-bytes-32-chars-long-padding!")
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path),
+            system_id="snes",
+            extension=".sfc",
+            filename="Game.sfc",
+            size_bytes=len(rom_path.read_bytes()),
+            title="Game",
+        )
+        profile = _build_minimal_profile(gamelist=None)
+        target = tmp_path / "out"
+        dest = target / "roms" / "snes" / "Game.sfc"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Pre-populate a different-sized "user" file at the dest path.
+        dest.write_bytes(b"PRECIOUS-USER-DATA")
+        precious = dest.read_bytes()
+
+        summary = export_collection(
+            seeded_db,
+            profile,
+            target,
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        # Existing file is untouched, summary surfaces the refusal.
+        assert dest.read_bytes() == precious
+        assert summary.files_copied == 0
+        assert summary.files_skipped == 1
+        assert any("refusing to overwrite" in e for e in summary.errors)

@@ -3,6 +3,14 @@
 Offline fallback. LaunchBox publishes a downloadable XML database of game
 metadata (description / genre / developer / publisher / release date / rating).
 We parse it once into in-memory structures and match by (system_id, title).
+
+Uses ``defusedxml.ElementTree`` for the parsing entry point (``iterparse``) so
+a malicious LaunchBox-style XML can't trigger a billion-laughs /
+quadratic-blowup entity-expansion DoS (see security audit v0.1.0 finding #3).
+``defusedxml.ElementTree`` does NOT re-export ``Element``, so type
+annotations for already-parsed nodes still use ``xml.etree.ElementTree`` —
+that is safe because no parser entry point goes through the stdlib module
+anymore.
 """
 
 from __future__ import annotations
@@ -12,6 +20,8 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+
+from defusedxml.ElementTree import iterparse as safe_iterparse
 
 from romulus.metadata._types import MetadataPayload
 
@@ -92,7 +102,7 @@ def parse_launchbox_xml(xml_path: Path | str) -> list[LaunchBoxEntry]:
     """
     path = Path(xml_path)
     entries: list[LaunchBoxEntry] = []
-    for _event, element in ET.iterparse(str(path), events=("end",)):
+    for _event, element in safe_iterparse(str(path), events=("end",)):
         if element.tag != "Game":
             continue
         title = _text(element, "Name")

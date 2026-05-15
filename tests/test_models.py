@@ -73,10 +73,13 @@ class TestGame:
 
 class TestDestinationProfile:
     def test_basic_construction(self):
+        # ``base_path`` is RELATIVE to the export target — absolute paths are
+        # rejected by the security validator (see security audit v0.1.0
+        # finding #1).
         p = DestinationProfile(
             id="anbernic_rg556",
             name="Anbernic RG556",
-            base_path="/Volumes/SDCARD/Roms",
+            base_path="Roms",
             gamelist_format="gamelist_xml",
             systems={
                 "snes": {"folder": "snes", "extensions": [".sfc", ".smc"]},
@@ -91,7 +94,59 @@ class TestDestinationProfile:
         p = DestinationProfile(
             id="example",
             name="Example",
-            base_path="/roms",
+            base_path="roms",
             systems={"gamecube": {"folder": "", "supported": False}},
         )
         assert p.systems["gamecube"].is_supported is False
+
+    def test_absolute_base_path_rejected(self):
+        """Absolute base_path values would escape the export target."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="base_path"):
+            DestinationProfile(
+                id="evil",
+                name="Evil",
+                base_path="/etc",
+                systems={},
+            )
+
+    def test_traversal_folder_rejected(self):
+        """``..`` segments in system folder would escape the system dir."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="folder"):
+            DestinationProfile(
+                id="evil",
+                name="Evil",
+                base_path="roms",
+                systems={"snes": {"folder": "../../etc"}},
+            )
+
+    def test_windows_drive_letter_rejected(self):
+        """Drive-letter prefixes in base_path are an absolute-path bypass."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="base_path"):
+            DestinationProfile(
+                id="evil",
+                name="Evil",
+                base_path="C:Roms",
+                systems={},
+            )
+
+    def test_windows_reserved_name_rejected(self):
+        """Windows device names (``CON``, ``PRN``, ...) make paths unusable."""
+        import pytest
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="reserved name"):
+            DestinationProfile(
+                id="evil",
+                name="Evil",
+                base_path="CON",
+                systems={},
+            )

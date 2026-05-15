@@ -163,10 +163,44 @@ def _join(folder: str, filename: str) -> str:
     return f"{folder}/{filename}"
 
 
+#: Windows reserved device names (case-insensitive). A filename whose stem
+#: matches any of these is rerouted to a device driver instead of the disk —
+#: a malicious DAT mapping a canonical ``CON`` or ``PRN`` to a real ROM would
+#: render the file inaccessible on Windows. See security audit v0.1.0
+#: finding #5.
+_WINDOWS_RESERVED_NAMES: frozenset[str] = frozenset(
+    {
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    }
+)
+
+
 def _sanitize_canonical_filename(name: str) -> str:
-    """Strip characters that are invalid on Windows filesystems."""
+    """Strip characters that are invalid on Windows filesystems.
+
+    Beyond the standard Windows-illegal punctuation set, also:
+
+    * fold ASCII control characters (``\\x00``-``\\x1f``) to ``_``;
+    * strip trailing dots and spaces (Windows silently mangles these);
+    * underscore-prefix the stem when it matches a Windows reserved device
+      name — ``CON.sfc`` becomes ``_CON.sfc`` so the file remains accessible.
+
+    Applied unconditionally even on POSIX so the resulting library can be
+    safely copied to a Windows host or an exFAT SD card.
+    """
     bad = '<>:"/\\|?*'
-    return "".join("_" if c in bad else c for c in name).strip()
+    cleaned = "".join("_" if (c in bad or ord(c) < 0x20) else c for c in name)
+    cleaned = cleaned.strip().rstrip(". ")
+    if not cleaned:
+        return cleaned
+    # Inspect the stem (portion before the FIRST dot — handles ``CON.foo.sfc``
+    # which Windows also routes to the device).
+    stem = cleaned.split(".", 1)[0].lower()
+    if stem in _WINDOWS_RESERVED_NAMES:
+        cleaned = f"_{cleaned}"
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -471,8 +505,36 @@ def _execute_rename(
 def _execute_delete_duplicate(
     conn: sqlite3.Connection, action: OrganizeAction
 ) -> None:
-    """Apply a duplicate-removal action: unlink file + delete DB row."""
+    """Apply a duplicate-removal action: unlink file + delete DB row.
+
+    TOCTOU guard (security audit v0.1.0 finding #11): the plan was built
+    against the ``hashes`` table at analysis time. Between then and now the
+    user may have manually edited ``source`` or ``target`` — re-hash both
+    just before the unlink and abort if the SHA-1s no longer match. Adds two
+    file reads to each delete, but the action set is small (typically a
+    handful of dupes per library) and the cost is dwarfed by the safety
+    win: a manually-modified file is never silently destroyed.
+    """
     source = Path(action.source_path)
+    target = Path(action.target_path) if action.target_path else None
+    if source.exists() and target is not None and target.exists():
+        # Late import: ``romulus.core.hasher`` already imports
+        # ``romulus.db.queries``, and ``organizer`` imports both — keep the
+        # dependency arrow one-way by deferring this until execute time.
+        from romulus.core.hasher import _digest_stream
+
+        try:
+            source_sha = _digest_stream(source).sha1
+            target_sha = _digest_stream(target).sha1
+        except OSError as exc:
+            raise OSError(
+                f"failed to verify duplicate before delete: {exc}"
+            ) from exc
+        if source_sha != target_sha:
+            raise ValueError(
+                f"refusing to delete {source!s}: SHA-1 no longer matches "
+                f"keeper {target!s} (source={source_sha} target={target_sha})"
+            )
     if source.exists():
         os.remove(source)
     if action.rom_id is not None:

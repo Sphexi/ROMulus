@@ -565,11 +565,14 @@ class TestDbWorkerBase:
         assert cancel_msgs == ["CancelProbe cancelled"]
 
         # Arbitrary exceptions are wrapped with the operation name prefix.
+        # Per security audit v0.1.0 finding #12, the exception message itself
+        # is NOT included in the user-facing string — only the exception type
+        # name. The full traceback is logged separately for forensics.
         class _BoomProbe(_DbWorker):
             _operation_name = "BoomProbe"
 
             def _run_work(self, conn) -> None:  # noqa: ANN001, ARG002
-                raise RuntimeError("kaboom")
+                raise RuntimeError("kaboom-with-secret-/path/to/credentials")
 
         boom_msgs: list[str] = []
         bw = _BoomProbe(db_path)
@@ -578,7 +581,11 @@ class TestDbWorkerBase:
         bw.finished.connect(boom_loop.quit)
         bw.start()
         boom_loop.exec()
-        assert boom_msgs and boom_msgs[0] == "BoomProbe failed: kaboom"
+        assert boom_msgs
+        assert boom_msgs[0] == "BoomProbe failed (RuntimeError)"
+        # The original exception message must NEVER leak to the UI signal.
+        assert "kaboom" not in boom_msgs[0]
+        assert "credentials" not in boom_msgs[0]
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ ThreadPoolExecutor and a (path, mtime, size) cache check so re-runs are cheap.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sqlite3
 import zipfile
@@ -27,6 +28,8 @@ from romulus.core._n64 import (
 )
 from romulus.db import queries
 
+logger = logging.getLogger(__name__)
+
 # Match the existing "NES\x1a" / "LYNX\x00" magics used by the identifier.
 _INES_MAGIC = b"NES\x1a"
 _LYNX_MAGIC = b"LYNX\x00"
@@ -37,6 +40,18 @@ _N64_MAGIC_V64 = N64_MAGIC_V64
 _N64_MAGIC_N64 = N64_MAGIC_N64
 
 _CHUNK = 1 << 20  # 1 MiB streaming chunk; matches ROM-DEDUP §5.3 example.
+
+# Hard cap on the bytes we will decompress from a single zip entry. Real ROM
+# images stay well under 2 GiB (the largest legitimate disc images cap out
+# below this), so anything claiming more uncompressed bytes is either a zip
+# bomb or unsupportable. ``info.file_size`` in the central directory is
+# attacker-controlled, so pre-checks against it are not sufficient — only a
+# bounded streaming read is safe. See security audit v0.1.0 finding #2.
+_MAX_ZIP_DECOMPRESSED_BYTES = 2 * (1 << 30)  # 2 GiB
+
+
+class ZipPayloadTooLargeError(Exception):
+    """Raised when a zipped ROM exceeds the safe decompression cap."""
 
 
 @dataclass(frozen=True)
@@ -100,11 +115,28 @@ def normalize_rom_content(content: bytes, header_rule: str | None) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def _read_zip_payload(path: Path) -> bytes | None:
+def _read_zip_payload(
+    path: Path, max_bytes: int | None = None
+) -> bytes | None:
     """Return the inner bytes of a .zip: the only file, or the largest one.
 
     Returns None for empty archives or unreadable zips so the caller can skip.
+
+    Security (audit v0.1.0 finding #2): the inner file is streamed in
+    ``_CHUNK`` slices and aborted the moment cumulative bytes exceed
+    ``max_bytes``. Without this cap, a small "42.zip"-style decompression
+    bomb (kilobytes on disk, gigabytes uncompressed) would OOM-kill the
+    Heavy Scan worker pool when ``inner.read()`` materializes the entire
+    payload. ``info.file_size`` is attacker-controlled metadata, so any
+    pre-check against the central directory is bypassable — only the
+    streaming cap is safe.
+
+    ``max_bytes=None`` (the default) means read the module-level
+    ``_MAX_ZIP_DECOMPRESSED_BYTES`` constant at call time so test code can
+    monkey-patch the cap down to a few KiB without rebuilding a real bomb.
     """
+    if max_bytes is None:
+        max_bytes = _MAX_ZIP_DECOMPRESSED_BYTES
     try:
         with zipfile.ZipFile(path) as zf:
             files = [info for info in zf.infolist() if not info.is_dir()]
@@ -116,7 +148,24 @@ def _read_zip_payload(path: Path) -> bytes | None:
                 else max(files, key=lambda i: i.file_size)
             )
             with zf.open(target) as inner:
-                return inner.read()
+                buf = bytearray()
+                total = 0
+                while True:
+                    chunk = inner.read(_CHUNK)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ZipPayloadTooLargeError(
+                            f"zip entry exceeds {max_bytes}B cap "
+                            f"(path={path!s}, entry={target.filename!r})"
+                        )
+                    buf.extend(chunk)
+                return bytes(buf)
+    except ZipPayloadTooLargeError:
+        # Log + skip so a single bomb doesn't poison the whole Heavy Scan,
+        # but make sure it's visible to operators.
+        raise
     except (zipfile.BadZipFile, OSError):
         return None
 
@@ -169,7 +218,13 @@ def hash_rom(
     path = Path(file_path)
     try:
         if path.suffix.lower() == ".zip":
-            payload = _read_zip_payload(path)
+            try:
+                payload = _read_zip_payload(path)
+            except ZipPayloadTooLargeError as exc:
+                # Don't crash the Heavy Scan worker pool — a single bomb
+                # should poison only its own ROM row, not its 7 siblings.
+                logger.warning("zip payload too large, skipping: %s", exc)
+                return None
             if payload is None:
                 return None
             normalized = normalize_rom_content(payload, header_rule)

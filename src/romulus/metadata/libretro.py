@@ -22,6 +22,22 @@ THUMBNAIL_BASE_URL = "https://thumbnails.libretro.com"
 COVER_TYPES: tuple[str, ...] = ("Named_Boxarts", "Named_Snaps", "Named_Titles")
 DEFAULT_TIMEOUT = 15.0
 
+#: Magic-byte prefixes for the image formats we accept from
+#: libretro-thumbnails. The CDN serves PNGs but JPEGs do appear occasionally in
+#: third-party packs, so we accept both. Anything else (HTML, JS, executable)
+#: is rejected so a future CDN compromise / DNS hijack can't write attacker
+#: content to disk under a ``.png`` filename. See security audit v0.1.0
+#: finding #8.
+_IMAGE_MAGIC_PREFIXES: tuple[bytes, ...] = (
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG (any variant)
+)
+
+
+def _looks_like_image(body: bytes) -> bool:
+    """True if ``body`` starts with a recognized image magic-byte prefix."""
+    return any(body.startswith(prefix) for prefix in _IMAGE_MAGIC_PREFIXES)
+
 # Characters libretro-thumbnails replaces with `_` in the filename portion of
 # the URL. From the session-6 spec: `&*/:\<>?\|"`. After de-duplicating the
 # `\` that appears twice in the spec, the unique set is the 10 chars below.
@@ -90,6 +106,17 @@ def fetch_cover(
             "libretro cover unexpected status: url=%s status=%s",
             url,
             response.status_code,
+        )
+        return None
+
+    # Reject anything that doesn't look like an image before writing it to
+    # disk — a CDN compromise or DNS hijack could otherwise leave HTML/JS
+    # cached under a ``.png`` filename. See security audit v0.1.0 finding #8.
+    if not _looks_like_image(response.content):
+        logger.warning(
+            "libretro cover rejected (non-image response): url=%s size=%d",
+            url,
+            len(response.content),
         )
         return None
 

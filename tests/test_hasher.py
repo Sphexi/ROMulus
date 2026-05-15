@@ -314,3 +314,65 @@ class TestHashQueries:
         stale = queries.get_stale_hashes(seeded_db)
         assert len(stale) == 1
         assert stale[0]["id"] == rom_id
+
+
+# ---------------------------------------------------------------------------
+# Security regression — zip decompression bomb (audit v0.1.0 finding #2)
+# ---------------------------------------------------------------------------
+
+
+class TestZipBombCap:
+    """Regression suite for the streaming zip-decompression cap.
+
+    Without the cap, a small archive on disk (kilobytes) decompresses to
+    gigabytes when ``inner.read()`` is called — eight Heavy-Scan worker
+    threads would each blow up memory and OOM-kill the app. The cap streams
+    chunks and aborts the moment cumulative bytes exceed
+    ``_MAX_ZIP_DECOMPRESSED_BYTES``.
+    """
+
+    def test_zip_with_payload_under_cap_succeeds(self, tmp_path: Path) -> None:
+        from romulus.core.hasher import _read_zip_payload
+
+        # Real ROM-sized payload (a few KB) — easily under the 2 GiB cap.
+        zip_path = tmp_path / "ok.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("game.gb", b"\x00" * 4096)
+        payload = _read_zip_payload(zip_path)
+        assert payload == b"\x00" * 4096
+
+    def test_zip_bomb_aborts_at_cap(self, tmp_path: Path) -> None:
+        """A highly-compressible payload >cap must raise ZipPayloadTooLargeError.
+
+        We can't ship a real 2 GiB bomb in a unit test, so we monkey the cap
+        down to 4 KiB and zip a 16 KiB payload — the streaming reader should
+        abort at the 4 KiB threshold without materializing the full payload
+        into memory.
+        """
+        import pytest
+
+        from romulus.core import hasher
+        from romulus.core.hasher import (
+            ZipPayloadTooLargeError,
+            _read_zip_payload,
+        )
+
+        zip_path = tmp_path / "bomb.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("game.gb", b"A" * 16384)
+        # Confirm the archive ITSELF is much smaller than its payload — i.e.
+        # this is a representative "compresses well" case even though it isn't
+        # a true 42.zip recursive bomb.
+        assert zip_path.stat().st_size < 1000
+
+        with pytest.raises(ZipPayloadTooLargeError):
+            _read_zip_payload(zip_path, max_bytes=4096)
+
+        # And via the public ``hash_rom`` path: bomb returns None (skipped),
+        # the worker pool keeps running for the other ROMs.
+        original_cap = hasher._MAX_ZIP_DECOMPRESSED_BYTES
+        hasher._MAX_ZIP_DECOMPRESSED_BYTES = 4096
+        try:
+            assert hasher.hash_rom(zip_path, header_rule=None) is None
+        finally:
+            hasher._MAX_ZIP_DECOMPRESSED_BYTES = original_cap

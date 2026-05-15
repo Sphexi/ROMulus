@@ -2,7 +2,9 @@
 
 Parses No-Intro / Redump / TOSEC style XML into `DatEntry` records, loads them
 into the `dat_entries` table, and matches hashed ROMs back to canonical games.
-Uses `xml.etree.ElementTree` from stdlib — no lxml dependency.
+Uses ``defusedxml.ElementTree`` rather than the stdlib parser to block billion-
+laughs / quadratic-blowup entity-expansion DoS attacks against user-supplied
+DAT XML files (see security audit v0.1.0 finding #3).
 """
 
 from __future__ import annotations
@@ -10,11 +12,17 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
+
+# ``ET`` mirrors the stdlib alias the previous implementation used so existing
+# callers (``ET.parse``, ``ET.ParseError``) stay unchanged. The N817 lint is
+# explicitly suppressed for this single case because it's the well-known
+# stdlib-compatible alias.
+import defusedxml.ElementTree as ET  # noqa: N817
+from defusedxml.common import DefusedXmlException
 
 from romulus.core._no_intro_tokens import REGION_COUNTRY_TOKENS, REVISION_RE
 from romulus.db import queries
@@ -122,7 +130,11 @@ def parse_dat_file(filepath: str | os.PathLike[str]) -> list[DatEntry]:
     path = Path(filepath)
     try:
         tree = ET.parse(path)
-    except (ET.ParseError, OSError):
+    except (ET.ParseError, OSError, DefusedXmlException):
+        # ``DefusedXmlException`` covers billion-laughs / external-entity /
+        # external-DTD attacks blocked by defusedxml; the other two cover
+        # malformed XML and filesystem errors. Returning an empty list lets a
+        # bulk loader skip the bad file without aborting siblings.
         return []
 
     root = tree.getroot()

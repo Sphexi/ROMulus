@@ -140,6 +140,23 @@ class TestFetchCover:
         local_path, _ = result
         assert local_path.read_bytes() == b"already-here"
 
+    def test_fetch_rejects_non_image_response(self, tmp_path: Path) -> None:
+        """A 200 with HTML/JS body is rejected and not cached (audit #8)."""
+        client = self._make_client(200, b"<html>compromised</html>")
+        result = libretro.fetch_cover(
+            "Nintendo - Game Boy",
+            "gb",
+            "Tetris (World)",
+            "Named_Boxarts",
+            tmp_path,
+            client=client,
+        )
+        assert result is None
+        dest = libretro.cover_cache_path(
+            tmp_path, "gb", "Named_Boxarts", "Tetris (World)"
+        )
+        assert not dest.exists()
+
     def test_fetch_atomic_write_no_partial_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -355,6 +372,33 @@ class TestLaunchBoxXml:
         entries = launchbox.parse_launchbox_xml(self._write_xml(tmp_path))
         index = launchbox.build_index(entries)
         assert launchbox.match_game("Made-up Game", "snes", index) is None
+
+    def test_billion_laughs_xml_is_rejected(self, tmp_path: Path) -> None:
+        """defusedxml must refuse internal-entity expansion (audit #3)."""
+        import pytest
+        from defusedxml.common import DefusedXmlException
+
+        bomb_xml = """<?xml version="1.0"?>
+<!DOCTYPE root [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+]>
+<LaunchBox>
+    <Game>
+        <Name>&lol3;</Name>
+    </Game>
+</LaunchBox>
+"""
+        bomb = tmp_path / "bomb.xml"
+        bomb.write_text(bomb_xml, encoding="utf-8")
+        # defusedxml raises rather than expanding — the LaunchBox parser does
+        # not catch it (a real LaunchBox file is trustworthy enough that we
+        # surface the parse error rather than silently producing an empty
+        # index). What matters is that the entity is NEVER expanded into
+        # ``lol*1000`` (or worse, the depth-6 billion).
+        with pytest.raises(DefusedXmlException):
+            launchbox.parse_launchbox_xml(bomb)
 
     def test_entry_to_metadata_shape(self, tmp_path: Path) -> None:
         entries = launchbox.parse_launchbox_xml(self._write_xml(tmp_path))
@@ -642,7 +686,12 @@ class TestEnrichLibrary:
                 )
             if "thumbnails.libretro.com" in host:
                 if "Named_Boxarts" in request.url.path:
-                    return httpx.Response(200, content=b"\x89PNGBOX")
+                    # Must lead with a real PNG magic-byte prefix — the
+                    # libretro fetch_cover rejects non-image responses per
+                    # security audit v0.1.0 finding #8.
+                    return httpx.Response(
+                        200, content=b"\x89PNG\r\n\x1a\nBOX"
+                    )
                 return httpx.Response(404)
             raise AssertionError(f"unexpected host: {host}")
 

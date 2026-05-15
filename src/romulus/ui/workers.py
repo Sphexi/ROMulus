@@ -20,6 +20,7 @@ actual work and emit its own ``finished_ok`` signal on success.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -36,6 +37,8 @@ from romulus.core.organizer import OrganizeAction, OrganizeSummary, execute_plan
 from romulus.db import get_connection
 from romulus.metadata import enrich_library
 from romulus.models.profile import DestinationProfile
+
+logger = logging.getLogger(__name__)
 
 
 class _WorkerCancelled(Exception):  # noqa: N818 - cancel marker, not an error
@@ -55,11 +58,16 @@ class _DbWorker(QThread):
     signal on success. Cancellation flows through the shared ``cancel()`` flag
     + a :class:`_WorkerCancelled` raised from the progress callback. Unexpected
     exceptions surface via the shared :pyattr:`failed` signal as
-    ``"{operation} failed: {exc}"``.
+    ``"{operation} failed ({ExceptionType})"`` — exception text is logged for
+    forensics but never echoed to the UI.
     """
 
     #: Emitted on any unrecoverable error (DB open failure, work exception, or
-    #: cooperative cancel). Carries a single human-readable string.
+    #: cooperative cancel). Carries a single human-readable string of the form
+    #: ``"{Operation} failed ({ExceptionType})"`` or
+    #: ``"{Operation} cancelled"``. The raw exception text is never included
+    #: (security audit v0.1.0 finding #12) — it is logged via :mod:`logging`
+    #: for forensics instead.
     failed = Signal(str)
 
     #: Subclasses override this to customise the cancel-message prefix
@@ -85,11 +93,23 @@ class _DbWorker(QThread):
             raise _WorkerCancelled
 
     def run(self) -> None:  # noqa: D401 - QThread API
-        """Open a thread-local DB connection, run the work, emit signals."""
+        """Open a thread-local DB connection, run the work, emit signals.
+
+        Exception sanitization (security audit v0.1.0 finding #12): the full
+        traceback (including any path/credential the exception text might
+        carry) is logged via :mod:`logging` for forensics. The user-facing
+        ``failed`` signal carries only the exception type name plus a short
+        operation prefix, never ``str(exc)`` — so a future code path that
+        raises an exception containing PII or a secret can't end up in a
+        ``QMessageBox`` verbatim.
+        """
         try:
             conn = get_connection(self._db_path)
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"Failed to open database: {exc}")
+            logger.exception("worker failed to open database")
+            self.failed.emit(
+                f"Failed to open database ({type(exc).__name__})"
+            )
             return
 
         try:
@@ -97,7 +117,10 @@ class _DbWorker(QThread):
         except _WorkerCancelled:
             self.failed.emit(f"{self._operation_name} cancelled")
         except Exception as exc:  # noqa: BLE001
-            self.failed.emit(f"{self._operation_name} failed: {exc}")
+            logger.exception("%s worker failed", self._operation_name)
+            self.failed.emit(
+                f"{self._operation_name} failed ({type(exc).__name__})"
+            )
         finally:
             conn.close()
 
