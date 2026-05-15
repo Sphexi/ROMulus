@@ -423,6 +423,66 @@ class TestScreenScraper:
         assert result["title"] == "Test"
 
 
+class TestScreenScraperTestConnection:
+    """Cover the Settings dialog's `Test connection` button entry point."""
+
+    def test_empty_credentials_short_circuits(self) -> None:
+        ok, msg = screenscraper.test_connection("", "")
+        assert ok is False
+        assert "username" in msg.lower()
+
+    def test_success(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/ssuserInfos.php")
+            assert request.url.params["ssid"] == "alice"
+            assert request.url.params["sspassword"] == "secret"
+            return httpx.Response(
+                200,
+                json={"response": {"ssuser": {"id": "1", "maxthreads": "1"}}},
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        ok, msg = screenscraper.test_connection("alice", "secret", client=client)
+        assert ok is True
+        assert "successful" in msg.lower()
+
+    def test_invalid_credentials_returns_failure(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(401, text="bad credentials")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        ok, msg = screenscraper.test_connection("alice", "wrong", client=client)
+        assert ok is False
+        assert "invalid" in msg.lower()
+
+    def test_non_json_body_returns_failure(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="<html>maintenance</html>")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        ok, msg = screenscraper.test_connection("alice", "secret", client=client)
+        assert ok is False
+        assert "non-json" in msg.lower()
+
+    def test_unexpected_status_returns_failure(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(503, text="service unavailable")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        ok, msg = screenscraper.test_connection("alice", "secret", client=client)
+        assert ok is False
+        assert "503" in msg
+
+    def test_network_error_returns_failure(self) -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("DNS failure")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        ok, msg = screenscraper.test_connection("alice", "secret", client=client)
+        assert ok is False
+        assert "network error" in msg.lower()
+
+
 # ---------------------------------------------------------------------------
 # Queries: metadata + covers
 # ---------------------------------------------------------------------------

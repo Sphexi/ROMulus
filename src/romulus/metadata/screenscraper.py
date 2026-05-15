@@ -71,6 +71,64 @@ def parse_screenscraper_response(payload: dict[str, Any]) -> dict[str, Any] | No
     }
 
 
+def test_connection(
+    username: str,
+    password: str,
+    client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> tuple[bool, str]:
+    """Validate ScreenScraper credentials by hitting the user-info endpoint.
+
+    Returns ``(ok, message)``. ``ok`` is True only when the API accepts the
+    supplied credentials (HTTP 200 with a parsable JSON body containing a
+    ``ssuser`` block). ``message`` is a human-readable string suitable for
+    surfacing in a settings dialog. The current form values are passed in
+    directly — callers should not save credentials first.
+    """
+    if not username or not password:
+        return False, "Enter a username and password before testing."
+
+    params = {
+        "devid": "romulus",
+        "devpassword": "",
+        "softname": "romulus",
+        "output": "json",
+        "ssid": username,
+        "sspassword": password,
+    }
+    url = f"{SCREENSCRAPER_BASE_URL}/ssuserInfos.php"
+
+    owns_client = client is None
+    if client is None:
+        client = httpx.Client(timeout=timeout)
+
+    try:
+        try:
+            response = client.get(url, params=params)
+        except httpx.HTTPError as exc:
+            return False, f"Network error: {exc}"
+
+        if response.status_code == 401 or response.status_code == 403:
+            return False, "Invalid username or password."
+        if response.status_code != 200:
+            return False, f"Unexpected status: HTTP {response.status_code}"
+
+        try:
+            payload = response.json()
+        except ValueError:
+            # ScreenScraper sometimes returns non-JSON error text — treat that
+            # as auth failure for our purposes.
+            return False, "ScreenScraper returned a non-JSON response."
+
+        response_block = payload.get("response") if isinstance(payload, dict) else None
+        if not isinstance(response_block, dict) or "ssuser" not in response_block:
+            return False, "ScreenScraper did not return user info — credentials may be invalid."
+        return True, "Connection successful."
+    finally:
+        if owns_client:
+            client.close()
+
+
 def lookup_game(
     sha1: str,
     system_id: str | None,

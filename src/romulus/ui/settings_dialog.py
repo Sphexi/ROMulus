@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QMessageBox,
     QPushButton,
     QSpinBox,
     QTabWidget,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from romulus.db import get_config, set_config
+from romulus.metadata.screenscraper import test_connection as screenscraper_test_connection
 
 
 class _GeneralTab(QWidget):
@@ -119,13 +121,39 @@ class _MetadataTab(QWidget):
         self.password = QLineEdit(get_config(conn, "screenscraper_password") or "")
         self.password.setEchoMode(QLineEdit.EchoMode.Password)
         self.test_button = QPushButton("Test connection")
-        self.test_button.setEnabled(False)
-        self.test_button.setToolTip("Available once the metadata client lands.")
+        self.test_button.setToolTip(
+            "Validate the current username/password against ScreenScraper."
+        )
+        self.test_button.clicked.connect(self._on_test_connection)
 
         form = QFormLayout(self)
         form.addRow("ScreenScraper username:", self.username)
         form.addRow("ScreenScraper password:", self.password)
         form.addRow("", self.test_button)
+
+    def _on_test_connection(self) -> None:
+        """Validate the current form values via ScreenScraper's user-info API.
+
+        Uses the current widget values rather than the saved config so the user
+        can validate credentials before clicking OK on the dialog. The button
+        is disabled while the request is in flight so multiple clicks can't
+        stack network requests.
+        """
+        self.test_button.setEnabled(False)
+        self.test_button.setText("Testing...")
+        try:
+            ok, message = screenscraper_test_connection(
+                self.username.text().strip(),
+                self.password.text(),
+            )
+        finally:
+            self.test_button.setText("Test connection")
+            self.test_button.setEnabled(True)
+
+        if ok:
+            QMessageBox.information(self, "ScreenScraper", message)
+        else:
+            QMessageBox.warning(self, "ScreenScraper", message)
 
     def save(self) -> None:
         set_config(self._conn, "screenscraper_username", self.username.text())
