@@ -1,0 +1,125 @@
+# muOS destination profile (Anbernic / generic Allwinner handhelds).
+#
+# muOS uses /mnt/mmc/ROMS/ with mixed-case folder names. Folder names follow
+# the conventions baked into the muOS installer ("Nintendo Entertainment
+# System", "Super Nintendo", etc.). muOS uses its own scraper for box-art,
+# so gamelist_format is null.
+id: muos
+name: "muOS"
+description: "Custom firmware for Anbernic Linux handhelds and others"
+case_sensitive: false
+base_path: "ROMS"
+gamelist_format: null
+artwork_subdir: "box"
+multi_disc: "m3u"
+
+systems:
+  # --- Nintendo ---
+  nes:
+    folder: "Nintendo Entertainment System"
+    extensions: [".nes", ".unf", ".unif", ".fds", ".zip", ".7z"]
+  snes:
+    folder: "Super Nintendo Entertainment System"
+    extensions: [".sfc", ".smc", ".fig", ".swc", ".zip", ".7z"]
+  n64:
+    folder: "Nintendo N64"
+    extensions: [".z64", ".n64", ".v64", ".rom", ".zip"]
+  gamecube:
+    # GameCube only runs on the higher-end H700-class handhelds; emulator
+    # support varies. Best-effort folder name — audit before release.
+    folder: "Nintendo GameCube"
+    extensions: [".iso", ".gcm", ".gcz", ".rvz", ".ciso", ".wia"]
+  gb:
+    folder: "Nintendo Game Boy"
+    extensions: [".gb", ".zip", ".7z"]
+  gbc:
+    folder: "Nintendo Game Boy Color"
+    extensions: [".gbc", ".gb", ".zip", ".7z"]
+  gba:
+    folder: "Nintendo Game Boy Advance"
+    extensions: [".gba", ".zip", ".7z"]
+  nds:
+    folder: "Nintendo DS"
+    extensions: [".nds", ".zip", ".7z"]
+  virtualboy:
+    folder: "Nintendo Virtual Boy"
+    extensions: [".vb", ".vboy", ".zip"]
+  # --- Sega ---
+  megadrive:
+    folder: "Sega Mega Drive"
+    extensions: [".md", ".gen", ".bin", ".smd", ".68k", ".zip", ".7z"]
+  mastersystem:
+    folder: "Sega Master System"
+    extensions: [".sms", ".bin", ".zip", ".7z"]
+  gamegear:
+    folder: "Sega Game Gear"
+    extensions: [".gg", ".zip", ".7z"]
+  saturn:
+    folder: "Sega Saturn"
+    extensions: [".cue", ".iso", ".chd", ".mds", ".m3u", ".ccd"]
+  dreamcast:
+    folder: "Sega Dreamcast"
+    extensions: [".gdi", ".cdi", ".chd", ".cue", ".m3u"]
+  sega32x:
+    folder: "Sega 32X"
+    extensions: [".32x", ".bin", ".zip"]
+  # --- Sony ---
+  psx:
+    folder: "Sony PlayStation"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".pbp", ".m3u", ".ecm", ".ccd"]
+  psp:
+    folder: "Sony PlayStation Portable"
+    extensions: [".iso", ".cso", ".pbp", ".zso", ".dax"]
+  # --- Atari ---
+  atari2600:
+    folder: "Atari 2600"
+    extensions: [".a26", ".bin", ".zip"]
+  atari7800:
+    folder: "Atari 7800"
+    extensions: [".a78", ".bin", ".zip"]
+  lynx:
+    folder: "Atari Lynx"
+    extensions: [".lnx", ".lyx", ".o", ".zip"]
+  atarist:
+    folder: "Atari ST"
+    extensions: [".st", ".msa", ".stx", ".dim", ".zip"]
+  # --- NEC ---
+  pcengine:
+    folder: "NEC PC Engine"
+    extensions: [".pce", ".bin", ".zip"]
+  pcenginecd:
+    folder: "NEC PC Engine CD"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".ccd"]
+  # --- SNK ---
+  neogeo:
+    folder: "SNK Neo Geo"
+    extensions: [".zip", ".7z"]
+  ngp:
+    folder: "SNK Neo Geo Pocket"
+    extensions: [".ngp", ".zip"]
+  ngpc:
+    folder: "SNK Neo Geo Pocket Color"
+    extensions: [".ngc", ".npc", ".zip"]
+  # --- Arcade ---
+  mame:
+    folder: "Arcade"
+    extensions: [".zip", ".7z", ".chd"]
+  fbneo:
+    folder: "Final Burn Neo"
+    extensions: [".zip", ".7z"]
+  # --- Home computers ---
+  msx:
+    folder: "Microsoft MSX"
+    extensions: [".rom", ".dsk", ".cas", ".mx1", ".mx2", ".m3u", ".zip"]
+  amiga:
+    folder: "Commodore Amiga"
+    extensions: [".adf", ".adz", ".ipf", ".dms", ".hdf", ".lha", ".zip"]
+  c64:
+    folder: "Commodore 64"
+    extensions: [".d64", ".d71", ".d81", ".t64", ".tap", ".prg", ".crt", ".zip"]
+  zxspectrum:
+    folder: "Sinclair ZX Spectrum"
+    extensions: [".tap", ".tzx", ".sna", ".z80", ".dsk", ".trd", ".scl", ".szx", ".zip"]
+  amstradcpc:
+    folder: "Amstrad CPC"
+    extensions: [".dsk", ".cdt", ".cpr", ".zip"]

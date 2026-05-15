@@ -13,7 +13,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-from romulus.core import organizer
+from romulus.core import atomic
 from romulus.core.organizer import (
     ACTION_COLLISION,
     ACTION_DELETE_DUPLICATE,
@@ -514,7 +514,7 @@ class TestAtomicAndRollback:
         def _always_raise(*_a, **_kw) -> None:
             raise OSError("simulated mid-rename failure")
 
-        monkeypatch.setattr(organizer.os, "replace", _always_raise)
+        monkeypatch.setattr(atomic.os, "replace", _always_raise)
 
         summary = execute_plan(seeded_db, [action])
         assert summary["failed"] == 1
@@ -574,7 +574,7 @@ class TestAtomicAndRollback:
                 raise OSError("simulated second-action failure")
             return real_replace(s, d)
 
-        monkeypatch.setattr(organizer.os, "replace", flaky_replace)
+        monkeypatch.setattr(atomic.os, "replace", flaky_replace)
 
         summary = execute_plan(seeded_db, actions)
         assert summary["applied"] == 2

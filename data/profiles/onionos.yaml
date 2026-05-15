@@ -1,0 +1,126 @@
+# Onion OS destination profile (Miyoo Mini / Mini+).
+#
+# Onion OS uses uppercase short-code folders under /Roms/ on the SD card.
+# Folder names follow the Onion convention documented at
+# https://onionui.github.io/docs/emulators . Onion has no EmulationStation
+# gamelist.xml — it runs its own scraper — so gamelist_format is null.
+# Onion targets handhelds, so GameCube / PSP / Saturn / Dreamcast are
+# unsupported; Atari ST and the home-computer category are also out of scope.
+id: onionos
+name: "Onion OS"
+description: "Custom firmware for the Miyoo Mini / Mini+"
+case_sensitive: false
+base_path: "Roms"
+gamelist_format: null
+artwork_subdir: "Imgs"
+multi_disc: "m3u"
+
+systems:
+  # --- Nintendo ---
+  nes:
+    folder: "FC"
+    extensions: [".nes", ".unf", ".unif", ".fds", ".zip", ".7z"]
+  snes:
+    folder: "SFC"
+    extensions: [".sfc", ".smc", ".fig", ".swc", ".zip", ".7z"]
+  n64:
+    # N64 was added experimentally to Onion; performance is shaky but it ships.
+    folder: "N64"
+    extensions: [".z64", ".n64", ".v64", ".rom", ".zip"]
+  gamecube:
+    folder: ""
+    supported: false
+  gb:
+    folder: "GB"
+    extensions: [".gb", ".zip", ".7z"]
+  gbc:
+    folder: "GBC"
+    extensions: [".gbc", ".gb", ".zip", ".7z"]
+  gba:
+    folder: "GBA"
+    extensions: [".gba", ".zip", ".7z"]
+  nds:
+    folder: ""
+    supported: false
+  virtualboy:
+    folder: "VB"
+    extensions: [".vb", ".vboy", ".zip"]
+  # --- Sega ---
+  megadrive:
+    folder: "MD"
+    extensions: [".md", ".gen", ".bin", ".smd", ".68k", ".zip", ".7z"]
+  mastersystem:
+    folder: "MS"
+    extensions: [".sms", ".bin", ".zip", ".7z"]
+  gamegear:
+    folder: "GG"
+    extensions: [".gg", ".zip", ".7z"]
+  saturn:
+    folder: ""
+    supported: false
+  dreamcast:
+    folder: ""
+    supported: false
+  sega32x:
+    folder: "THIRTYTWOX"
+    extensions: [".32x", ".bin", ".zip"]
+  # --- Sony ---
+  psx:
+    folder: "PS"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".pbp", ".m3u", ".ecm", ".ccd"]
+  psp:
+    folder: ""
+    supported: false
+  # --- Atari ---
+  atari2600:
+    folder: "ATARI"
+    extensions: [".a26", ".bin", ".zip"]
+  atari7800:
+    folder: "SEVENTYEIGHTHUNDRED"
+    extensions: [".a78", ".bin", ".zip"]
+  lynx:
+    folder: "LYNX"
+    extensions: [".lnx", ".lyx", ".o", ".zip"]
+  atarist:
+    folder: ""
+    supported: false
+  # --- NEC ---
+  pcengine:
+    folder: "PCE"
+    extensions: [".pce", ".bin", ".zip"]
+  pcenginecd:
+    folder: "PCECD"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".ccd"]
+  # --- SNK ---
+  neogeo:
+    folder: "NEOGEO"
+    extensions: [".zip", ".7z"]
+  ngp:
+    folder: "NGP"
+    extensions: [".ngp", ".zip"]
+  ngpc:
+    folder: "NGP"
+    extensions: [".ngc", ".npc", ".zip"]
+  # --- Arcade ---
+  mame:
+    folder: "ARCADE"
+    extensions: [".zip", ".7z", ".chd"]
+  fbneo:
+    folder: "FBN"
+    extensions: [".zip", ".7z"]
+  # --- Home computers ---
+  msx:
+    folder: "MSX"
+    extensions: [".rom", ".dsk", ".cas", ".mx1", ".mx2", ".m3u", ".zip"]
+  amiga:
+    folder: ""
+    supported: false
+  c64:
+    folder: ""
+    supported: false
+  zxspectrum:
+    folder: "ZXS"
+    extensions: [".tap", ".tzx", ".sna", ".z80", ".dsk", ".trd", ".scl", ".szx", ".zip"]
+  amstradcpc:
+    folder: ""
+    supported: false

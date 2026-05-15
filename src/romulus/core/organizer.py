@@ -14,12 +14,11 @@ The organizer is intentionally conservative. It will only propose:
   different files at the same destination path. The organizer never overwrites
   existing files automatically.
 
-Filesystem operations use the atomic write pattern established in
-``romulus.metadata.libretro.fetch_cover``: stage the destination via
-``tempfile.mkstemp`` in the target directory, then ``os.replace`` into place.
-For renames within the same filesystem this is a single atomic rename. For
-cross-filesystem moves we stream into a temp file in the destination directory
-first, then ``os.replace``.
+Filesystem operations delegate to :mod:`romulus.core.atomic` so the organizer
+and exporter share a single implementation of the staging-via-tempfile then
+``os.replace`` pattern first established in
+``romulus.metadata.libretro.fetch_cover``. A crash mid-copy can therefore only
+leave a ``.part`` tempfile — never a corrupted final artifact.
 
 Hacks are first-class: rows whose owning game has ``is_hack=1`` are excluded
 from duplicate detection and never merged with an original.
@@ -32,12 +31,12 @@ import json
 import logging
 import os
 import sqlite3
-import tempfile
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from romulus.core import atomic
 from romulus.db import queries as q
 from romulus.models.system import SYSTEM_REGISTRY
 
@@ -420,45 +419,11 @@ def analyze_library(conn: sqlite3.Connection) -> OrganizePlan:
 def _atomic_replace(source: Path, dest: Path) -> None:
     """Move ``source`` to ``dest`` atomically.
 
-    For same-filesystem renames this is a single ``os.replace``. For
-    cross-filesystem moves we stream the file into a tempfile sibling of the
-    destination (``tempfile.mkstemp`` in ``dest.parent``) and then
-    ``os.replace`` into place — same pattern as ``libretro.fetch_cover`` so a
-    crash mid-copy can never leave a half-written file at the final path.
+    Thin wrapper around :func:`romulus.core.atomic.atomic_replace` so the
+    organizer and exporter share a single implementation of the staging-via-
+    tempfile dance.
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.replace(source, dest)
-        return
-    except OSError as exc:
-        # EXDEV / cross-device — fall through to stream-via-tempfile path.
-        logger.debug("atomic rename fell back to copy: src=%s err=%s", source, exc)
-
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{dest.name}.", suffix=".part", dir=str(dest.parent)
-    )
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as tmp_fh, source.open("rb") as src_fh:
-            while True:
-                chunk = src_fh.read(1024 * 1024)
-                if not chunk:
-                    break
-                tmp_fh.write(chunk)
-        os.replace(tmp_path, dest)
-    except OSError:
-        if tmp_path.exists():
-            with contextlib.suppress(OSError):
-                tmp_path.unlink()
-        raise
-    try:
-        source.unlink()
-    except OSError as exc:
-        logger.warning(
-            "atomic move: dest write OK but source unlink failed: src=%s err=%s",
-            source,
-            exc,
-        )
+    atomic.atomic_replace(source, dest)
 
 
 def _execute_rename(

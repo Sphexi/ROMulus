@@ -1,0 +1,129 @@
+# MiSTer FPGA destination profile.
+#
+# MiSTer uses /media/fat/games/{Core}/ with capitalised, core-named folders.
+# As an FPGA the support set is narrower than software emulators: only
+# systems with a hardware core are supported. CD-based and 3D / handheld-3D
+# systems (Dreamcast, GameCube, DS, PSP) are out of scope. MiSTer's launcher
+# is its own (Main_MiSTer); no gamelist.xml is generated.
+id: mister
+name: "MiSTer FPGA"
+description: "DE10-Nano FPGA cores"
+case_sensitive: true
+base_path: "games"
+gamelist_format: null
+artwork_subdir: null
+multi_disc: null
+
+systems:
+  # --- Nintendo ---
+  nes:
+    folder: "NES"
+    extensions: [".nes", ".unf", ".unif", ".fds", ".zip"]
+  snes:
+    folder: "SNES"
+    extensions: [".sfc", ".smc", ".fig", ".swc", ".zip"]
+  n64:
+    folder: "N64"
+    extensions: [".z64", ".n64", ".v64", ".rom"]
+  gamecube:
+    folder: ""
+    supported: false
+  gb:
+    folder: "GameBoy"
+    extensions: [".gb", ".zip"]
+  gbc:
+    folder: "GameBoy"
+    extensions: [".gbc", ".gb", ".zip"]
+  gba:
+    folder: "GBA"
+    extensions: [".gba", ".zip"]
+  nds:
+    folder: ""
+    supported: false
+  virtualboy:
+    # Distinct VB core exists; folder name matches the official release.
+    folder: "VirtualBoy"
+    extensions: [".vb", ".vboy", ".zip"]
+  # --- Sega ---
+  megadrive:
+    folder: "Genesis"
+    extensions: [".md", ".gen", ".bin", ".smd", ".68k", ".zip"]
+  mastersystem:
+    folder: "SMS"
+    extensions: [".sms", ".bin", ".zip"]
+  gamegear:
+    folder: "SMS"
+    extensions: [".gg", ".zip"]
+  saturn:
+    folder: ""
+    supported: false
+  dreamcast:
+    folder: ""
+    supported: false
+  sega32x:
+    folder: "S32X"
+    extensions: [".32x", ".bin", ".zip"]
+  # --- Sony ---
+  psx:
+    folder: "PSX"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".pbp", ".m3u", ".ecm", ".ccd"]
+  psp:
+    folder: ""
+    supported: false
+  # --- Atari ---
+  atari2600:
+    folder: "ATARI7800"
+    extensions: [".a26", ".bin", ".zip"]
+  atari7800:
+    folder: "ATARI7800"
+    extensions: [".a78", ".bin", ".zip"]
+  lynx:
+    folder: "AtariLynx"
+    extensions: [".lnx", ".lyx", ".o", ".zip"]
+  atarist:
+    # AO486 core can run TOS but there's no native ST core; mark unsupported.
+    folder: ""
+    supported: false
+  # --- NEC ---
+  pcengine:
+    folder: "TGFX16"
+    extensions: [".pce", ".bin", ".zip"]
+  pcenginecd:
+    folder: "TGFX16-CD"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".ccd"]
+  # --- SNK ---
+  neogeo:
+    folder: "NEOGEO"
+    extensions: [".zip", ".7z"]
+  ngp:
+    folder: "NeoGeo-Pocket"
+    extensions: [".ngp", ".zip"]
+  ngpc:
+    folder: "NeoGeo-Pocket"
+    extensions: [".ngc", ".npc", ".zip"]
+  # --- Arcade ---
+  mame:
+    # MiSTer's arcade support is per-core (one folder per game). The generic
+    # MAME-style ZIP dump goes under /games/Arcade-rom-folder as a staging
+    # area; users wire individual cores up afterwards.
+    folder: "Arcade"
+    extensions: [".zip", ".7z", ".chd"]
+  fbneo:
+    folder: ""
+    supported: false
+  # --- Home computers ---
+  msx:
+    folder: "MSX"
+    extensions: [".rom", ".dsk", ".cas", ".mx1", ".mx2", ".m3u", ".zip"]
+  amiga:
+    folder: "Amiga"
+    extensions: [".adf", ".adz", ".ipf", ".dms", ".hdf", ".lha", ".zip"]
+  c64:
+    folder: "C64"
+    extensions: [".d64", ".d71", ".d81", ".t64", ".tap", ".prg", ".crt", ".zip"]
+  zxspectrum:
+    folder: "ZX-Spectrum"
+    extensions: [".tap", ".tzx", ".sna", ".z80", ".dsk", ".trd", ".scl", ".szx", ".zip"]
+  amstradcpc:
+    folder: "Amstrad"
+    extensions: [".dsk", ".cdt", ".cpr", ".zip"]

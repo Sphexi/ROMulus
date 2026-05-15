@@ -14,17 +14,24 @@ from PySide6.QtWidgets import (
     QToolBar,
 )
 
+from romulus.core.exporter import load_all_profiles
 from romulus.core.organizer import analyze_library
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
 from romulus.db import queries as q
 from romulus.ui.detail_panel import DetailPanel
 from romulus.ui.enrich_progress import EnrichProgressDialog
+from romulus.ui.export_dialog import ExportDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
 from romulus.ui.organize_preview import OrganizePreviewDialog
 from romulus.ui.scan_progress import ScanProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
 from romulus.ui.system_sidebar import SystemSidebar
-from romulus.ui.workers import EnrichWorker, OrganizeWorker, ScanWorker
+from romulus.ui.workers import (
+    EnrichWorker,
+    ExportWorker,
+    OrganizeWorker,
+    ScanWorker,
+)
 
 
 class MainWindow(QMainWindow):
@@ -43,6 +50,8 @@ class MainWindow(QMainWindow):
         self._enrich_dialog: EnrichProgressDialog | None = None
         self._organize_worker: OrganizeWorker | None = None
         self._organize_dialog: OrganizePreviewDialog | None = None
+        self._export_worker: ExportWorker | None = None
+        self._export_dialog: ExportDialog | None = None
 
         q.ensure_favorites_collection(conn)
 
@@ -117,9 +126,10 @@ class MainWindow(QMainWindow):
         organize_action.setToolTip("Preview and apply library reorganization.")
         organize_action.triggered.connect(self._on_organize)
         tools_menu.addAction(organize_action)
-        export_placeholder = QAction("Export", self, enabled=False)
-        export_placeholder.setToolTip("Available in a later session.")
-        tools_menu.addAction(export_placeholder)
+        export_action = QAction("E&xport", self)
+        export_action.setToolTip("Export the library to a destination profile.")
+        export_action.triggered.connect(self._on_export)
+        tools_menu.addAction(export_action)
 
         help_menu = menu.addMenu("&Help")
         about_action = QAction("&About Romulus", self)
@@ -147,7 +157,7 @@ class MainWindow(QMainWindow):
         enrich.triggered.connect(self._on_enrich)
         toolbar.addAction(enrich)
         export = QAction("Export", self)
-        export.setEnabled(False)
+        export.triggered.connect(self._on_export)
         toolbar.addAction(export)
 
         toolbar.addSeparator()
@@ -420,6 +430,82 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
 
     # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def _on_export(self) -> None:
+        """Open the :class:`ExportDialog` and wire up worker lifecycle."""
+        if self._export_worker is not None and self._export_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Export already running",
+                "An export is already in progress — "
+                "please wait for it to finish.",
+            )
+            return
+
+        profiles = load_all_profiles()
+        if not profiles:
+            QMessageBox.warning(
+                self,
+                "No destination profiles",
+                "No destination profiles were found in data/profiles/.",
+            )
+            return
+
+        self._export_dialog = ExportDialog(self._conn, profiles, self)
+        self._export_dialog.export_requested.connect(self._on_export_requested)
+        self._export_dialog.exec()
+
+    def _on_export_requested(
+        self,
+        profile: object,
+        target_path: str,
+        filters: object,
+        options: object,
+    ) -> None:
+        """Spawn an :class:`ExportWorker` once the user clicks Export."""
+        if self._export_dialog is None:
+            return
+        from romulus.core.exporter import ExportFilters, ExportOptions
+        from romulus.models.profile import DestinationProfile
+
+        if not isinstance(profile, DestinationProfile):
+            return
+        export_filters = filters if isinstance(filters, ExportFilters) else None
+        export_options = options if isinstance(options, ExportOptions) else None
+
+        self._export_worker = ExportWorker(
+            DEFAULT_DB_PATH,
+            profile,
+            target_path,
+            export_filters,
+            export_options,
+        )
+        self._export_worker.progress.connect(self._export_dialog.on_progress)
+        self._export_worker.finished_ok.connect(self._export_dialog.on_finished)
+        self._export_worker.failed.connect(self._export_dialog.on_failed)
+        self._export_worker.finished_ok.connect(self._on_export_finished_ok)
+        self._export_worker.failed.connect(self._on_export_failed)
+        self._export_worker.finished.connect(self._export_worker.deleteLater)
+        self._export_worker.start()
+
+    def _on_export_finished_ok(
+        self,
+        _files_copied: int,
+        _files_skipped: int,
+        _bytes_copied: int,
+        _systems: list[str],
+        _errors: list[str],
+    ) -> None:
+        # No library state changes from an export — refresh is a no-op but
+        # cheap, and matches the pattern of the other workers.
+        self.refresh_all()
+
+    def _on_export_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -435,6 +521,7 @@ class MainWindow(QMainWindow):
             self._scan_worker,
             self._enrich_worker,
             self._organize_worker,
+            self._export_worker,
         ):
             if worker is None or not worker.isRunning():
                 continue

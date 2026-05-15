@@ -78,6 +78,20 @@ class TestDestinationProfile:
             name="Anbernic RG556",
             base_path="/Volumes/SDCARD/Roms",
             gamelist_format="gamelist_xml",
-            systems={"snes": "snes", "nes": "nes"},
+            systems={
+                "snes": {"folder": "snes", "extensions": [".sfc", ".smc"]},
+                "nes": {"folder": "nes", "extensions": [".nes"]},
+            },
         )
-        assert p.systems["snes"] == "snes"
+        assert p.systems["snes"].folder == "snes"
+        assert p.systems["snes"].is_supported is True
+        assert ".sfc" in p.systems["snes"].extensions
+
+    def test_unsupported_system_mapping(self):
+        p = DestinationProfile(
+            id="example",
+            name="Example",
+            base_path="/roms",
+            systems={"gamecube": {"folder": "", "supported": False}},
+        )
+        assert p.systems["gamecube"].is_supported is False

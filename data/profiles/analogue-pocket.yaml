@@ -1,0 +1,131 @@
+# Analogue Pocket destination profile.
+#
+# The Pocket runs everything through openFPGA cores at /Assets/{core}/common/.
+# Each openFPGA core ships with its own folder layout; we record the
+# common-folder names used by the major cores at the time of writing. Disc-
+# based and console-generation systems are unsupported by the Pocket
+# hardware. Folder names should be audited against the latest core releases
+# before a public release of Romulus — these change as new cores ship.
+id: analogue-pocket
+name: "Analogue Pocket"
+description: "openFPGA-powered handheld; one folder per core"
+case_sensitive: true
+# The Pocket's openFPGA spec uses /Assets/{core}/common/ as the per-core ROM
+# location; the {core} segment is substituted in by the exporter via the
+# per-system folder, since the prefix differs per core.
+base_path: "Assets"
+gamelist_format: null
+artwork_subdir: null
+multi_disc: null
+
+systems:
+  # --- Nintendo ---
+  nes:
+    folder: "nes/common"
+    extensions: [".nes", ".unf", ".unif", ".fds"]
+  snes:
+    folder: "snes/common"
+    extensions: [".sfc", ".smc", ".fig", ".swc"]
+  n64:
+    folder: ""
+    supported: false
+  gamecube:
+    folder: ""
+    supported: false
+  gb:
+    folder: "gb/common"
+    extensions: [".gb"]
+  gbc:
+    folder: "gbc/common"
+    extensions: [".gbc", ".gb"]
+  gba:
+    folder: "gba/common"
+    extensions: [".gba"]
+  nds:
+    folder: ""
+    supported: false
+  virtualboy:
+    # The "agg23/Virtual Boy" core uses Assets/vb/common/.
+    folder: "vb/common"
+    extensions: [".vb", ".vboy"]
+  # --- Sega ---
+  megadrive:
+    folder: "genesis/common"
+    extensions: [".md", ".gen", ".bin", ".smd", ".68k"]
+  mastersystem:
+    folder: "sms/common"
+    extensions: [".sms", ".bin"]
+  gamegear:
+    folder: "gg/common"
+    extensions: [".gg"]
+  saturn:
+    folder: ""
+    supported: false
+  dreamcast:
+    folder: ""
+    supported: false
+  sega32x:
+    folder: ""
+    supported: false
+  # --- Sony ---
+  psx:
+    folder: ""
+    supported: false
+  psp:
+    folder: ""
+    supported: false
+  # --- Atari ---
+  atari2600:
+    folder: "2600/common"
+    extensions: [".a26", ".bin"]
+  atari7800:
+    folder: "7800/common"
+    extensions: [".a78", ".bin"]
+  lynx:
+    folder: "lynx/common"
+    extensions: [".lnx", ".lyx", ".o"]
+  atarist:
+    folder: ""
+    supported: false
+  # --- NEC ---
+  pcengine:
+    folder: "pce/common"
+    extensions: [".pce", ".bin"]
+  pcenginecd:
+    # PCE-CD support exists via the agg23 core; common folder name matches.
+    folder: "pcecd/common"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".ccd"]
+  # --- SNK ---
+  neogeo:
+    # NeoGeo AES core ships as 'neogeo'; ROM support is BIOS-dependent.
+    folder: "neogeo/common"
+    extensions: [".zip", ".7z"]
+  ngp:
+    folder: "ngp/common"
+    extensions: [".ngp"]
+  ngpc:
+    folder: "ngp/common"
+    extensions: [".ngc", ".npc"]
+  # --- Arcade ---
+  mame:
+    folder: ""
+    supported: false
+  fbneo:
+    folder: ""
+    supported: false
+  # --- Home computers ---
+  msx:
+    folder: ""
+    supported: false
+  amiga:
+    folder: ""
+    supported: false
+  c64:
+    folder: ""
+    supported: false
+  zxspectrum:
+    folder: ""
+    supported: false
+  amstradcpc:
+    folder: ""
+    supported: false

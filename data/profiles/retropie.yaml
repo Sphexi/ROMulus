@@ -1,0 +1,125 @@
+# RetroPie destination profile.
+#
+# RetroPie also uses EmulationStation, but the canonical folder names differ
+# from Batocera in a few places (e.g. "genesis" for Mega Drive, "pcengine"
+# for both HuCard and CD-ROM², "atarilynx" for Lynx). See
+# https://retropie.org.uk/docs/ for the full list.
+id: retropie
+name: "RetroPie"
+description: "EmulationStation/EmulationStation-DE on Raspberry Pi and friends"
+case_sensitive: true
+base_path: "roms"
+gamelist_format: "emulationstation_xml"
+artwork_subdir: "images"
+multi_disc: "m3u"
+
+systems:
+  # --- Nintendo ---
+  nes:
+    folder: "nes"
+    extensions: [".nes", ".unf", ".unif", ".fds", ".zip", ".7z"]
+  snes:
+    folder: "snes"
+    extensions: [".sfc", ".smc", ".fig", ".swc", ".zip", ".7z"]
+  n64:
+    folder: "n64"
+    extensions: [".z64", ".n64", ".v64", ".rom", ".zip"]
+  gamecube:
+    folder: "gc"
+    extensions: [".iso", ".gcm", ".gcz", ".rvz", ".ciso", ".wia"]
+  gb:
+    folder: "gb"
+    extensions: [".gb", ".zip", ".7z"]
+  gbc:
+    folder: "gbc"
+    extensions: [".gbc", ".gb", ".zip", ".7z"]
+  gba:
+    folder: "gba"
+    extensions: [".gba", ".zip", ".7z"]
+  nds:
+    folder: "nds"
+    extensions: [".nds", ".zip", ".7z"]
+  virtualboy:
+    folder: "virtualboy"
+    extensions: [".vb", ".vboy", ".zip"]
+  # --- Sega ---
+  megadrive:
+    # RetroPie historically used 'megadrive' on EU images and 'genesis' on US.
+    # Modern installs default to 'megadrive'; we match that.
+    folder: "megadrive"
+    extensions: [".md", ".gen", ".bin", ".smd", ".68k", ".zip", ".7z"]
+  mastersystem:
+    folder: "mastersystem"
+    extensions: [".sms", ".bin", ".zip", ".7z"]
+  gamegear:
+    folder: "gamegear"
+    extensions: [".gg", ".zip", ".7z"]
+  saturn:
+    folder: "saturn"
+    extensions: [".cue", ".iso", ".chd", ".mds", ".m3u", ".ccd"]
+  dreamcast:
+    folder: "dreamcast"
+    extensions: [".gdi", ".cdi", ".chd", ".cue", ".m3u"]
+  sega32x:
+    folder: "sega32x"
+    extensions: [".32x", ".bin", ".zip"]
+  # --- Sony ---
+  psx:
+    folder: "psx"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".pbp", ".m3u", ".ecm", ".ccd"]
+  psp:
+    folder: "psp"
+    extensions: [".iso", ".cso", ".pbp", ".zso", ".dax"]
+  # --- Atari ---
+  atari2600:
+    folder: "atari2600"
+    extensions: [".a26", ".bin", ".zip"]
+  atari7800:
+    folder: "atari7800"
+    extensions: [".a78", ".bin", ".zip"]
+  lynx:
+    folder: "atarilynx"
+    extensions: [".lnx", ".lyx", ".o", ".zip"]
+  atarist:
+    folder: "atarist"
+    extensions: [".st", ".msa", ".stx", ".dim", ".zip"]
+  # --- NEC ---
+  pcengine:
+    folder: "pcengine"
+    extensions: [".pce", ".bin", ".zip"]
+  pcenginecd:
+    folder: "pcenginecd"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".ccd"]
+  # --- SNK ---
+  neogeo:
+    folder: "neogeo"
+    extensions: [".zip", ".7z"]
+  ngp:
+    folder: "ngp"
+    extensions: [".ngp", ".zip"]
+  ngpc:
+    folder: "ngpc"
+    extensions: [".ngc", ".npc", ".zip"]
+  # --- Arcade ---
+  mame:
+    folder: "mame-libretro"
+    extensions: [".zip", ".7z", ".chd"]
+  fbneo:
+    folder: "fbneo"
+    extensions: [".zip", ".7z"]
+  # --- Home computers ---
+  msx:
+    folder: "msx"
+    extensions: [".rom", ".dsk", ".cas", ".mx1", ".mx2", ".m3u", ".zip"]
+  amiga:
+    folder: "amiga"
+    extensions: [".adf", ".adz", ".ipf", ".dms", ".hdf", ".lha", ".zip"]
+  c64:
+    folder: "c64"
+    extensions: [".d64", ".d71", ".d81", ".t64", ".tap", ".prg", ".crt", ".zip"]
+  zxspectrum:
+    folder: "zxspectrum"
+    extensions: [".tap", ".tzx", ".sna", ".z80", ".dsk", ".trd", ".scl", ".szx", ".zip"]
+  amstradcpc:
+    folder: "amstradcpc"
+    extensions: [".dsk", ".cdt", ".cpr", ".zip"]

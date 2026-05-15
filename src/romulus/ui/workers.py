@@ -13,9 +13,16 @@ from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 from romulus.core import scan_library
+from romulus.core.exporter import (
+    ExportFilters,
+    ExportOptions,
+    ExportSummary,
+    export_collection,
+)
 from romulus.core.organizer import OrganizeAction, execute_plan
 from romulus.db import get_connection
 from romulus.metadata import enrich_library
+from romulus.models.profile import DestinationProfile
 
 
 class ScanWorker(QThread):
@@ -201,3 +208,83 @@ class OrganizeWorker(QThread):
 
 class _OrganizeCancelledError(Exception):
     """Internal marker exception raised from organize progress on cancel."""
+
+
+class ExportWorker(QThread):
+    """Run :func:`export_collection` on a worker thread.
+
+    Mirrors the ScanWorker / EnrichWorker / OrganizeWorker contract: opens a
+    thread-local sqlite3 connection inside ``run``, emits ``progress(current,
+    total, filename)`` per ROM, ``finished_ok(files_copied, files_skipped,
+    bytes_copied, systems, errors)`` on success, ``failed(msg)`` on
+    exception. Cooperative cancel works the same way as the other workers —
+    a private exception raised from the progress callback unwinds the export.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int, int, list, list)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        profile: DestinationProfile,
+        target_path: Path | str,
+        filters: ExportFilters | None = None,
+        options: ExportOptions | None = None,
+    ) -> None:
+        super().__init__()
+        self._db_path = db_path
+        self._profile = profile
+        self._target_path = str(target_path)
+        self._filters = filters
+        self._options = options
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        """Request cooperative cancellation; checked on every progress tick."""
+        self._cancel_requested = True
+
+    def run(self) -> None:  # noqa: D401 - QThread API
+        """Open a thread-local DB connection, run the export, emit results."""
+        try:
+            conn = get_connection(self._db_path)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"Failed to open database: {exc}")
+            return
+
+        def _progress(current: int, total: int, filename: str) -> None:
+            if self._cancel_requested:
+                raise _ExportCancelledError
+            self.progress.emit(current, total, filename)
+
+        try:
+            summary: ExportSummary = export_collection(
+                conn,
+                self._profile,
+                self._target_path,
+                filters=self._filters,
+                options=self._options,
+                progress_callback=_progress,
+            )
+        except _ExportCancelledError:
+            conn.close()
+            self.failed.emit("Export cancelled")
+            return
+        except Exception as exc:  # noqa: BLE001
+            conn.close()
+            self.failed.emit(f"Export failed: {exc}")
+            return
+
+        conn.close()
+        self.finished_ok.emit(
+            int(summary.files_copied),
+            int(summary.files_skipped),
+            int(summary.bytes_copied),
+            list(summary.systems),
+            list(summary.errors),
+        )
+
+
+class _ExportCancelledError(Exception):
+    """Internal marker exception raised from export progress on cancel."""
