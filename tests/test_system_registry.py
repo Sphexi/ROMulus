@@ -139,3 +139,79 @@ def test_systemdef_pydantic_validates():
         folder_aliases=["test", "tst"],
     )
     assert s.id == "test"
+
+
+# ---------------------------------------------------------------------------
+# v0.1.0 DAT-driven expansion — registry now covers the bundled No-Intro corpus
+# ---------------------------------------------------------------------------
+
+
+def test_registry_grew_to_cover_bundled_dats():
+    """The v0.1.0 expansion adds ~38 SystemDefs to cover bundled No-Intro DATs.
+
+    Locking the count in prevents accidental deletions during refactors. If a
+    legitimate addition or removal is made, update this number deliberately.
+    """
+    assert len(SYSTEM_REGISTRY) == 71
+
+
+def test_expansion_ids_are_all_present():
+    """Sample of the v0.1.0 expansion — covers each manufacturer block added."""
+    ids = {s.id for s in SYSTEM_REGISTRY}
+    expected_new = {
+        # Atari (extended)
+        "atari5200", "jaguar",
+        # Bandai / Benesse
+        "wonderswan", "wonderswancolor", "pocketchallengev2",
+        # Casio
+        "casioloopy", "pv1000",
+        # Coleco / Mattel / GCE / Magnavox / RCA / Emerson / Entex / Epoch
+        "colecovision", "intellivision", "vectrex", "odyssey2", "studio2",
+        "arcadia2001", "adventurevision", "scv",
+        # Fairchild / Funtech / Hartung / Tiger / Watara / Konami
+        "channelf", "superacan", "gamemaster", "gamecom", "supervision", "picno",
+        # VTech / LeapFrog
+        "creativision", "vsmile", "leappad", "leapster", "myfirstleappad",
+        # Commodore extras
+        "vic20", "c64plus4",
+        # NEC extended
+        "supergrafx",
+        # Nintendo accessories / spinoffs
+        "n64dd", "pokemini", "satellaview", "sufami", "ereader",
+        # Sega extended
+        "sg1000", "segapico", "beena",
+        # Korean handheld
+        "gp32",
+    }
+    missing = expected_new - ids
+    assert not missing, f"v0.1.0 expansion missing ids: {sorted(missing)}"
+
+
+def test_dat_name_aliases_unique_across_registry():
+    """No two SystemDefs may claim the same dat_name or alias — otherwise the
+    DAT->system resolver becomes ambiguous and the wrong system_id may stick
+    to imported ROMs.
+    """
+    seen: dict[str, str] = {}
+    for s in SYSTEM_REGISTRY:
+        keys: list[str] = []
+        if s.dat_name:
+            keys.append(s.dat_name)
+        keys.extend(s.dat_name_aliases)
+        for key in keys:
+            assert key not in seen, (
+                f"DAT name {key!r} is claimed by both {seen[key]!r} and {s.id!r}"
+            )
+            seen[key] = s.id
+
+
+def test_videopac_plus_aliased_to_odyssey2():
+    """Philips Videopac+ is the same hardware as Magnavox Odyssey 2 (G7400)."""
+    o2 = next(s for s in SYSTEM_REGISTRY if s.id == "odyssey2")
+    assert "Philips - Videopac+" in o2.dat_name_aliases
+
+
+def test_dsi_decrypted_aliased_to_nds():
+    """DSi cart dumps share the DS cart slot — treat as the same logical system."""
+    nds = next(s for s in SYSTEM_REGISTRY if s.id == "nds")
+    assert "Nintendo - Nintendo DSi (Decrypted)" in nds.dat_name_aliases

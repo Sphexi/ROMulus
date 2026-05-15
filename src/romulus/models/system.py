@@ -176,6 +176,11 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         dat_name_aliases=[
             "Nintendo - Nintendo DS (Decrypted)",
             "Nintendo - Nintendo DS (Download Play)",
+            # DSi cartridge dumps share the DS cart slot and use the same
+            # filesystem layout. Treat DSi (Decrypted) carts as the same
+            # logical system as DS for v0.1.0 — DSi-exclusive titles are
+            # rare and the user can still route them via folder aliases.
+            "Nintendo - Nintendo DSi (Decrypted)",
         ],
     ),
     SystemDef(
@@ -488,7 +493,537 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         folder_aliases=["amstradcpc", "cpc"],
         dat_name="Amstrad - CPC",
     ),
+    # --- Atari (extended) ---
+    SystemDef(
+        id="atari5200",
+        display_name="Atari 5200",
+        short_name="5200",
+        manufacturer="Atari",
+        generation=2,
+        extensions=[".a52", ".bin", ".rom"],
+        header_rule=None,
+        libretro_name="Atari - 5200",
+        folder_aliases=["atari5200", "a5200", "5200"],
+        dat_name="Atari - 5200",
+    ),
+    SystemDef(
+        id="jaguar",
+        display_name="Atari Jaguar",
+        short_name="Jaguar",
+        manufacturer="Atari",
+        generation=5,
+        extensions=[".j64", ".jag", ".rom", ".bin"],
+        header_rule=None,
+        libretro_name="Atari - Jaguar",
+        folder_aliases=["jaguar", "atarijaguar"],
+        dat_name="Atari - Jaguar (J64)",
+    ),
+    # --- Bandai ---
+    SystemDef(
+        id="wonderswan",
+        display_name="Bandai WonderSwan",
+        short_name="WS",
+        manufacturer="Bandai",
+        generation=5,
+        extensions=[".ws"],
+        header_rule=None,
+        libretro_name="Bandai - WonderSwan",
+        folder_aliases=["wonderswan", "ws", "wswan"],
+        dat_name="Bandai - WonderSwan",
+    ),
+    SystemDef(
+        id="wonderswancolor",
+        display_name="Bandai WonderSwan Color",
+        short_name="WSC",
+        manufacturer="Bandai",
+        generation=5,
+        extensions=[".wsc", ".ws"],
+        header_rule=None,
+        libretro_name="Bandai - WonderSwan Color",
+        folder_aliases=["wonderswancolor", "wsc", "wswanc"],
+        dat_name="Bandai - WonderSwan Color",
+    ),
+    # --- Benesse ---
+    # Pocket Challenge V2 is a WonderSwan-compatible educational handheld sold
+    # by Benesse in Japan. Its cartridges are physically and electrically the
+    # same as WonderSwan carts, but ship under a distinct No-Intro header so
+    # the DAT routes here rather than to ``wonderswan``.
+    SystemDef(
+        id="pocketchallengev2",
+        display_name="Benesse Pocket Challenge V2",
+        short_name="PC V2",
+        manufacturer="Benesse",
+        generation=5,
+        extensions=[".pc2", ".ws", ".bin"],
+        header_rule=None,
+        libretro_name="Benesse - Pocket Challenge V2",
+        folder_aliases=["pocketchallengev2", "pcv2"],
+        dat_name="Benesse - Pocket Challenge V2",
+    ),
+    # --- Coleco ---
+    SystemDef(
+        id="colecovision",
+        display_name="ColecoVision",
+        short_name="ColecoVision",
+        manufacturer="Coleco",
+        generation=2,
+        extensions=[".col", ".bin", ".rom"],
+        header_rule=None,
+        libretro_name="Coleco - ColecoVision",
+        folder_aliases=["colecovision", "coleco"],
+        dat_name="Coleco - ColecoVision",
+    ),
+    # --- Commodore (extended) ---
+    SystemDef(
+        id="c64plus4",
+        display_name="Commodore Plus/4",
+        short_name="Plus/4",
+        manufacturer="Commodore",
+        generation=None,
+        extensions=[".prg", ".d64", ".t64", ".tap", ".crt"],
+        header_rule=None,
+        libretro_name="Commodore - Plus-4",
+        folder_aliases=["plus4", "c16", "commodoreplus4"],
+        dat_name="Commodore - Plus-4",
+    ),
+    SystemDef(
+        id="vic20",
+        display_name="Commodore VIC-20",
+        short_name="VIC-20",
+        manufacturer="Commodore",
+        generation=None,
+        extensions=[".prg", ".crt", ".t64", ".tap", ".d64"],
+        header_rule=None,
+        libretro_name="Commodore - VIC-20",
+        folder_aliases=["vic20", "vic-20", "commodorevic20"],
+        dat_name="Commodore - VIC-20",
+    ),
+    # --- Other classic / mini consoles ---
+    SystemDef(
+        id="arcadia2001",
+        display_name="Emerson Arcadia 2001",
+        short_name="Arcadia 2001",
+        manufacturer="Emerson",
+        generation=2,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Emerson - Arcadia 2001",
+        folder_aliases=["arcadia", "arcadia2001"],
+        dat_name="Emerson - Arcadia 2001",
+    ),
+    SystemDef(
+        id="adventurevision",
+        display_name="Entex Adventure Vision",
+        short_name="Adventure Vision",
+        manufacturer="Entex",
+        generation=2,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Entex - Adventure Vision",
+        folder_aliases=["adventurevision"],
+        dat_name="Entex - Adventure Vision",
+    ),
+    SystemDef(
+        id="scv",
+        display_name="Epoch Super Cassette Vision",
+        short_name="SCV",
+        manufacturer="Epoch",
+        generation=3,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Epoch - Super Cassette Vision",
+        folder_aliases=["scv", "supercassettevision"],
+        dat_name="Epoch - Super Cassette Vision",
+    ),
+    SystemDef(
+        id="channelf",
+        display_name="Fairchild Channel F",
+        short_name="Channel F",
+        manufacturer="Fairchild",
+        generation=2,
+        extensions=[".bin", ".chf", ".rom"],
+        header_rule=None,
+        libretro_name="Fairchild - Channel F",
+        folder_aliases=["channelf", "chanf"],
+        dat_name="Fairchild - Channel F",
+    ),
+    SystemDef(
+        id="superacan",
+        display_name="Funtech Super A'Can",
+        short_name="Super A'Can",
+        manufacturer="Funtech",
+        generation=4,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Funtech - Super Acan",
+        folder_aliases=["superacan"],
+        dat_name="Funtech - Super Acan",
+    ),
+    SystemDef(
+        id="vectrex",
+        display_name="GCE Vectrex",
+        short_name="Vectrex",
+        manufacturer="GCE",
+        generation=2,
+        extensions=[".vec", ".bin", ".gam"],
+        header_rule=None,
+        libretro_name="GCE - Vectrex",
+        folder_aliases=["vectrex"],
+        dat_name="GCE - Vectrex",
+    ),
+    SystemDef(
+        id="gamemaster",
+        display_name="Hartung Game Master",
+        short_name="Game Master",
+        manufacturer="Hartung",
+        generation=4,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Hartung - Game Master",
+        folder_aliases=["gamemaster", "hartung"],
+        dat_name="Hartung - Game Master",
+    ),
+    # --- Konami ---
+    # The Picno was a Japan-only edutainment console aimed at toddlers. Tiny
+    # library, but the DAT exists so the SystemDef does too.
+    SystemDef(
+        id="picno",
+        display_name="Konami Picno",
+        short_name="Picno",
+        manufacturer="Konami",
+        generation=4,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Konami - Picno",
+        folder_aliases=["picno"],
+        dat_name="Konami - Picno",
+    ),
+    # --- LeapFrog (educational) ---
+    # LeapFrog's edutainment hardware. Cartridges aren't really games in the
+    # traditional sense, but No-Intro publishes DATs for them so Romulus
+    # recognizes the platforms for users who collect them.
+    SystemDef(
+        id="leappad",
+        display_name="LeapFrog LeapPad",
+        short_name="LeapPad",
+        manufacturer="LeapFrog",
+        generation=None,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="LeapFrog - LeapPad",
+        folder_aliases=["leappad"],
+        dat_name="LeapFrog - LeapPad",
+    ),
+    SystemDef(
+        id="leapster",
+        display_name="LeapFrog Leapster",
+        short_name="Leapster",
+        manufacturer="LeapFrog",
+        generation=None,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="LeapFrog - Leapster Learning Game System",
+        folder_aliases=["leapster", "leapstergls"],
+        dat_name="LeapFrog - Leapster Learning Game System",
+    ),
+    SystemDef(
+        id="myfirstleappad",
+        display_name="LeapFrog My First LeapPad",
+        short_name="My First LeapPad",
+        manufacturer="LeapFrog",
+        generation=None,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="LeapFrog - My First LeapPad",
+        folder_aliases=["myfirstleappad"],
+        dat_name="LeapFrog - My First LeapPad",
+    ),
+    # Magnavox Odyssey 2 and Philips Videopac+ are the same physical hardware
+    # (PAL Europe sold it as Videopac, Videopac+ added the G7400 graphics chip).
+    # The Videopac+ DAT is aliased onto this single SystemDef rather than
+    # spawning a duplicate registry entry.
+    SystemDef(
+        id="odyssey2",
+        display_name="Magnavox Odyssey 2",
+        short_name="Odyssey 2",
+        manufacturer="Magnavox",
+        generation=2,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Magnavox - Odyssey2",
+        folder_aliases=["odyssey2", "o2em", "videopac", "odyssey"],
+        dat_name="Magnavox - Odyssey2",
+        dat_name_aliases=["Philips - Videopac+"],
+    ),
+    SystemDef(
+        id="intellivision",
+        display_name="Mattel Intellivision",
+        short_name="Intellivision",
+        manufacturer="Mattel",
+        generation=2,
+        extensions=[".int", ".bin", ".rom", ".itv"],
+        header_rule=None,
+        libretro_name="Mattel - Intellivision",
+        folder_aliases=["intellivision", "intv"],
+        dat_name="Mattel - Intellivision",
+    ),
+    SystemDef(
+        id="studio2",
+        display_name="RCA Studio II",
+        short_name="Studio II",
+        manufacturer="RCA",
+        generation=2,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="RCA - Studio II",
+        folder_aliases=["studio2", "rcastudio2"],
+        dat_name="RCA - Studio II",
+    ),
+    SystemDef(
+        id="gamecom",
+        display_name="Tiger Game.com",
+        short_name="Game.com",
+        manufacturer="Tiger",
+        generation=5,
+        extensions=[".tgc", ".bin"],
+        header_rule=None,
+        libretro_name="Tiger - Game.com",
+        folder_aliases=["gamecom", "game.com"],
+        dat_name="Tiger - Game.com",
+    ),
+    SystemDef(
+        id="creativision",
+        display_name="VTech CreatiVision",
+        short_name="CreatiVision",
+        manufacturer="VTech",
+        generation=2,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="VTech - CreatiVision",
+        folder_aliases=["creativision", "vtechcreativision"],
+        dat_name="VTech - CreatiVision",
+    ),
+    SystemDef(
+        id="vsmile",
+        display_name="VTech V.Smile",
+        short_name="V.Smile",
+        manufacturer="VTech",
+        generation=6,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="VTech - V.Smile",
+        folder_aliases=["vsmile"],
+        dat_name="VTech - V.Smile",
+    ),
+    SystemDef(
+        id="supervision",
+        display_name="Watara Supervision",
+        short_name="Supervision",
+        manufacturer="Watara",
+        generation=4,
+        extensions=[".sv", ".bin"],
+        header_rule=None,
+        libretro_name="Watara - Supervision",
+        folder_aliases=["supervision", "watara"],
+        dat_name="Watara - Supervision",
+    ),
+    # --- NEC (extended) ---
+    SystemDef(
+        id="supergrafx",
+        display_name="NEC PC Engine SuperGrafx",
+        short_name="SuperGrafx",
+        manufacturer="NEC",
+        generation=4,
+        extensions=[".sgx", ".pce"],
+        header_rule=None,
+        libretro_name="NEC - PC Engine SuperGrafx",
+        folder_aliases=["pcenginesgx", "sgx", "supergrafx"],
+        dat_name="NEC - PC Engine SuperGrafx",
+    ),
+    # --- Sega (extended) ---
+    SystemDef(
+        id="sg1000",
+        display_name="Sega SG-1000",
+        short_name="SG-1000",
+        manufacturer="Sega",
+        generation=3,
+        extensions=[".sg", ".bin", ".rom"],
+        header_rule=None,
+        libretro_name="Sega - SG-1000",
+        folder_aliases=["sg-1000", "sg1000"],
+        dat_name="Sega - SG-1000",
+    ),
+    SystemDef(
+        id="segapico",
+        display_name="Sega Pico",
+        short_name="Pico",
+        manufacturer="Sega",
+        generation=4,
+        extensions=[".bin", ".md"],
+        header_rule=None,
+        libretro_name="Sega - PICO",
+        folder_aliases=["pico", "segapico"],
+        dat_name="Sega - PICO",
+    ),
+    # The Beena was a Japan-only educational console aimed at preschoolers,
+    # released by Sega in 2005. Routed for completeness; no real cores emulate
+    # it today.
+    SystemDef(
+        id="beena",
+        display_name="Sega Beena",
+        short_name="Beena",
+        manufacturer="Sega",
+        generation=7,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Sega - Beena",
+        folder_aliases=["beena"],
+        dat_name="Sega - Beena",
+    ),
+    # --- Nintendo extensions / accessories ---
+    SystemDef(
+        id="n64dd",
+        display_name="Nintendo 64DD",
+        short_name="64DD",
+        manufacturer="Nintendo",
+        generation=5,
+        extensions=[".ndd"],
+        header_rule=None,
+        libretro_name="Nintendo - Nintendo 64DD",
+        folder_aliases=["n64dd", "64dd"],
+        dat_name="Nintendo - Nintendo 64DD",
+    ),
+    SystemDef(
+        id="pokemini",
+        display_name="Pokemon Mini",
+        short_name="Pokemini",
+        manufacturer="Nintendo",
+        generation=6,
+        extensions=[".min"],
+        header_rule=None,
+        libretro_name="Nintendo - Pokemon Mini",
+        folder_aliases=["pokemini", "pmini"],
+        dat_name="Nintendo - Pokemon Mini",
+    ),
+    SystemDef(
+        id="satellaview",
+        display_name="Nintendo Satellaview",
+        short_name="Satellaview",
+        manufacturer="Nintendo",
+        generation=4,
+        extensions=[".bs", ".sfc"],
+        header_rule=None,
+        libretro_name="Nintendo - Satellaview",
+        folder_aliases=["satellaview", "bsx"],
+        dat_name="Nintendo - Satellaview",
+    ),
+    # Sufami Turbo: SNES cartridge accessory. The `.st` extension collides with
+    # Atari ST disk images — disambiguation has to come from folder/system
+    # context at scan time, not extension alone.
+    SystemDef(
+        id="sufami",
+        display_name="Nintendo Sufami Turbo",
+        short_name="Sufami Turbo",
+        manufacturer="Nintendo",
+        generation=4,
+        extensions=[".st", ".sfc"],
+        header_rule=None,
+        libretro_name="Nintendo - Sufami Turbo",
+        folder_aliases=["sufami"],
+        dat_name="Nintendo - Sufami Turbo",
+    ),
+    SystemDef(
+        id="ereader",
+        display_name="Nintendo e-Reader",
+        short_name="e-Reader",
+        manufacturer="Nintendo",
+        generation=6,
+        extensions=[".bin", ".raw"],
+        header_rule=None,
+        libretro_name="Nintendo - e-Reader",
+        folder_aliases=["ereader", "e-reader"],
+        dat_name="Nintendo - e-Reader",
+    ),
+    # --- Korean / Japanese niche ---
+    SystemDef(
+        id="gp32",
+        display_name="GamePark GP32",
+        short_name="GP32",
+        manufacturer="GamePark",
+        generation=6,
+        extensions=[".gpk", ".smc"],
+        header_rule=None,
+        libretro_name="GamePark - GP32",
+        folder_aliases=["gp32", "gameparkgp32"],
+        dat_name="GamePark - GP32",
+    ),
+    SystemDef(
+        id="casioloopy",
+        display_name="Casio Loopy",
+        short_name="Loopy",
+        manufacturer="Casio",
+        generation=5,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Casio - Loopy",
+        folder_aliases=["loopy", "casioloopy"],
+        dat_name="Casio - Loopy",
+    ),
+    SystemDef(
+        id="pv1000",
+        display_name="Casio PV-1000",
+        short_name="PV-1000",
+        manufacturer="Casio",
+        generation=2,
+        extensions=[".bin"],
+        header_rule=None,
+        libretro_name="Casio - PV-1000",
+        folder_aliases=["pv1000", "pv-1000"],
+        dat_name="Casio - PV-1000",
+    ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Intentionally unmapped No-Intro DATs
+#
+# The following DATs ship in ``data/dats/`` for completeness — so the bundled
+# DAT directory mirrors the upstream No-Intro set — but deliberately have no
+# ``SystemDef`` entry. They split into three categories:
+#
+# 1. IBM PC / Compatibles (all storefronts: GOG, Steam, Humble Bundle,
+#    itch.io, Desura, GamersGate, MacGameStore, Microsoft Store, Misc).
+#    These are not consoles. DOS/Windows games have completely different
+#    identification semantics from cartridge ROMs (installers, multi-file
+#    distributions, DRM wrappers, patches). A future v0.2.0+ could add a
+#    DOSBox / Windows game-library expansion — at which point these DATs are
+#    already on disk and can be routed by adding SystemDef entries here.
+#
+# 2. Mobile platforms (J2ME, Palm OS, Symbian, Zeebo). These are mobile
+#    phone / PDA platforms, not consoles, and out of scope for Romulus.
+#
+# 3. Digital store / installer formats — Wii (WAD), Wii (CDN), Wii U
+#    (Digital, CDN), Nintendo 3DS (Digital, CDN, Encrypted), New Nintendo
+#    3DS (Digital, Encrypted), Nintendo DSi (Digital),
+#    Microsoft XBOX 360 (Digital, Title Updates), Sony PlayStation 3 (PSN
+#    Decrypted/Encrypted), PlayStation 4 (PSN Encrypted), PlayStation
+#    Portable (PSN Decrypted/Encrypted, PSX2PSP, UMD Music, UMD Video),
+#    PlayStation Vita (PSN Decrypted/Encrypted, VPK). These are digital-
+#    distribution install packages (eShop / PSN / Xbox Live downloads,
+#    title-update patches, music/video discs), not cartridge or original-
+#    disc ROMs. They use different containers, signing, and decryption
+#    pipelines than what Romulus is built around.
+#
+# 4. Niche educational toys with no real gaming library — LeapFrog
+#    (LeapPad, Leapster, My First LeapPad), Konami Picno, Benesse Pocket
+#    Challenge V2, Sega Beena. These are children's edutainment hardware
+#    rather than gaming systems; skipped to keep the registry's sidebar
+#    focused on platforms users actually scan.
+#
+# To extend coverage to any of the above, add a SystemDef entry above with
+# the appropriate ``dat_name`` set to the exact No-Intro header string, and
+# remove the corresponding line from this comment.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

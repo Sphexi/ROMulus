@@ -478,6 +478,13 @@ class TestDatNameAliases:
             == "nds"
         )
 
+    def test_dsi_decrypted_maps_to_nds(self, tmp_path: Path) -> None:
+        # DSi cart dumps are treated as the same logical system as DS for v0.1.0.
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Nintendo DSi (Decrypted)")
+            == "nds"
+        )
+
     def test_fds_maps_to_nes(self, tmp_path: Path) -> None:
         assert (
             self._entry_system(
@@ -508,3 +515,181 @@ class TestDatNameAliases:
         assert (
             self._entry_system(tmp_path, "Acme - Made Up Console") is None
         )
+
+    # ---- Atari ----
+
+    def test_atari5200_maps_to_atari5200(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Atari - 5200") == "atari5200"
+
+    def test_jaguar_j64_maps_to_jaguar(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Atari - Jaguar (J64)") == "jaguar"
+
+    # ---- Bandai ----
+
+    def test_wonderswan_maps_to_wonderswan(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Bandai - WonderSwan") == "wonderswan"
+
+    def test_wonderswan_color_maps_to_wonderswancolor(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Bandai - WonderSwan Color")
+            == "wonderswancolor"
+        )
+
+    # ---- Coleco ----
+
+    def test_colecovision_maps_to_colecovision(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Coleco - ColecoVision") == "colecovision"
+        )
+
+    # ---- Commodore (extended) ----
+
+    def test_plus4_maps_to_c64plus4(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Commodore - Plus-4") == "c64plus4"
+
+    def test_vic20_maps_to_vic20(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Commodore - VIC-20") == "vic20"
+
+    # ---- Other classic / mini consoles ----
+
+    def test_arcadia2001_maps_to_arcadia2001(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Emerson - Arcadia 2001") == "arcadia2001"
+        )
+
+    def test_adventure_vision_maps_to_adventurevision(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Entex - Adventure Vision")
+            == "adventurevision"
+        )
+
+    def test_super_cassette_vision_maps_to_scv(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Epoch - Super Cassette Vision") == "scv"
+        )
+
+    def test_channel_f_maps_to_channelf(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Fairchild - Channel F") == "channelf"
+        )
+
+    def test_super_acan_maps_to_superacan(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Funtech - Super Acan") == "superacan"
+        )
+
+    def test_vectrex_maps_to_vectrex(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "GCE - Vectrex") == "vectrex"
+
+    def test_game_master_maps_to_gamemaster(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Hartung - Game Master") == "gamemaster"
+        )
+
+    def test_odyssey2_maps_to_odyssey2(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Magnavox - Odyssey2") == "odyssey2"
+
+    def test_videopac_plus_maps_to_odyssey2(self, tmp_path: Path) -> None:
+        # Same hardware as Odyssey 2 — aliased onto the single SystemDef.
+        assert self._entry_system(tmp_path, "Philips - Videopac+") == "odyssey2"
+
+    def test_intellivision_maps_to_intellivision(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Mattel - Intellivision")
+            == "intellivision"
+        )
+
+    def test_studio_ii_maps_to_studio2(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "RCA - Studio II") == "studio2"
+
+    def test_gamecom_maps_to_gamecom(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Tiger - Game.com") == "gamecom"
+
+    def test_creativision_maps_to_creativision(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "VTech - CreatiVision") == "creativision"
+        )
+
+    def test_vsmile_maps_to_vsmile(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "VTech - V.Smile") == "vsmile"
+
+    def test_supervision_maps_to_supervision(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Watara - Supervision") == "supervision"
+        )
+
+    # ---- NEC (extended) ----
+
+    def test_pcengine_supergrafx_maps_to_supergrafx(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "NEC - PC Engine SuperGrafx")
+            == "supergrafx"
+        )
+
+    # ---- Sega (extended) ----
+
+    def test_sg1000_maps_to_sg1000(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Sega - SG-1000") == "sg1000"
+
+    def test_sega_pico_maps_to_segapico(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Sega - PICO") == "segapico"
+
+    # ---- Nintendo extensions / accessories ----
+
+    def test_n64dd_maps_to_n64dd(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Nintendo - Nintendo 64DD") == "n64dd"
+
+    def test_pokemon_mini_maps_to_pokemini(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Pokemon Mini") == "pokemini"
+        )
+
+    def test_satellaview_maps_to_satellaview(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Satellaview") == "satellaview"
+        )
+
+    def test_sufami_turbo_maps_to_sufami(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Sufami Turbo") == "sufami"
+        )
+
+    def test_ereader_maps_to_ereader(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Nintendo - e-Reader") == "ereader"
+
+    # ---- Korean / Japanese niche ----
+
+    def test_gp32_maps_to_gp32(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "GamePark - GP32") == "gp32"
+
+    def test_casio_loopy_maps_to_casioloopy(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Casio - Loopy") == "casioloopy"
+
+    def test_casio_pv1000_maps_to_pv1000(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Casio - PV-1000") == "pv1000"
+
+    # ---- Intentionally unmapped (digital store / installer / mobile / niche) ----
+
+    def test_ibm_pc_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "IBM - PC and Compatibles") is None
+
+    def test_xbox360_digital_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Microsoft - XBOX 360 (Digital)") is None
+        )
+
+    def test_psn_installer_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Sony - PlayStation 3 (PSN) (Decrypted)"
+            )
+            is None
+        )
+
+    def test_wii_cdn_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Wii (Digital) (CDN)") is None
+        )
+
+    def test_mobile_j2me_is_intentionally_unmapped(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Mobile - J2ME") is None

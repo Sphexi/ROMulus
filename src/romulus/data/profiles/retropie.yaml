@@ -123,3 +123,148 @@ systems:
   amstradcpc:
     folder: "amstradcpc"
     extensions: [".dsk", ".cdt", ".cpr", ".zip"]
+  # --- Extended registry (v0.1.0 DAT-driven expansion) ---
+  # These platforms entered SYSTEM_REGISTRY because No-Intro DATs
+  # for them ship in data/dats/. Folder mappings are deferred to a
+  # v0.2.0 profile pass; for now we list each one with
+  # supported: false so the exporter skips them explicitly rather
+  # than silently omitting them (session-10 carry-forward rule).
+  # -- Atari --
+  atari5200:
+    folder: ""
+    supported: false
+  jaguar:
+    folder: ""
+    supported: false
+  # -- Bandai --
+  wonderswan:
+    folder: ""
+    supported: false
+  wonderswancolor:
+    folder: ""
+    supported: false
+  # -- Benesse --
+  pocketchallengev2:
+    folder: ""
+    supported: false
+  # -- Casio --
+  casioloopy:
+    folder: ""
+    supported: false
+  pv1000:
+    folder: ""
+    supported: false
+  # -- Coleco --
+  colecovision:
+    folder: ""
+    supported: false
+  # -- Commodore --
+  c64plus4:
+    folder: ""
+    supported: false
+  vic20:
+    folder: ""
+    supported: false
+  # -- Emerson --
+  arcadia2001:
+    folder: ""
+    supported: false
+  # -- Entex --
+  adventurevision:
+    folder: ""
+    supported: false
+  # -- Epoch --
+  scv:
+    folder: ""
+    supported: false
+  # -- Fairchild --
+  channelf:
+    folder: ""
+    supported: false
+  # -- Funtech --
+  superacan:
+    folder: ""
+    supported: false
+  # -- GCE --
+  vectrex:
+    folder: ""
+    supported: false
+  # -- GamePark --
+  gp32:
+    folder: ""
+    supported: false
+  # -- Hartung --
+  gamemaster:
+    folder: ""
+    supported: false
+  # -- Konami --
+  picno:
+    folder: ""
+    supported: false
+  # -- LeapFrog --
+  leappad:
+    folder: ""
+    supported: false
+  leapster:
+    folder: ""
+    supported: false
+  myfirstleappad:
+    folder: ""
+    supported: false
+  # -- Magnavox --
+  odyssey2:
+    folder: ""
+    supported: false
+  # -- Mattel --
+  intellivision:
+    folder: ""
+    supported: false
+  # -- NEC --
+  supergrafx:
+    folder: ""
+    supported: false
+  # -- Nintendo --
+  ereader:
+    folder: ""
+    supported: false
+  n64dd:
+    folder: ""
+    supported: false
+  pokemini:
+    folder: ""
+    supported: false
+  satellaview:
+    folder: ""
+    supported: false
+  sufami:
+    folder: ""
+    supported: false
+  # -- RCA --
+  studio2:
+    folder: ""
+    supported: false
+  # -- Sega --
+  beena:
+    folder: ""
+    supported: false
+  segapico:
+    folder: ""
+    supported: false
+  sg1000:
+    folder: ""
+    supported: false
+  # -- Tiger --
+  gamecom:
+    folder: ""
+    supported: false
+  # -- VTech --
+  creativision:
+    folder: ""
+    supported: false
+  vsmile:
+    folder: ""
+    supported: false
+  # -- Watara --
+  supervision:
+    folder: ""
+    supported: false
