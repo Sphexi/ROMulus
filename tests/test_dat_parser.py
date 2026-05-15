@@ -432,3 +432,79 @@ class TestXmlEntityExpansionGuard:
         # Should complete near-instantly and insert zero rows.
         inserted = load_all_dats(seeded_db, [tmp_path])
         assert inserted == 0
+
+
+_DAT_HEADER_VARIANT_TEMPLATE = """<?xml version="1.0"?>
+<datafile>
+    <header><name>{header}</name></header>
+    <game name="X"><rom name="X.x" size="1" crc="00000000"/></game>
+</datafile>
+"""
+
+
+class TestDatNameAliases:
+    """Real No-Intro headers carry suffixes the registry's primary `dat_name`
+    can't match exactly (Combined, BigEndian, Decrypted, etc.). The
+    `dat_name_aliases` field on SystemDef is supposed to cover them.
+    """
+
+    def _entry_system(self, tmp_path: Path, header: str) -> str | None:
+        dat = tmp_path / f"{header}.dat"
+        dat.write_text(
+            _DAT_HEADER_VARIANT_TEMPLATE.format(header=header), encoding="utf-8"
+        )
+        entries = parse_dat_file(dat)
+        assert entries, f"expected at least one entry from {header!r}"
+        return entries[0].system_id
+
+    def test_snes_combined_maps_to_snes(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path,
+                "Nintendo - Super Nintendo Entertainment System (Combined)",
+            )
+            == "snes"
+        )
+
+    def test_n64_bigendian_maps_to_n64(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Nintendo 64 (BigEndian)")
+            == "n64"
+        )
+
+    def test_nds_decrypted_maps_to_nds(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Nintendo - Nintendo DS (Decrypted)")
+            == "nds"
+        )
+
+    def test_fds_maps_to_nes(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(
+                tmp_path, "Nintendo - Family Computer Disk System"
+            )
+            == "nes"
+        )
+
+    def test_msx2_maps_to_msx(self, tmp_path: Path) -> None:
+        assert self._entry_system(tmp_path, "Microsoft - MSX2") == "msx"
+
+    def test_zxspectrum_plus3_maps_to_zxspectrum(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Sinclair - ZX Spectrum +3")
+            == "zxspectrum"
+        )
+
+    def test_canonical_dat_name_still_matches(self, tmp_path: Path) -> None:
+        # Sanity — adding aliases must not regress the primary mapping.
+        assert (
+            self._entry_system(
+                tmp_path, "Nintendo - Super Nintendo Entertainment System"
+            )
+            == "snes"
+        )
+
+    def test_unknown_header_returns_none(self, tmp_path: Path) -> None:
+        assert (
+            self._entry_system(tmp_path, "Acme - Made Up Console") is None
+        )

@@ -41,6 +41,14 @@ class SystemDef(BaseModel):
     libretro_name: str | None = None
     folder_aliases: list[str] = Field(default_factory=list)
     dat_name: str | None = None
+    dat_name_aliases: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Additional DAT header `<name>` strings that should resolve to this system. "
+            "Lets one SystemDef cover No-Intro variants like '(Combined)', '(BigEndian)', "
+            "'(Decrypted)', etc. without duplicating registry entries."
+        ),
+    )
 
     @field_validator("extensions", mode="after")
     @classmethod
@@ -78,6 +86,7 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Nintendo Entertainment System",
         folder_aliases=["nes", "famicom", "fc"],
         dat_name="Nintendo - Nintendo Entertainment System",
+        dat_name_aliases=["Nintendo - Family Computer Disk System"],
     ),
     SystemDef(
         id="snes",
@@ -90,6 +99,7 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Super Nintendo Entertainment System",
         folder_aliases=["snes", "sfc", "superfamicom", "supernintendo", "supernes"],
         dat_name="Nintendo - Super Nintendo Entertainment System",
+        dat_name_aliases=["Nintendo - Super Nintendo Entertainment System (Combined)"],
     ),
     SystemDef(
         id="n64",
@@ -102,6 +112,7 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Nintendo 64",
         folder_aliases=["n64", "nintendo64"],
         dat_name="Nintendo - Nintendo 64",
+        dat_name_aliases=["Nintendo - Nintendo 64 (BigEndian)"],
     ),
     SystemDef(
         id="gamecube",
@@ -162,6 +173,10 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Nintendo DS",
         folder_aliases=["nds", "ds"],
         dat_name="Nintendo - Nintendo DS",
+        dat_name_aliases=[
+            "Nintendo - Nintendo DS (Decrypted)",
+            "Nintendo - Nintendo DS (Download Play)",
+        ],
     ),
     SystemDef(
         id="virtualboy",
@@ -421,6 +436,7 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Microsoft - MSX",
         folder_aliases=["msx", "msx1"],
         dat_name="Microsoft - MSX",
+        dat_name_aliases=["Microsoft - MSX2"],
     ),
     SystemDef(
         id="amiga",
@@ -445,6 +461,7 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Commodore - 64",
         folder_aliases=["c64", "commodore64"],
         dat_name="Commodore - 64",
+        dat_name_aliases=["Commodore - 64 (PP)", "Commodore - 64 (Tapes)"],
     ),
     SystemDef(
         id="zxspectrum",
@@ -457,6 +474,7 @@ SYSTEM_REGISTRY: list[SystemDef] = [
         libretro_name="Sinclair - ZX Spectrum",
         folder_aliases=["zxspectrum", "zx", "spectrum"],
         dat_name="Sinclair - ZX Spectrum",
+        dat_name_aliases=["Sinclair - ZX Spectrum +3"],
     ),
     SystemDef(
         id="amstradcpc",

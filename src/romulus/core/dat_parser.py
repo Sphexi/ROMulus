@@ -90,12 +90,21 @@ def _parse_revision_from_name(game_name: str) -> str | None:
 
 
 def _system_id_from_dat_name(dat_name: str | None) -> str | None:
-    """Match a DAT `<header><name>` against the registry's `dat_name` field."""
+    """Match a DAT `<header><name>` against `dat_name` or any `dat_name_aliases`.
+
+    Real-world No-Intro DATs ship variants like
+    ``"Nintendo - Super Nintendo Entertainment System (Combined)"`` and
+    ``"Nintendo - Nintendo 64 (BigEndian)"`` — same logical system, different
+    header suffix. The registry's `dat_name_aliases` lets one SystemDef cover
+    all of them.
+    """
     if not dat_name:
         return None
     target = dat_name.strip().lower()
     for sys_def in SYSTEM_REGISTRY:
         if sys_def.dat_name and sys_def.dat_name.lower() == target:
+            return sys_def.id
+        if any(alias.lower() == target for alias in sys_def.dat_name_aliases):
             return sys_def.id
     return None
 
