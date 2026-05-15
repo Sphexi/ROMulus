@@ -204,9 +204,10 @@ class TestBuiltInProfileCoverage:
         "muos",
         "mister",
         "analogue-pocket",
+        "anbernic-rglauncher",
     }
 
-    def test_all_six_built_in_profiles_load(self) -> None:
+    def test_all_built_in_profiles_load(self) -> None:
         profiles = load_all_profiles(builtin_dir=BUILTIN_PROFILES_DIR)
         assert set(profiles) >= self.EXPECTED_PROFILE_IDS
 
@@ -982,10 +983,11 @@ class TestProfilePathTraversal:
             _system_dest_dir(target, evil_profile, evil_mapping)
 
     def test_builtin_profiles_still_load(self) -> None:
-        """All 6 shipped profiles must validate cleanly with new rules."""
+        """All shipped profiles must validate cleanly with new rules."""
         profiles = load_all_profiles()
         assert set(profiles.keys()) == {
             "analogue-pocket",
+            "anbernic-rglauncher",
             "batocera",
             "mister",
             "muos",

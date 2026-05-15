@@ -1,0 +1,297 @@
+# Anbernic RGLauncher (stock Android firmware) destination profile.
+#
+# Targets the stock Anbernic Android handhelds (RG556, RG406H/V/M, etc.)
+# running the built-in "RGLauncher" / "Retro Launcher" / "Game Center".
+# Folder naming follows the lowercase long-form convention used by the
+# Anbernic-blessed retrogamecorner/AnbernicAndroidFolders template and
+# the GlazedBelmont ES-DE Android custom-systems XMLs (see
+# docs/ROM-FORMATS-REFERENCE.md §6 for the full discussion).
+#
+# Two design notes (also documented in §6):
+# 1. RGLauncher has a FIXED catalog of consoles — systems not in the
+#    catalog (home computers, engines, niche edutainment) are marked
+#    ``supported: false`` here because the launcher will never display
+#    them even if files are copied. Users who want those need a
+#    third-party frontend like ES-DE Android or Daijisho on the device.
+# 2. RGLauncher has a documented box-art scraping bug with nested
+#    paths in some firmware revisions, so ``base_path: "Roms"`` is the
+#    conservative default — many users prefer flat layout at the share
+#    root, which they can achieve by setting their export target to the
+#    desired ``Roms/`` directory directly and leaving this here.
+id: anbernic-rglauncher
+name: "Anbernic RGLauncher (stock Android)"
+description: "Stock Anbernic Android firmware (RG556, RG406, etc.) with the built-in launcher"
+case_sensitive: false
+base_path: "Roms"
+gamelist_format: null
+artwork_subdir: null
+multi_disc: "m3u"
+
+systems:
+  # --- Nintendo (all in RGLauncher catalog) ---
+  nes:
+    folder: "nes"
+    extensions: [".nes", ".unf", ".unif", ".fds", ".zip", ".7z"]
+  snes:
+    folder: "snes"
+    extensions: [".sfc", ".smc", ".fig", ".swc", ".zip", ".7z"]
+  n64:
+    folder: "n64"
+    extensions: [".z64", ".n64", ".v64", ".rom", ".zip"]
+  gamecube:
+    folder: "gc"
+    extensions: [".iso", ".gcm", ".gcz", ".rvz", ".ciso", ".wia"]
+  wii:
+    folder: "wii"
+    extensions: [".iso", ".wbfs", ".rvz", ".wia", ".ciso", ".gcz", ".wad", ".nkit.iso"]
+  n3ds:
+    folder: "3ds"
+    extensions: [".3ds", ".cia", ".cci", ".cxi", ".app"]
+  gb:
+    folder: "gb"
+    extensions: [".gb", ".zip", ".7z"]
+  gbc:
+    folder: "gbc"
+    extensions: [".gbc", ".gb", ".zip", ".7z"]
+  gba:
+    folder: "gba"
+    extensions: [".gba", ".zip", ".7z"]
+  nds:
+    folder: "nds"
+    extensions: [".nds", ".zip", ".7z"]
+  virtualboy:
+    folder: "virtualboy"
+    extensions: [".vb", ".vboy", ".zip"]
+  pokemini:
+    folder: "pokemini"
+    extensions: [".min", ".zip"]
+  # Sub-cartridge add-ons that the RGLauncher catalog lists separately.
+  satellaview:
+    folder: "satellaview"
+    extensions: [".bs", ".sfc", ".zip"]
+  sufami:
+    folder: "sufami"
+    extensions: [".st", ".sfc", ".zip"]
+  # --- Sega (all in RGLauncher catalog) ---
+  megadrive:
+    folder: "megadrive"
+    extensions: [".md", ".gen", ".bin", ".smd", ".68k", ".zip", ".7z"]
+  mastersystem:
+    folder: "mastersystem"
+    extensions: [".sms", ".bin", ".zip"]
+  gamegear:
+    folder: "gamegear"
+    extensions: [".gg", ".zip"]
+  sg1000:
+    folder: "sg1000"
+    extensions: [".sg", ".bin", ".rom", ".zip"]
+  sega32x:
+    folder: "sega32x"
+    extensions: [".32x", ".bin", ".zip"]
+  saturn:
+    folder: "saturn"
+    extensions: [".cue", ".iso", ".chd", ".mds", ".m3u", ".ccd"]
+  dreamcast:
+    folder: "dreamcast"
+    extensions: [".gdi", ".cdi", ".chd", ".cue", ".m3u"]
+  # --- Sony (PS1, PSP in catalog; Vita and PS3 are not) ---
+  psx:
+    folder: "psx"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".pbp", ".m3u", ".ecm", ".ccd"]
+  psp:
+    folder: "psp"
+    extensions: [".iso", ".cso", ".pbp", ".zso", ".dax"]
+  # --- Atari (all in catalog) ---
+  atari2600:
+    folder: "atari2600"
+    extensions: [".a26", ".bin", ".zip"]
+  atari5200:
+    folder: "atari5200"
+    extensions: [".a52", ".bin", ".rom", ".zip"]
+  atari7800:
+    folder: "atari7800"
+    extensions: [".a78", ".bin", ".zip"]
+  lynx:
+    folder: "lynx"
+    extensions: [".lnx", ".lyx", ".o", ".zip"]
+  jaguar:
+    folder: "jaguar"
+    extensions: [".j64", ".jag", ".rom", ".bin", ".abs", ".cof", ".zip"]
+  # --- NEC (catalog has PC Engine, PCE-CD, SuperGrafx) ---
+  pcengine:
+    folder: "pcengine"
+    extensions: [".pce", ".bin", ".zip"]
+  pcenginecd:
+    folder: "pcenginecd"
+    extensions: [".cue", ".bin", ".iso", ".chd", ".ccd"]
+  supergrafx:
+    folder: "supergrafx"
+    extensions: [".sgx", ".pce", ".zip"]
+  # --- SNK (Neo Geo, NGP, NGPC in catalog) ---
+  neogeo:
+    folder: "neogeo"
+    extensions: [".zip", ".7z"]
+  ngp:
+    folder: "ngp"
+    extensions: [".ngp", ".zip", ".7z"]
+  ngpc:
+    folder: "ngpc"
+    extensions: [".ngc", ".npc", ".zip", ".7z"]
+  # --- Bandai (WonderSwan, WSC in catalog) ---
+  wonderswan:
+    folder: "wonderswan"
+    extensions: [".ws", ".zip", ".7z"]
+  wonderswancolor:
+    folder: "wonderswancolor"
+    extensions: [".wsc", ".zip", ".7z"]
+  # --- Coleco / Mattel / GCE / Magnavox / Fairchild (all in catalog) ---
+  colecovision:
+    folder: "colecovision"
+    extensions: [".col", ".bin", ".rom", ".zip"]
+  intellivision:
+    folder: "intellivision"
+    extensions: [".int", ".bin", ".rom", ".itv", ".zip"]
+  vectrex:
+    folder: "vectrex"
+    extensions: [".vec", ".bin", ".gam", ".zip"]
+  channelf:
+    folder: "channelf"
+    extensions: [".bin", ".chf", ".rom", ".zip"]
+  odyssey2:
+    # §6.5 of the format ref: "pick o2em per RetroArch core name, or
+    # videopac per ES-DE". o2em is the more common short name in
+    # libretro builds shipped on Anbernic Android.
+    folder: "o2em"
+    extensions: [".bin", ".zip"]
+  # --- Arcade (MAME + FBNeo in catalog) ---
+  mame:
+    folder: "mame"
+    extensions: [".zip", ".7z", ".chd"]
+  fbneo:
+    folder: "fbneo"
+    extensions: [".zip", ".7z"]
+  # --- Microsoft (MSX umbrella in catalog) ---
+  msx:
+    folder: "msx"
+    extensions: [".rom", ".dsk", ".cas", ".mx1", ".mx2", ".m3u"]
+
+  # ---------------------------------------------------------------
+  # Systems NOT in the RGLauncher catalog — files won't appear in the
+  # stock launcher. Mark unsupported so the exporter skips them
+  # unless the user explicitly enables them with a custom profile.
+  # Per §6.3: install ES-DE Android or Daijisho to access these.
+  # ---------------------------------------------------------------
+  # Home computers — none in RGLauncher catalog.
+  atarist:
+    folder: ""
+    supported: false
+  amiga:
+    folder: ""
+    supported: false
+  c64:
+    folder: ""
+    supported: false
+  c64plus4:
+    folder: ""
+    supported: false
+  vic20:
+    folder: ""
+    supported: false
+  zxspectrum:
+    folder: ""
+    supported: false
+  amstradcpc:
+    folder: ""
+    supported: false
+  # Niche / edutainment — not in catalog.
+  pocketchallengev2:
+    folder: ""
+    supported: false
+  casioloopy:
+    folder: ""
+    supported: false
+  pv1000:
+    folder: ""
+    supported: false
+  arcadia2001:
+    folder: ""
+    supported: false
+  adventurevision:
+    folder: ""
+    supported: false
+  scv:
+    folder: ""
+    supported: false
+  superacan:
+    folder: ""
+    supported: false
+  gamemaster:
+    folder: ""
+    supported: false
+  picno:
+    folder: ""
+    supported: false
+  leappad:
+    folder: ""
+    supported: false
+  leapster:
+    folder: ""
+    supported: false
+  myfirstleappad:
+    folder: ""
+    supported: false
+  studio2:
+    folder: ""
+    supported: false
+  creativision:
+    folder: ""
+    supported: false
+  vsmile:
+    folder: ""
+    supported: false
+  supervision:
+    folder: ""
+    supported: false
+  gamecom:
+    folder: ""
+    supported: false
+  beena:
+    folder: ""
+    supported: false
+  segapico:
+    folder: ""
+    supported: false
+  gp32:
+    folder: ""
+    supported: false
+  ereader:
+    folder: ""
+    supported: false
+  # Nintendo add-ons / not in catalog.
+  n64dd:
+    folder: ""
+    supported: false
+  # Higher-end / digital-install platforms — not playable on Anbernic
+  # Android (Cemu/RPCS3/Vita3K/Xenia aren't packaged for these devices).
+  wiiu:
+    folder: ""
+    supported: false
+  dsiware:
+    folder: ""
+    supported: false
+  psvita:
+    folder: ""
+    supported: false
+  ps3:
+    folder: ""
+    supported: false
+  xbox360:
+    folder: ""
+    supported: false
+  # Mobile platforms — not RGLauncher targets.
+  j2me:
+    folder: ""
+    supported: false
+  palmos:
+    folder: ""
+    supported: false
