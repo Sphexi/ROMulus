@@ -219,11 +219,21 @@ def enrich_library(
     progress_callback: ProgressCallback | None = None,
     launchbox_xml_path: Path | str | None = None,
     http_client: httpx.Client | None = None,
+    game_ids: list[int] | None = None,
+    system_id: str | None = None,
+    collection_id: int | None = None,
 ) -> EnrichmentStats:
     """Walk DAT-verified games that have no metadata and try each source.
 
     Returns a small stats dict: {games_processed, metadata_added, covers_added}.
     Commits after each game so a long enrichment run survives interruption.
+
+    Optional scope filters (Approach 1 — single code path):
+        game_ids: Limit enrichment to these specific game ids.
+        system_id: Limit enrichment to games belonging to this system.
+        collection_id: Limit enrichment to games in this collection.
+    When multiple are supplied game_ids wins, then system_id, then collection_id.
+    When none are supplied the full library is enriched.
     """
     cache_dir = _resolve_cache_dir(conn, cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -240,6 +250,17 @@ def enrich_library(
         logger.info("loaded launchbox entries: count=%d", len(entries))
 
     rows = queries.get_games_needing_enrichment(conn)
+
+    # Apply scope filter — narrow the candidate list to the requested scope.
+    if game_ids is not None:
+        allowed = frozenset(game_ids)
+        rows = [r for r in rows if r["id"] in allowed]
+    elif system_id is not None:
+        rows = [r for r in rows if r["system_id"] == system_id]
+    elif collection_id is not None:
+        coll_game_ids = frozenset(queries.get_collection_games(conn, collection_id))
+        rows = [r for r in rows if r["id"] in coll_game_ids]
+
     total = len(rows)
     metadata_added = 0
     covers_added = 0

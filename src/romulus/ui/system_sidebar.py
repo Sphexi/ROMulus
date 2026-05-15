@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QStandardItem, QStandardItemModel
-from PySide6.QtWidgets import QTreeView, QWidget
+from PySide6.QtGui import QAction, QStandardItem, QStandardItemModel
+from PySide6.QtWidgets import QMenu, QTreeView, QWidget
 
 from romulus.db import queries as q
 
@@ -44,6 +44,16 @@ class SystemSidebar(QTreeView):
     system_selected = Signal(object)
     collection_selected = Signal(int)
 
+    # Scoped action signals emitted from the right-click context menu.
+    quick_scan_system_requested = Signal(str)   # system_id
+    heavy_scan_system_requested = Signal(str)   # system_id
+    enrich_system_requested = Signal(str)       # system_id
+    find_covers_system_requested = Signal(str)  # system_id
+
+    enrich_collection_requested = Signal(int)       # collection_id
+    heavy_scan_collection_requested = Signal(int)   # collection_id
+    find_covers_collection_requested = Signal(int)  # collection_id
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._model = QStandardItemModel(self)
@@ -52,6 +62,9 @@ class SystemSidebar(QTreeView):
         self.setHeaderHidden(True)
         self.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self.selectionModel().currentChanged.connect(self._on_current_changed)
+
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
 
     def populate(self, conn: sqlite3.Connection) -> None:
         """Rebuild the tree from the database."""
@@ -101,3 +114,81 @@ class SystemSidebar(QTreeView):
             self.system_selected.emit(payload)
         elif kind == KIND_COLLECTION and isinstance(payload, int):
             self.collection_selected.emit(payload)
+
+    def _on_context_menu(self, point: object) -> None:
+        """Build a context menu for system / collection rows."""
+        index = self.indexAt(point)  # type: ignore[arg-type]
+        if not index.isValid():
+            return
+
+        kind = index.data(NODE_KIND_ROLE)
+        payload = index.data(SYSTEM_ID_ROLE)
+        label = index.data(Qt.ItemDataRole.DisplayRole) or ""
+        # Strip trailing " (N)" count from the display label for menu titles.
+        display = label.rsplit(" (", 1)[0] if " (" in label else label
+
+        if kind == KIND_SYSTEM and isinstance(payload, str):
+            self._show_system_menu(point, payload, display)
+        elif kind == KIND_COLLECTION and isinstance(payload, int):
+            self._show_collection_menu(point, payload, display)
+        # KIND_ALL and header rows get no menu.
+
+    def _show_system_menu(
+        self, point: object, system_id: str, display_name: str
+    ) -> None:
+        """Context menu for a system row."""
+        menu = QMenu(self)
+
+        quick = QAction(f"Quick Scan {display_name}", menu)
+        quick.triggered.connect(
+            lambda: self.quick_scan_system_requested.emit(system_id)
+        )
+        menu.addAction(quick)
+
+        heavy = QAction(f"Heavy Scan {display_name}", menu)
+        heavy.triggered.connect(
+            lambda: self.heavy_scan_system_requested.emit(system_id)
+        )
+        menu.addAction(heavy)
+
+        menu.addSeparator()
+
+        enrich = QAction(f"Enrich {display_name}", menu)
+        enrich.triggered.connect(
+            lambda: self.enrich_system_requested.emit(system_id)
+        )
+        menu.addAction(enrich)
+
+        covers = QAction(f"Find local covers for {display_name}", menu)
+        covers.triggered.connect(
+            lambda: self.find_covers_system_requested.emit(system_id)
+        )
+        menu.addAction(covers)
+
+        menu.exec(self.viewport().mapToGlobal(point))  # type: ignore[arg-type]
+
+    def _show_collection_menu(
+        self, point: object, collection_id: int, display_name: str
+    ) -> None:
+        """Context menu for a collection row."""
+        menu = QMenu(self)
+
+        enrich = QAction(f"Enrich games in {display_name}", menu)
+        enrich.triggered.connect(
+            lambda: self.enrich_collection_requested.emit(collection_id)
+        )
+        menu.addAction(enrich)
+
+        heavy = QAction(f"Heavy Scan games in {display_name}", menu)
+        heavy.triggered.connect(
+            lambda: self.heavy_scan_collection_requested.emit(collection_id)
+        )
+        menu.addAction(heavy)
+
+        covers = QAction(f"Find local covers for games in {display_name}", menu)
+        covers.triggered.connect(
+            lambda: self.find_covers_collection_requested.emit(collection_id)
+        )
+        menu.addAction(covers)
+
+        menu.exec(self.viewport().mapToGlobal(point))  # type: ignore[arg-type]

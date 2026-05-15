@@ -267,14 +267,22 @@ def hash_library(
     conn: sqlite3.Connection,
     progress_callback: Callable[[int, int, str], None] | None = None,
     workers: int = 8,
+    scope_rom_ids: list[int] | None = None,
 ) -> int:
     """Hash every ROM with a missing or stale hash, parallelized across `workers`.
 
     `progress_callback(done, total, path)` fires once per completed file.
     Returns the count of ROMs successfully hashed this call. Skips files whose
     on-disk mtime no longer matches the recorded mtime (caller should re-scan).
+
+    Args:
+        scope_rom_ids: When supplied, only hash ROMs whose id is in this list.
+            Any ROM not in the list is skipped even if it needs hashing.
     """
     pending = _rows_needing_hash(conn)
+    if scope_rom_ids is not None:
+        allowed = frozenset(scope_rom_ids)
+        pending = [r for r in pending if int(r["id"]) in allowed]
     total = len(pending)
     if total == 0:
         return 0

@@ -295,6 +295,10 @@ class GameTable(QWidget):
     add_to_collection_requested = Signal(int)
     new_collection_requested = Signal(str)
     remove_from_collection_requested = Signal(int)
+    # Scoped action signals — carry the game_id of the selected row.
+    enrich_game_requested = Signal(int)
+    heavy_scan_game_requested = Signal(int)
+    find_local_covers_game_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -408,11 +412,23 @@ class GameTable(QWidget):
         row = self.model.row_at(source_index.row())
         self.game_selected.emit(row.game_id)
 
+    def _selected_row(self) -> GameRow | None:
+        """Return the full GameRow for the currently-selected row, or None."""
+        index = self.view.selectionModel().currentIndex()
+        if not index.isValid():
+            return None
+        source_index = self.proxy.mapToSource(index)
+        if not source_index.isValid():
+            return None
+        return self.model.row_at(source_index.row())
+
     def _on_context_menu(self, point: object) -> None:
         game_id = self.selected_game_id()
         if game_id is None:
             return
+        row = self._selected_row()
         menu = QMenu(self.view)
+
         fav_action = QAction("Add to Favorites", menu)
         fav_action.triggered.connect(
             lambda: self.add_to_favorites_requested.emit(game_id)
@@ -441,6 +457,30 @@ class GameTable(QWidget):
                 lambda: self.remove_from_collection_requested.emit(game_id)
             )
             menu.addAction(remove_action)
+
+        # Scoped actions — operate on this game only.
+        menu.addSeparator()
+
+        enrich_action = QAction("Enrich this game", menu)
+        # Disable if already fully enriched (has both cover and metadata).
+        already_enriched = row is not None and row.has_cover and row.has_metadata
+        enrich_action.setEnabled(not already_enriched)
+        enrich_action.triggered.connect(
+            lambda: self.enrich_game_requested.emit(game_id)
+        )
+        menu.addAction(enrich_action)
+
+        heavy_scan_action = QAction("Heavy Scan this game's ROMs", menu)
+        heavy_scan_action.triggered.connect(
+            lambda: self.heavy_scan_game_requested.emit(game_id)
+        )
+        menu.addAction(heavy_scan_action)
+
+        covers_action = QAction("Find local covers for this game", menu)
+        covers_action.triggered.connect(
+            lambda: self.find_local_covers_game_requested.emit(game_id)
+        )
+        menu.addAction(covers_action)
 
         menu.exec(self.view.viewport().mapToGlobal(point))
 

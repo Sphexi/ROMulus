@@ -175,7 +175,13 @@ class ScanWorker(_DbWorker):
 
 
 class EnrichWorker(_DbWorker):
-    """Run `enrich_library` against the configured DB on a worker thread."""
+    """Run `enrich_library` against the configured DB on a worker thread.
+
+    Optional scope kwargs narrow processing to a specific set of games:
+        game_ids: Limit to these game ids.
+        system_id: Limit to games in this system.
+        collection_id: Limit to games in this collection.
+    """
 
     progress = Signal(int, int, str)
     finished_ok = Signal(int, int, int)
@@ -187,10 +193,17 @@ class EnrichWorker(_DbWorker):
         db_path: Path | str,
         cache_dir: Path | str | None = None,
         launchbox_xml_path: Path | str | None = None,
+        *,
+        game_ids: list[int] | None = None,
+        system_id: str | None = None,
+        collection_id: int | None = None,
     ) -> None:
         super().__init__(db_path)
         self._cache_dir = cache_dir
         self._launchbox_xml_path = launchbox_xml_path
+        self._game_ids = game_ids
+        self._system_id = system_id
+        self._collection_id = collection_id
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
         def _progress(idx: int, total: int, title: str) -> None:
@@ -202,6 +215,9 @@ class EnrichWorker(_DbWorker):
             cache_dir=self._cache_dir,
             progress_callback=_progress,
             launchbox_xml_path=self._launchbox_xml_path,
+            game_ids=self._game_ids,
+            system_id=self._system_id,
+            collection_id=self._collection_id,
         )
         self.finished_ok.emit(
             stats["games_processed"],
@@ -257,6 +273,10 @@ class HeavyScanWorker(_DbWorker):
 
     On first use (empty ``dat_entries`` table) the worker loads all bundled
     DATs before hashing — this adds ~6 s but subsequent runs skip it.
+
+    Optional ``scope_rom_ids`` limits hashing to a subset of ROMs. DAT
+    matching always runs over the full table so partial hashes are still
+    matched against the DAT database.
     """
 
     progress = Signal(int, int, str)
@@ -270,11 +290,14 @@ class HeavyScanWorker(_DbWorker):
         library_path: Path | str,
         bundled_dats_path: Path | str,
         workers: int = 8,
+        *,
+        scope_rom_ids: list[int] | None = None,
     ) -> None:
         super().__init__(db_path)
         self._library_path = str(library_path)
         self._bundled_dats_path = Path(bundled_dats_path)
         self._workers = workers
+        self._scope_rom_ids = scope_rom_ids
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
         # Load DATs on first run (empty dat_entries table).
@@ -295,6 +318,7 @@ class HeavyScanWorker(_DbWorker):
             conn,
             progress_callback=_progress,
             workers=self._workers,
+            scope_rom_ids=self._scope_rom_ids,
         )
         total_matched = match_hashes(conn)
         self.finished_ok.emit(total_hashed, total_matched, errors)
@@ -307,6 +331,8 @@ class LocalCoverFinderWorker(_DbWorker):
         progress(current, total, filename): Emitted once per ROM processed.
         finished_ok(roms_scanned, covers_found, covers_skipped, errors): Final counts.
         failed(message): Emitted on exception or cooperative cancel.
+
+    Optional ``scope_rom_ids`` limits discovery to a subset of ROM ids.
     """
 
     progress = Signal(int, int, str)
@@ -314,9 +340,16 @@ class LocalCoverFinderWorker(_DbWorker):
 
     _operation_name = "Local Cover Discovery"
 
-    def __init__(self, db_path: Path | str, library_path: Path | str) -> None:
+    def __init__(
+        self,
+        db_path: Path | str,
+        library_path: Path | str,
+        *,
+        scope_rom_ids: list[int] | None = None,
+    ) -> None:
         super().__init__(db_path)
         self._library_path = str(library_path)
+        self._scope_rom_ids = scope_rom_ids
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
         def _progress(current: int, total: int, filename: str) -> None:
@@ -327,6 +360,7 @@ class LocalCoverFinderWorker(_DbWorker):
             conn,
             self._library_path,
             progress_callback=_progress,
+            scope_rom_ids=self._scope_rom_ids,
         )
         self.finished_ok.emit(
             result.roms_scanned,

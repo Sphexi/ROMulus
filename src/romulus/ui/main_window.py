@@ -106,6 +106,44 @@ class MainWindow(QMainWindow):
         )
         self.detail_panel.favorite_toggled.connect(self._on_favorite_toggled)
 
+        # Scoped game-table actions.
+        self.game_table.enrich_game_requested.connect(
+            lambda gid: self._enrich_scoped(game_ids=[gid])
+        )
+        self.game_table.heavy_scan_game_requested.connect(
+            lambda gid: self._heavy_scan_scoped(game_id=gid)
+        )
+        self.game_table.find_local_covers_game_requested.connect(
+            lambda gid: self._find_local_covers_scoped(game_id=gid)
+        )
+
+        # Scoped sidebar actions — system.
+        # Quick Scan for a system triggers a full library quick scan (path
+        # filtering is not implemented at the scan engine level yet).
+        self.sidebar.quick_scan_system_requested.connect(
+            lambda _sid: self._on_quick_scan()
+        )
+        self.sidebar.heavy_scan_system_requested.connect(
+            lambda sid: self._heavy_scan_scoped(system_id=sid)
+        )
+        self.sidebar.enrich_system_requested.connect(
+            lambda sid: self._enrich_scoped(system_id=sid)
+        )
+        self.sidebar.find_covers_system_requested.connect(
+            lambda sid: self._find_local_covers_scoped(system_id=sid)
+        )
+
+        # Scoped sidebar actions — collection.
+        self.sidebar.enrich_collection_requested.connect(
+            lambda cid: self._enrich_scoped(collection_id=cid)
+        )
+        self.sidebar.heavy_scan_collection_requested.connect(
+            lambda cid: self._heavy_scan_scoped(collection_id=cid)
+        )
+        self.sidebar.find_covers_collection_requested.connect(
+            lambda cid: self._find_local_covers_scoped(collection_id=cid)
+        )
+
     def _build_menu(self) -> None:
         menu = self.menuBar()
 
@@ -472,7 +510,98 @@ class MainWindow(QMainWindow):
     def _on_heavy_scan_failed(self, message: str) -> None:
         self.status_label.setText(message)
 
+    def _heavy_scan_scoped(
+        self,
+        game_id: int | None = None,
+        system_id: str | None = None,
+        collection_id: int | None = None,
+    ) -> None:
+        """Start a heavy scan scoped to a game / system / collection."""
+        if (
+            self._heavy_scan_worker is not None
+            and self._heavy_scan_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Heavy Scan already running",
+                "A heavy scan is already in progress — "
+                "please wait for it to finish.",
+            )
+            return
+
+        library_path = get_config(self._conn, "library_path") or ""
+        if not library_path:
+            QMessageBox.warning(
+                self,
+                "No library configured",
+                "Set a library folder via File > Open Library first.",
+            )
+            return
+
+        # Resolve scope to ROM ids.
+        scope_rom_ids: list[int] | None = None
+        if game_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, game_id=game_id)
+        elif system_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, system_id=system_id)
+        elif collection_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(
+                self._conn, collection_id=collection_id
+            )
+
+        if game_id is not None:
+            scope_label = f"Heavy Scan: game {game_id}"
+        elif system_id is not None:
+            scope_label = f"Heavy Scan: {system_id}"
+        elif collection_id is not None:
+            scope_label = f"Heavy Scan: collection {collection_id}"
+        else:
+            scope_label = "Preparing heavy scan..."
+
+        scan_threads = int(get_config(self._conn, "scan_threads") or 8)
+
+        self._heavy_scan_dialog = HeavyScanProgressDialog(self)
+        self._heavy_scan_dialog.setLabelText(scope_label)
+        self._heavy_scan_worker = HeavyScanWorker(
+            DEFAULT_DB_PATH,
+            library_path,
+            _BUNDLED_DATS_PATH,
+            workers=scan_threads,
+            scope_rom_ids=scope_rom_ids,
+        )
+
+        self._heavy_scan_worker.progress.connect(
+            self._heavy_scan_dialog.on_progress
+        )
+        self._heavy_scan_worker.finished_ok.connect(
+            self._heavy_scan_dialog.on_finished
+        )
+        self._heavy_scan_worker.failed.connect(
+            self._heavy_scan_dialog.on_failed
+        )
+        self._heavy_scan_worker.finished_ok.connect(
+            self._on_heavy_scan_finished_ok
+        )
+        self._heavy_scan_worker.failed.connect(self._on_heavy_scan_failed)
+        self._heavy_scan_dialog.canceled.connect(self._heavy_scan_worker.cancel)
+        self._heavy_scan_worker.finished.connect(
+            self._heavy_scan_worker.deleteLater
+        )
+        self._heavy_scan_worker.finished.connect(self._clear_heavy_scan_worker)
+
+        self._heavy_scan_worker.start()
+        self._heavy_scan_dialog.exec()
+
     def _on_enrich(self) -> None:
+        self._enrich_scoped()
+
+    def _enrich_scoped(
+        self,
+        game_ids: list[int] | None = None,
+        system_id: str | None = None,
+        collection_id: int | None = None,
+    ) -> None:
+        """Start enrichment, optionally scoped to a game / system / collection."""
         if self._enrich_worker is not None and self._enrich_worker.isRunning():
             QMessageBox.information(
                 self,
@@ -481,8 +610,7 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Pre-flight: enrichment only works on DAT-verified games. Surface this
-        # early so the user isn't confused by an instant "Completed (0 games)".
+        # Pre-flight: enrichment only works on DAT-verified games.
         eligible = len(q.get_games_needing_enrichment(self._conn))
         if eligible == 0:
             QMessageBox.information(
@@ -495,8 +623,29 @@ class MainWindow(QMainWindow):
 
         cover_cache = get_config(self._conn, "cover_cache_path") or None
 
+        # Build a human-readable scope label for the progress dialog title.
+        if game_ids is not None:
+            scope_label = (
+                f"Enriching game {game_ids[0]}..."
+                if len(game_ids) == 1
+                else f"Enriching {len(game_ids)} games..."
+            )
+        elif system_id is not None:
+            scope_label = f"Enriching {system_id}..."
+        elif collection_id is not None:
+            scope_label = f"Enriching collection {collection_id}..."
+        else:
+            scope_label = "Preparing enrichment..."
+
         self._enrich_dialog = EnrichProgressDialog(self)
-        self._enrich_worker = EnrichWorker(DEFAULT_DB_PATH, cover_cache)
+        self._enrich_dialog.setLabelText(scope_label)
+        self._enrich_worker = EnrichWorker(
+            DEFAULT_DB_PATH,
+            cover_cache,
+            game_ids=game_ids,
+            system_id=system_id,
+            collection_id=collection_id,
+        )
 
         self._enrich_worker.progress.connect(self._enrich_dialog.on_progress)
         self._enrich_worker.finished_ok.connect(self._enrich_dialog.on_finished)
@@ -527,6 +676,15 @@ class MainWindow(QMainWindow):
 
     def _on_find_local_covers(self) -> None:
         """Scan the library tree for local image files and link them as covers."""
+        self._find_local_covers_scoped()
+
+    def _find_local_covers_scoped(
+        self,
+        game_id: int | None = None,
+        system_id: str | None = None,
+        collection_id: int | None = None,
+    ) -> None:
+        """Start local cover discovery, optionally scoped to a game/system/collection."""
         if (
             self._local_cover_worker is not None
             and self._local_cover_worker.isRunning()
@@ -548,9 +706,32 @@ class MainWindow(QMainWindow):
             )
             return
 
+        # Resolve scope to ROM ids.
+        scope_rom_ids: list[int] | None = None
+        if game_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, game_id=game_id)
+        elif system_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, system_id=system_id)
+        elif collection_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(
+                self._conn, collection_id=collection_id
+            )
+
+        if game_id is not None:
+            scope_label = f"Finding local covers: game {game_id}..."
+        elif system_id is not None:
+            scope_label = f"Finding local covers: {system_id}..."
+        elif collection_id is not None:
+            scope_label = f"Finding local covers: collection {collection_id}..."
+        else:
+            scope_label = "Scanning for local cover images..."
+
         self._local_cover_dialog = LocalCoverProgressDialog(self)
+        self._local_cover_dialog.setLabelText(scope_label)
         self._local_cover_worker = LocalCoverFinderWorker(
-            DEFAULT_DB_PATH, library_path
+            DEFAULT_DB_PATH,
+            library_path,
+            scope_rom_ids=scope_rom_ids,
         )
 
         self._local_cover_worker.progress.connect(

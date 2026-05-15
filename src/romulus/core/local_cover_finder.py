@@ -321,6 +321,7 @@ def discover_local_covers(
     conn: sqlite3.Connection,
     library_path: str | os.PathLike[str],
     progress_callback: ProgressCallback | None = None,
+    scope_rom_ids: list[int] | None = None,
 ) -> DiscoveryResult:
     """Walk all enrolled ROMs and link locally discovered images to the covers table.
 
@@ -336,6 +337,8 @@ def discover_local_covers(
         library_path: Root of the library being scanned.
         progress_callback: Optional ``(current, total, current_rom_path)``
             callback called once per ROM processed.
+        scope_rom_ids: When supplied, only process ROMs whose id is in this
+            list. All other ROMs are skipped.
 
     Returns:
         :class:`DiscoveryResult` summary.
@@ -343,6 +346,9 @@ def discover_local_covers(
     from romulus.db.queries import insert_cover
 
     rows = _get_roms_with_games(conn)
+    if scope_rom_ids is not None:
+        allowed = frozenset(scope_rom_ids)
+        rows = [r for r in rows if int(r["rom_id"]) in allowed]
     total = len(rows)
     roms_scanned = 0
     covers_found = 0

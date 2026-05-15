@@ -932,6 +932,98 @@ def has_cover_for_path(
     return row is not None
 
 
+def get_rom_ids_for_scope(
+    conn: sqlite3.Connection,
+    *,
+    game_id: int | None = None,
+    system_id: str | None = None,
+    collection_id: int | None = None,
+) -> list[int]:
+    """Resolve a UI scope into a flat list of ROM ids.
+
+    Exactly one of the keyword arguments should be supplied. If none are given,
+    an empty list is returned (callers should treat that as "no scope, use
+    default behaviour"). If multiple are supplied, the narrowest wins:
+    ``game_id`` > ``system_id`` > ``collection_id``.
+
+    Args:
+        conn: SQLite connection.
+        game_id: Return ROMs belonging to a single game.
+        system_id: Return all ROMs in a system.
+        collection_id: Return ROMs belonging to games in the collection.
+
+    Returns:
+        Ordered list of rom row ids matching the scope.
+    """
+    if game_id is not None:
+        rows = conn.execute(
+            "SELECT id FROM roms WHERE game_id = ? ORDER BY id",
+            (game_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    if system_id is not None:
+        rows = conn.execute(
+            "SELECT id FROM roms WHERE system_id = ? ORDER BY id",
+            (system_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    if collection_id is not None:
+        rows = conn.execute(
+            """
+            SELECT r.id
+            FROM roms r
+            JOIN collection_games cg ON cg.game_id = r.game_id
+            WHERE cg.collection_id = ?
+            ORDER BY r.id
+            """,
+            (collection_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    return []
+
+
+def get_game_ids_for_scope(
+    conn: sqlite3.Connection,
+    *,
+    game_id: int | None = None,
+    system_id: str | None = None,
+    collection_id: int | None = None,
+) -> list[int] | None:
+    """Resolve a UI scope into a list of game ids for enrichment filtering.
+
+    Returns ``None`` when no scope is specified (meaning "all games").
+    Returns a (possibly empty) list when a specific scope is requested.
+
+    Args:
+        conn: SQLite connection.
+        game_id: Scope to a single game.
+        system_id: Scope to all games in a system.
+        collection_id: Scope to games in a collection.
+    """
+    if game_id is not None:
+        return [game_id]
+
+    if system_id is not None:
+        rows = conn.execute(
+            "SELECT DISTINCT id FROM games WHERE system_id = ? ORDER BY id",
+            (system_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    if collection_id is not None:
+        rows = conn.execute(
+            "SELECT DISTINCT game_id FROM collection_games"
+            " WHERE collection_id = ? ORDER BY game_id",
+            (collection_id,),
+        ).fetchall()
+        return [int(row[0]) for row in rows]
+
+    return None
+
+
 def get_games_with_enrichment_status(
     conn: sqlite3.Connection,
     system_id: str | None = None,
