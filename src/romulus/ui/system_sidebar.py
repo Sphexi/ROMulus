@@ -38,17 +38,6 @@ def get_total_rom_count(conn: sqlite3.Connection) -> int:
     return int(row["n"]) if row else 0
 
 
-def get_collections(conn: sqlite3.Connection) -> list[tuple[int, str, int]]:
-    """Return [(collection_id, name, game_count)] across every collection.
-
-    Thin compatibility shim around `queries.get_collections` so the sidebar
-    tests can keep using positional tuples. System collections (Favorites)
-    appear first in the list.
-    """
-    rows = q.get_collections(conn)
-    return [(int(row["id"]), str(row["name"]), int(row["game_count"])) for row in rows]
-
-
 class SystemSidebar(QTreeView):
     """Tree view of systems and collections, emits selection changes."""
 
@@ -85,7 +74,7 @@ class SystemSidebar(QTreeView):
             systems_header.appendRow(item)
         self.expand(self._model.indexFromItem(systems_header))
 
-        collections = get_collections(conn)
+        collections = q.get_collections(conn)
         if collections:
             collections_header = QStandardItem("Collections")
             collections_header.setSelectable(False)
@@ -93,10 +82,11 @@ class SystemSidebar(QTreeView):
                 collections_header.flags() & ~Qt.ItemFlag.ItemIsSelectable
             )
             self._model.appendRow(collections_header)
-            for collection_id, name, count in collections:
-                item = QStandardItem(f"{name} ({count})")
+            for row in collections:
+                count = int(row["game_count"])
+                item = QStandardItem(f"{row['name']} ({count})")
                 item.setData(KIND_COLLECTION, NODE_KIND_ROLE)
-                item.setData(collection_id, SYSTEM_ID_ROLE)
+                item.setData(int(row["id"]), SYSTEM_ID_ROLE)
                 collections_header.appendRow(item)
             self.expand(self._model.indexFromItem(collections_header))
 

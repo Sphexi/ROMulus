@@ -18,14 +18,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
+from romulus.core._n64 import (
+    N64_MAGIC_N64,
+    N64_MAGIC_V64,
+    N64_MAGIC_Z64,
+    byteswap_n64_to_z64,
+    byteswap_v64_to_z64,
+)
 from romulus.db import queries
 
 # Match the existing "NES\x1a" / "LYNX\x00" magics used by the identifier.
 _INES_MAGIC = b"NES\x1a"
 _LYNX_MAGIC = b"LYNX\x00"
-_N64_MAGIC_Z64 = b"\x80\x37\x12\x40"
-_N64_MAGIC_V64 = b"\x37\x80\x40\x12"
-_N64_MAGIC_N64 = b"\x40\x12\x37\x80"
+# N64 magic bytes — single source of truth lives in ``core/_n64.py``; re-bound
+# locally so in-file references keep their existing names.
+_N64_MAGIC_Z64 = N64_MAGIC_Z64
+_N64_MAGIC_V64 = N64_MAGIC_V64
+_N64_MAGIC_N64 = N64_MAGIC_N64
 
 _CHUNK = 1 << 20  # 1 MiB streaming chunk; matches ROM-DEDUP §5.3 example.
 
@@ -45,23 +54,10 @@ class HashResult:
 # ---------------------------------------------------------------------------
 
 
-def _byteswap_v64_to_z64(data: bytes) -> bytes:
-    ba = bytearray(data)
-    if len(ba) % 2:
-        ba.append(0)
-    for i in range(0, len(ba), 2):
-        ba[i], ba[i + 1] = ba[i + 1], ba[i]
-    return bytes(ba)
-
-
-def _byteswap_n64_to_z64(data: bytes) -> bytes:
-    ba = bytearray(data)
-    pad = (-len(ba)) % 4
-    if pad:
-        ba.extend(b"\x00" * pad)
-    for i in range(0, len(ba), 4):
-        ba[i : i + 4] = ba[i : i + 4][::-1]
-    return bytes(ba)
+# Local aliases for callers in this module — the canonical implementations
+# live in ``core/_n64.py`` and are imported above.
+_byteswap_v64_to_z64 = byteswap_v64_to_z64
+_byteswap_n64_to_z64 = byteswap_n64_to_z64
 
 
 def normalize_rom_content(content: bytes, header_rule: str | None) -> bytes:

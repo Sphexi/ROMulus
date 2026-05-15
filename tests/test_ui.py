@@ -29,7 +29,6 @@ from romulus.ui.system_sidebar import (
     NODE_KIND_ROLE,
     SYSTEM_ID_ROLE,
     SystemSidebar,
-    get_collections,
     get_rom_counts_by_system,
     get_total_rom_count,
 )
@@ -253,7 +252,9 @@ class TestLoaders:
         assert counts == {"snes": 2, "megadrive": 1}
 
     def test_get_collections_empty(self, seeded_db) -> None:
-        assert get_collections(seeded_db) == []
+        # ``queries.get_collections`` returns sqlite3.Row objects now that the
+        # ``system_sidebar.get_collections`` compat shim has been removed.
+        assert list(q.get_collections(seeded_db)) == []
 
     def test_get_collections_with_rows(self, seeded_db) -> None:
         seeded_db.execute(
@@ -261,10 +262,11 @@ class TestLoaders:
             ("Favorites", "Hand-picked"),
         )
         seeded_db.commit()
-        collections = get_collections(seeded_db)
+        collections = q.get_collections(seeded_db)
         assert len(collections) == 1
-        assert collections[0][1] == "Favorites"
-        assert collections[0][2] == 0
+        # sqlite3.Row column access — no more positional tuples.
+        assert collections[0]["name"] == "Favorites"
+        assert collections[0]["game_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +484,101 @@ class TestEnrichWorker:
         loop.exec()
 
         assert failed or finished  # must not crash silently
+
+
+# ---------------------------------------------------------------------------
+# _DbWorker base class — shared cancel + DB lifecycle plumbing
+# ---------------------------------------------------------------------------
+
+
+class TestDbWorkerBase:
+    """Verify the four concrete workers all share the same base behaviour:
+
+    * a ``_WorkerCancelled`` raised from inside the work method becomes a
+      ``"<Op> cancelled"`` ``failed`` signal,
+    * an arbitrary exception becomes a ``"<Op> failed: <msg>"`` signal,
+    * the DB connection is opened on the worker thread and closed on exit.
+    """
+
+    def test_concrete_workers_inherit_from_db_worker(self) -> None:
+        from romulus.ui.workers import (
+            EnrichWorker,
+            ExportWorker,
+            OrganizeWorker,
+            ScanWorker,
+            _DbWorker,
+            _WorkerCancelled,
+        )
+
+        for cls in (ScanWorker, EnrichWorker, OrganizeWorker, ExportWorker):
+            assert issubclass(cls, _DbWorker), f"{cls.__name__} must inherit _DbWorker"
+            # Each worker customises the cancel/failed message prefix.
+            assert cls._operation_name in {"Scan", "Enrichment", "Organize", "Export"}
+
+        # Shared cancel marker — not the four-per-worker shapes the previous
+        # workers.py declared.
+        assert issubclass(_WorkerCancelled, Exception)
+
+    def test_base_class_opens_and_closes_connection(
+        self, qapp, tmp_path
+    ) -> None:
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.db import get_connection
+        from romulus.ui.workers import _DbWorker, _WorkerCancelled
+
+        db_path = tmp_path / "x.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        conn.close()
+
+        class _ProbeWorker(_DbWorker):
+            _operation_name = "Probe"
+            done = False
+
+            def _run_work(self, conn) -> None:  # noqa: ANN001
+                # The connection must be alive on the worker thread.
+                assert conn.execute("SELECT 1").fetchone()[0] == 1
+                self.done = True
+
+        w = _ProbeWorker(db_path)
+        loop = QEventLoop()
+        w.finished.connect(loop.quit)
+        w.start()
+        loop.exec()
+        assert w.done is True
+
+        # Cancel marker translates to a "<op> cancelled" failed message.
+        class _CancelProbe(_DbWorker):
+            _operation_name = "CancelProbe"
+
+            def _run_work(self, conn) -> None:  # noqa: ANN001, ARG002
+                raise _WorkerCancelled
+
+        cancel_msgs: list[str] = []
+        cw = _CancelProbe(db_path)
+        cw.failed.connect(cancel_msgs.append)
+        cancel_loop = QEventLoop()
+        cw.finished.connect(cancel_loop.quit)
+        cw.start()
+        cancel_loop.exec()
+        assert cancel_msgs == ["CancelProbe cancelled"]
+
+        # Arbitrary exceptions are wrapped with the operation name prefix.
+        class _BoomProbe(_DbWorker):
+            _operation_name = "BoomProbe"
+
+            def _run_work(self, conn) -> None:  # noqa: ANN001, ARG002
+                raise RuntimeError("kaboom")
+
+        boom_msgs: list[str] = []
+        bw = _BoomProbe(db_path)
+        bw.failed.connect(boom_msgs.append)
+        boom_loop = QEventLoop()
+        bw.finished.connect(boom_loop.quit)
+        bw.start()
+        boom_loop.exec()
+        assert boom_msgs and boom_msgs[0] == "BoomProbe failed: kaboom"
 
 
 # ---------------------------------------------------------------------------

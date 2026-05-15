@@ -322,8 +322,13 @@ class GameTable(QWidget):
         """Provide (id, name) pairs of user collections for the context menu."""
         self._available_collections = list(collections)
 
-    def _selected_game_id(self) -> int | None:
-        """Return the game_id for the currently-selected row, or None."""
+    def selected_game_id(self) -> int | None:
+        """Return the game_id for the currently-selected row, or None.
+
+        Promoted from the previously-private ``_selected_game_id`` because
+        MainWindow needs to read the selection from outside the widget; see
+        ``_on_add_to_collection`` / ``_on_new_collection`` callers.
+        """
         index = self.view.selectionModel().currentIndex()
         if not index.isValid():
             return None
@@ -347,7 +352,7 @@ class GameTable(QWidget):
         self.game_selected.emit(row.game_id)
 
     def _on_context_menu(self, point: object) -> None:
-        game_id = self._selected_game_id()
+        game_id = self.selected_game_id()
         if game_id is None:
             return
         menu = QMenu(self.view)

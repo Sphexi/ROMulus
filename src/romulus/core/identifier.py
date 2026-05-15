@@ -10,10 +10,19 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Magic bytes used to detect on-disk byte order before reading internal titles.
-_N64_MAGIC_Z64 = b"\x80\x37\x12\x40"  # big-endian
-_N64_MAGIC_V64 = b"\x37\x80\x40\x12"  # halfword-swapped
-_N64_MAGIC_N64 = b"\x40\x12\x37\x80"  # little-endian (word-swapped)
+from romulus.core._n64 import (
+    N64_MAGIC_N64,
+    N64_MAGIC_V64,
+    N64_MAGIC_Z64,
+    byteswap_n64_to_z64,
+    byteswap_v64_to_z64,
+)
+
+# N64 magic bytes — re-exported under the local underscore name so any in-file
+# references keep working. Single source of truth lives in ``core/_n64.py``.
+_N64_MAGIC_Z64 = N64_MAGIC_Z64
+_N64_MAGIC_V64 = N64_MAGIC_V64
+_N64_MAGIC_N64 = N64_MAGIC_N64
 _MD_MAGIC_OVERSEAS = b"SEGA MEGA DRIVE"
 _MD_MAGIC_DOMESTIC = b"SEGA GENESIS"
 _MD_MAGIC_32X = b"SEGA 32X"
@@ -56,25 +65,10 @@ def _printable_ratio(raw: bytes) -> float:
     return printable / len(raw)
 
 
-def _byteswap_v64_to_z64(data: bytes) -> bytes:
-    """Halfword-swap (v64 -> z64): swap adjacent bytes in each 2-byte unit."""
-    ba = bytearray(data)
-    if len(ba) % 2:
-        ba.append(0)
-    for i in range(0, len(ba), 2):
-        ba[i], ba[i + 1] = ba[i + 1], ba[i]
-    return bytes(ba)
-
-
-def _byteswap_n64_to_z64(data: bytes) -> bytes:
-    """Word-swap (n64 -> z64): reverse byte order in each 4-byte unit."""
-    ba = bytearray(data)
-    pad = (-len(ba)) % 4
-    if pad:
-        ba.extend(b"\x00" * pad)
-    for i in range(0, len(ba), 4):
-        ba[i : i + 4] = ba[i : i + 4][::-1]
-    return bytes(ba)
+# Local aliases for callers in this module — the canonical implementations
+# live in ``core/_n64.py`` and are imported above.
+_byteswap_v64_to_z64 = byteswap_v64_to_z64
+_byteswap_n64_to_z64 = byteswap_n64_to_z64
 
 
 def _normalize_n64_to_z64(data: bytes) -> bytes | None:

@@ -41,9 +41,11 @@ class SystemMapping(BaseModel):
 class DestinationProfile(BaseModel):
     """An export target profile (Batocera, MiSTer, Anbernic, etc.).
 
-    Profiles are loaded from YAML files in ``data/profiles/`` (built-in) or
-    ``~/.romulus/profiles/`` (user). They describe the on-device folder layout
-    and gamelist format for a particular handheld/launcher.
+    Profiles are loaded from YAML files in
+    :data:`romulus.core.exporter.BUILTIN_PROFILES_DIR` (bundled inside the
+    package via ``importlib.resources``) or ``~/.romulus/profiles/`` (user).
+    They describe the on-device folder layout and gamelist format for a
+    particular handheld/launcher.
 
     ``systems`` is keyed by the system id from
     :data:`romulus.models.system.SYSTEM_REGISTRY`. Every registry entry must

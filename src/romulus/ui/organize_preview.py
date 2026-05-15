@@ -81,6 +81,20 @@ class OrganizePreviewDialog(QDialog):
         self._tree.setColumnWidth(1, 260)
         layout.addWidget(self._tree)
 
+        # Friendlier UX: when the plan is empty the tree view occupies most
+        # of the dialog with no content. Show a centred placeholder so users
+        # see "All clean, nothing to do" instead of a blank space.
+        if not self._plan.actions:
+            self._empty_placeholder = QLabel(
+                "All clean — your library is already organized.\n"
+                "Nothing to do.",
+                self,
+            )
+            self._empty_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._empty_placeholder.setStyleSheet("color: #888; padding: 16px;")
+            self._tree.setVisible(False)
+            layout.addWidget(self._empty_placeholder, 1)
+
         # Select all / deselect all
         select_row = QHBoxLayout()
         self._select_all_btn = QPushButton("Select All", self)

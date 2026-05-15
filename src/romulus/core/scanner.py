@@ -10,6 +10,7 @@ Layer 3 (hashing + DAT matching) lives in `core.identifier` and `core.hasher`.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import sqlite3
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from romulus.core._no_intro_tokens import FILENAME_REGION_TOKENS, REVISION_RE
 from romulus.db import queries
 from romulus.models.system import get_extensions_by_system, get_systems_by_alias
 
@@ -91,53 +93,10 @@ _ROMAN_NUMERALS: dict[str, int] = {
     "xv": 15,
 }
 
-# Region tokens recognized by No-Intro / Redump / TOSEC. Lowercase for
-# comparison. Languages (En, Fr, Ja) are included because they often appear
-# alongside or instead of country names in multi-region tags.
-_REGION_TOKENS: frozenset[str] = frozenset(
-    {
-        "usa",
-        "europe",
-        "japan",
-        "world",
-        "asia",
-        "australia",
-        "brazil",
-        "canada",
-        "china",
-        "france",
-        "germany",
-        "italy",
-        "korea",
-        "netherlands",
-        "spain",
-        "sweden",
-        "taiwan",
-        "uk",
-        "unknown",
-        "latin america",
-        "scandinavia",
-        "russia",
-        "hong kong",
-        "en",
-        "ja",
-        "jp",
-        "fr",
-        "de",
-        "es",
-        "it",
-        "nl",
-        "pt",
-        "ru",
-        "ko",
-        "zh",
-        "sv",
-        "fi",
-        "no",
-        "da",
-        "pl",
-    }
-)
+# Region tokens recognized by No-Intro / Redump / TOSEC. Single source of
+# truth lives in ``core/_no_intro_tokens.py``; this alias keeps the local
+# name stable for any in-module references.
+_REGION_TOKENS: frozenset[str] = FILENAME_REGION_TOKENS
 
 # Status tokens that appear inside parentheses (TOSEC/No-Intro style).
 _STATUS_PROTOTYPE: frozenset[str] = frozenset({"proto", "prototype"})
@@ -148,8 +107,11 @@ _STATUS_UNLICENSED: frozenset[str] = frozenset({"unl", "unlicensed"})
 _STATUS_HOMEBREW: frozenset[str] = frozenset({"homebrew", "aftermarket"})
 
 # Compiled regexes (reused across thousands of files in a real scan).
+# ``_TAG_GROUP_RE`` matches both ``(...)`` and ``[...]`` groups — the scanner
+# parses both. The DAT parser only needs the ``(...)`` form (see dat_parser.py).
 _TAG_GROUP_RE = re.compile(r"\(([^()]*)\)|\[([^\[\]]*)\]")
-_REVISION_RE = re.compile(r"^(rev\s+\S+|v\d+(\.\d+[a-z]?)?|\d+\.\d+[a-z]?)$", re.IGNORECASE)
+# Revision regex single source of truth lives in ``core/_no_intro_tokens.py``.
+_REVISION_RE = REVISION_RE
 _DISC_RE = re.compile(r"^(disc|disk|side)\s+([0-9A-Za-z]+)(\s+of\s+\d+)?$", re.IGNORECASE)
 _TRANSLATION_RE = re.compile(r"^t[+-]", re.IGNORECASE)
 _BAD_DUMP_RE = re.compile(r"^b\d*$", re.IGNORECASE)
@@ -240,8 +202,12 @@ def _resolve_system_for_directory(
     `library_root` itself is also checked, so pointing the library at
     `/Users/foo/snes` still works.
     """
-    try:
+    # Both ``.resolve()`` calls must succeed or both must fall back to the
+    # unresolved values — otherwise the loop below would compare a resolved
+    # root against an unresolved current and could loop one extra iteration.
+    with contextlib.suppress(OSError):
         library_root = library_root.resolve()
+    try:
         current = directory.resolve()
     except OSError:
         current = directory
@@ -369,7 +335,13 @@ def parse_filename(filename: str) -> ParsedFilename:
                 status.append("overdump")
             elif _ALTERNATE_RE.match(lower):
                 status.append("alternate")
-            # Unknown bracket tags are dropped silently.
+            # Unknown bracket tags are dropped silently — this is intentional
+            # policy, not an oversight. ROM filenames in the wild carry an
+            # open-ended vocabulary of bracketed tags (``[Cracked]``,
+            # ``[CT-Mod]``, ``[Trainer +N]``, scene-group abbreviations…) and
+            # logging every unknown tag would create noise without value. The
+            # paren-tag branch below applies the same policy for parenthesized
+            # groups that don't match any known classification.
         else:
             kind, value = _classify_paren_tag(paren_content or "")
             if kind == "region" and region is None:

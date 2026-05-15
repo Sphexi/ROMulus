@@ -130,3 +130,100 @@ def test_foreign_keys_enforced_for_roms(db):
             ("/x/y.sfc", "y.sfc", ".sfc", 1024, 0.0, "nonexistent_system"),
         )
         db.commit()
+
+
+# ---------------------------------------------------------------------------
+# INSERT helpers always return a real lastrowid (type-safety contract).
+# ---------------------------------------------------------------------------
+
+
+def test_insert_helpers_return_nonnull_int(seeded_db):
+    """Every public ``upsert_*`` / ``insert_*`` / ``create_*`` helper that is
+    annotated ``-> int`` must actually return a positive rowid. The body of
+    each helper asserts ``cursor.lastrowid is not None`` — this test exercises
+    the happy path so a future refactor that drops the assertion still has a
+    safety net against the ``None`` slipping through to the caller.
+    """
+    import time
+
+    from romulus.db import queries as q
+
+    rom_id = q.upsert_rom(
+        seeded_db,
+        {
+            "path": "/lib/snes/Mario.sfc",
+            "filename": "Mario.sfc",
+            "extension": ".sfc",
+            "size_bytes": 512,
+            "mtime": time.time(),
+            "system_id": "snes",
+        },
+    )
+    assert isinstance(rom_id, int) and rom_id > 0
+
+    game_id = q.upsert_game(
+        seeded_db, {"title": "Mario", "system_id": "snes"}
+    )
+    assert isinstance(game_id, int) and game_id > 0
+
+    scan_id = q.insert_scan_history(
+        seeded_db,
+        {"scan_type": "quick", "started_at": "2026-01-01T00:00:00", "root_path": "/lib"},
+    )
+    assert isinstance(scan_id, int) and scan_id > 0
+
+    fav_id = q.ensure_favorites_collection(seeded_db)
+    assert isinstance(fav_id, int) and fav_id > 0
+    # Second call must still return an int (existing-row branch).
+    assert q.ensure_favorites_collection(seeded_db) == fav_id
+
+    coll_id = q.create_collection(seeded_db, "Test Collection")
+    assert isinstance(coll_id, int) and coll_id > 0
+
+    cover_id = q.insert_cover(
+        seeded_db, game_id, "Named_Boxarts", "http://x", "/tmp/c.png"
+    )
+    assert isinstance(cover_id, int) and cover_id > 0
+
+    plan_id = q.insert_organize_plan(seeded_db, '{"actions": []}')
+    assert isinstance(plan_id, int) and plan_id > 0
+
+
+# ---------------------------------------------------------------------------
+# CONFIDENCE_RANK single source of truth.
+# ---------------------------------------------------------------------------
+
+
+def test_confidence_rank_is_single_source_of_truth():
+    """The Python dict and the SQL CASE used in ``upsert_rom`` must come from
+    the same constant — :data:`romulus.db.queries.CONFIDENCE_RANK`.
+
+    The SQL CASE is built from the dict at module-import time via
+    :func:`_sql_confidence_case`. This test verifies the build mirrors the
+    dict so a future addition like ``"hash_only": 4`` only requires a single
+    edit and the SQL stays in sync automatically.
+    """
+    from romulus.db.queries import (
+        _CONFIDENCE_RANK,
+        _UPSERT_ROM_CONFIDENCE_CASE,
+        CONFIDENCE_RANK,
+        _sql_confidence_case,
+    )
+
+    # The legacy private name aliases the new public one.
+    assert _CONFIDENCE_RANK is CONFIDENCE_RANK
+
+    # Every (name, rank) pair in the dict appears in the generated SQL CASE.
+    for name, rank in CONFIDENCE_RANK.items():
+        assert f"WHEN '{name}' THEN {rank}" in _UPSERT_ROM_CONFIDENCE_CASE
+
+    # The helper rebuilds against any column expression.
+    sample = _sql_confidence_case("roms.match_confidence")
+    for name, rank in CONFIDENCE_RANK.items():
+        assert f"WHEN '{name}' THEN {rank}" in sample
+    assert "ELSE 0" in sample
+
+    # The UI detail panel imports the SAME constant — not a private copy.
+    from romulus.ui import detail_panel
+
+    assert detail_panel.CONFIDENCE_RANK is CONFIDENCE_RANK

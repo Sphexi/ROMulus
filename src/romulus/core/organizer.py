@@ -36,7 +36,6 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
 from romulus.core import atomic
 from romulus.db import queries as q
@@ -123,6 +122,22 @@ class OrganizePlan:
         return json.dumps({"actions": [asdict(a) for a in self.actions]})
 
 
+@dataclass(slots=True)
+class OrganizeSummary:
+    """Result of :func:`execute_plan` — what actually happened on disk.
+
+    Mirrors :class:`romulus.core.exporter.ExportSummary` so both
+    filesystem-mutating subsystems return strongly-typed result objects rather
+    than ``dict[str, Any]``. Mutable so :func:`execute_plan` can increment
+    counters in-place inside the loop.
+    """
+
+    applied: int = 0
+    skipped: int = 0
+    failed: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -188,6 +203,12 @@ def find_alias_merges(conn: sqlite3.Connection) -> list[OrganizeAction]:
         ]
         if not canonical_folders:
             continue
+        # When several canonical-named folders coexist (e.g. ``/lib/megadrive``
+        # alongside ``/lib/MegaDrive`` on a case-insensitive filesystem), break
+        # the tie with ASCII sort order. Capital letters sort before lower-
+        # case, so ``/lib/MegaDrive`` would win over ``/lib/megadrive``.
+        # Documented here rather than surfacing as a collision because either
+        # choice is correct — the merge moves the loser's files into the keeper.
         target_folder = sorted(canonical_folders)[0]
         for folder in system_folders:
             if folder == target_folder:
@@ -242,8 +263,19 @@ def _pick_duplicate_keeper(
 ) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     """Pick the keeper out of a duplicate group.
 
-    Preference: more-canonical extension (per ``_EXTENSION_PREFERENCE``), then
-    shorter filename, then lower rom_id. Returns ``(keeper_row, dupes)``.
+    The keeper is the row that sorts FIRST under the composite key:
+
+    1. ``ext_rank`` — index in :data:`_EXTENSION_PREFERENCE`; lower is more
+       canonical. Unranked extensions get :data:`_UNRANKED_SORT_KEY`
+       (``sys.maxsize``) so they always lose to a ranked candidate.
+    2. ``filename_len`` — shorter filename wins. The intuition is that
+       ``Mario.sfc`` is closer to a canonical No-Intro name than
+       ``Mario (USA) (Rev 1).sfc``; the dupe most likely IS the canonical
+       form, the rest are user-renamed copies. Cosmetic but stable.
+    3. ``rom_id`` — final tiebreaker; lower id means the row was seen earlier
+       and therefore deterministically wins. Pure determinism, no semantics.
+
+    Returns ``(keeper_row, dupes)``.
     """
 
     def sort_key(row: sqlite3.Row) -> tuple[int, int, int]:
@@ -421,16 +453,6 @@ def analyze_library(conn: sqlite3.Connection) -> OrganizePlan:
 # ---------------------------------------------------------------------------
 
 
-def _atomic_replace(source: Path, dest: Path) -> None:
-    """Move ``source`` to ``dest`` atomically.
-
-    Thin wrapper around :func:`romulus.core.atomic.atomic_replace` so the
-    organizer and exporter share a single implementation of the staging-via-
-    tempfile dance.
-    """
-    atomic.atomic_replace(source, dest)
-
-
 def _execute_rename(
     conn: sqlite3.Connection, action: OrganizeAction
 ) -> None:
@@ -441,7 +463,7 @@ def _execute_rename(
         raise FileNotFoundError(f"source not found: {source}")
     if dest.exists() and dest.resolve() != source.resolve():
         raise FileExistsError(f"target already exists: {dest}")
-    _atomic_replace(source, dest)
+    atomic.atomic_replace(source, dest)
     if action.rom_id is not None:
         q.update_rom_path(conn, action.rom_id, action.target_path, dest.name)
 
@@ -477,7 +499,7 @@ def _execute_merge_folder(
         dest = target_folder / child.name
         if dest.exists():
             raise FileExistsError(f"collision merging folder: {dest}")
-        _atomic_replace(child, dest)
+        atomic.atomic_replace(child, dest)
         old_path_fwd = str(child).replace("\\", "/")
         new_path_fwd = str(dest).replace("\\", "/")
         conn.execute(
@@ -492,29 +514,18 @@ def execute_plan(
     conn: sqlite3.Connection,
     approved_actions: Sequence[OrganizeAction],
     progress_callback: ProgressCallback | None = None,
-) -> dict[str, Any]:
+) -> OrganizeSummary:
     """Apply approved actions, updating the DB and filesystem.
 
-    Returns a summary dict::
-
-        {
-            "applied": int,        # actions executed successfully
-            "skipped": int,        # collisions or unsupported kinds
-            "failed":  int,        # actions that raised an exception
-            "errors":  list[str],  # per-action error messages
-        }
+    Returns a strongly-typed :class:`OrganizeSummary` with ``applied``,
+    ``skipped``, ``failed`` counters and a per-action ``errors`` list.
 
     Per-action rollback: each action runs inside its own SAVEPOINT so a single
     failed rename never leaves the DB out of sync with the disk. The loop
     continues with the next action so a localized I/O error doesn't abort the
     whole organization.
     """
-    summary: dict[str, Any] = {
-        "applied": 0,
-        "skipped": 0,
-        "failed": 0,
-        "errors": [],
-    }
+    summary = OrganizeSummary()
     total = len(approved_actions)
     for index, action in enumerate(approved_actions, start=1):
         if progress_callback is not None:
@@ -522,7 +533,7 @@ def execute_plan(
         if action.kind == ACTION_COLLISION:
             action.executed = False
             action.error = "collision left for manual review"
-            summary["skipped"] += 1
+            summary.skipped += 1
             continue
         savepoint = f"org_{index}"
         try:
@@ -538,14 +549,14 @@ def execute_plan(
                     raise ValueError(f"unsupported action: {action.kind!r}")
             conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             action.executed = True
-            summary["applied"] += 1
+            summary.applied += 1
         except Exception as exc:  # noqa: BLE001 - rollback intentionally catches all
             conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
             conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             action.executed = False
             action.error = str(exc)
-            summary["failed"] += 1
-            summary["errors"].append(
+            summary.failed += 1
+            summary.errors.append(
                 f"{action.kind} {action.source_path!s}: {exc}"
             )
             logger.warning(

@@ -16,42 +16,19 @@ from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 
+from romulus.core._no_intro_tokens import REGION_COUNTRY_TOKENS, REVISION_RE
 from romulus.db import queries
 from romulus.models.system import SYSTEM_REGISTRY
 
 # Region tokens we recognize inside parenthesized DAT name groups. Subset of the
 # scanner's list — DAT canonical names only carry country/super-region names,
-# not language codes.
-_DAT_REGION_TOKENS: frozenset[str] = frozenset(
-    {
-        "usa",
-        "europe",
-        "japan",
-        "world",
-        "asia",
-        "australia",
-        "brazil",
-        "canada",
-        "china",
-        "france",
-        "germany",
-        "italy",
-        "korea",
-        "netherlands",
-        "spain",
-        "sweden",
-        "taiwan",
-        "uk",
-        "unknown",
-        "latin america",
-        "scandinavia",
-        "russia",
-        "hong kong",
-    }
-)
+# not language codes. Single source of truth lives in
+# ``core/_no_intro_tokens.py``.
+_DAT_REGION_TOKENS: frozenset[str] = REGION_COUNTRY_TOKENS
 
 _TAG_GROUP_RE = re.compile(r"\(([^()]*)\)")
-_REVISION_RE = re.compile(r"^(rev\s+\S+|v\d+(\.\d+[a-z]?)?|\d+\.\d+[a-z]?)$", re.IGNORECASE)
+# Revision regex single source of truth — see ``core/_no_intro_tokens.py``.
+_REVISION_RE = REVISION_RE
 
 
 @dataclass(frozen=True)
@@ -197,6 +174,11 @@ def _iter_dat_files(paths: Iterable[str | os.PathLike[str]]) -> list[Path]:
 
     def _expand(p: Path) -> Iterable[Path]:
         if p.is_dir():
+            # Both ``.dat`` and ``.xml`` are recognized because publishers
+            # disagree on the extension: No-Intro and TOSEC use ``.dat``,
+            # while Redump and some MAME packs ship Logiqx-XML under ``.xml``.
+            # Both formats are identical underneath. Do not "fix" this by
+            # dropping ``.xml`` — it loses Redump DATs.
             return chain(sorted(p.rglob("*.dat")), sorted(p.rglob("*.xml")))
         if p.is_file():
             return (p,)

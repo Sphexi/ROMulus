@@ -180,6 +180,7 @@ At the end of each session, stage and commit all changes with a descriptive comm
 - SQL queries as plain strings in `db/queries.py`, not scattered across modules
 - Constants in UPPER_SNAKE_CASE at module level
 - Private methods prefixed with underscore
+- `from romulus.db import queries as q` — alias `q.` is the preferred form in long files; bare `queries.` is acceptable inside `db/__init__.py` and its near neighbours
 
 ## Key Design Rules (Non-Negotiable)
 

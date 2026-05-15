@@ -7,15 +7,18 @@ metadata yet and tries each source in priority order (Hasheous -> LaunchBox
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TypedDict
 
 import httpx
 
 from romulus.db import get_config, queries
+from romulus.db.config import DEFAULT_COVER_CACHE_DIR
 from romulus.metadata import hasheous, launchbox, libretro, screenscraper
 from romulus.metadata.launchbox import LaunchBoxIndex
 from romulus.models.system import SYSTEM_REGISTRY
@@ -23,6 +26,50 @@ from romulus.models.system import SYSTEM_REGISTRY
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int, str], None]
+
+
+@contextlib.contextmanager
+def http_client(
+    client: httpx.Client | None, timeout: float
+) -> Iterator[httpx.Client]:
+    """Yield an :class:`httpx.Client`, closing it only if we created it.
+
+    Every metadata client supports caller-injected ``client=`` (for testing
+    with :class:`httpx.MockTransport`) AND a fall-back of creating its own
+    ``httpx.Client`` per call. This context manager centralizes the "owns_
+    client" boilerplate that used to repeat across libretro/hasheous/
+    screenscraper. When ``client`` is None a fresh one is constructed with
+    the supplied timeout and closed on exit; when ``client`` is supplied it
+    is yielded as-is and the caller retains ownership.
+    """
+    if client is not None:
+        yield client
+        return
+    with httpx.Client(timeout=timeout) as owned:
+        yield owned
+
+
+class RateLimiter:
+    """Minimal monotonic-clock rate limiter shared by metadata clients.
+
+    Each instance owns a single ``_last_ts`` float — calling :meth:`wait`
+    sleeps just long enough to keep request spacing at or above the
+    configured minimum interval, then stamps the new request time. Used from
+    a single worker thread (the :class:`EnrichWorker`) so no lock is required.
+    """
+
+    __slots__ = ("min_interval", "_last_ts")
+
+    def __init__(self, min_interval: float) -> None:
+        self.min_interval = min_interval
+        self._last_ts = 0.0
+
+    def wait(self) -> None:
+        """Sleep so the next request is at least ``min_interval`` after the last."""
+        elapsed = time.monotonic() - self._last_ts
+        if elapsed < self.min_interval:
+            time.sleep(self.min_interval - elapsed)
+        self._last_ts = time.monotonic()
 
 
 class EnrichmentStats(TypedDict):
@@ -46,15 +93,16 @@ def _system_libretro_name(system_id: str | None) -> str | None:
 def _resolve_cache_dir(conn: sqlite3.Connection, cache_dir: Path | str | None) -> Path:
     """Pick the on-disk cover cache directory.
 
-    Explicit argument wins; otherwise read `cover_cache_path` from config; if
-    nothing is configured, fall back to `~/.romulus/covers`.
+    Explicit argument wins; otherwise read ``cover_cache_path`` from config;
+    if nothing is configured, fall back to :data:`DEFAULT_COVER_CACHE_DIR`
+    (the same default seeded into the config table on first run).
     """
     if cache_dir is not None:
         return Path(cache_dir)
     configured = get_config(conn, "cover_cache_path")
     if configured:
         return Path(configured)
-    return Path.home() / ".romulus" / "covers"
+    return DEFAULT_COVER_CACHE_DIR
 
 
 def _get_sha1_for_game(conn: sqlite3.Connection, game_id: int) -> str | None:

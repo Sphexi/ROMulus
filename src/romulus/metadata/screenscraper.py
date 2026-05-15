@@ -9,7 +9,6 @@ short-circuits cleanly when no credentials are configured.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 import httpx
@@ -22,16 +21,25 @@ SCREENSCRAPER_BASE_URL = "https://api.screenscraper.fr/api2"
 DEFAULT_TIMEOUT = 15.0
 MIN_REQUEST_INTERVAL = 1.0
 
-_last_request_ts = 0.0
+# Lazily-built shared rate limiter — deferred init avoids a circular import
+# between this module and ``metadata/__init__.py``.
+_rate_limiter: object | None = None
 
 
 def _respect_rate_limit() -> None:
-    """Sleep just long enough to keep request spacing >= MIN_REQUEST_INTERVAL."""
-    global _last_request_ts
-    elapsed = time.monotonic() - _last_request_ts
-    if elapsed < MIN_REQUEST_INTERVAL:
-        time.sleep(MIN_REQUEST_INTERVAL - elapsed)
-    _last_request_ts = time.monotonic()
+    """Sleep just long enough to keep request spacing >= MIN_REQUEST_INTERVAL.
+
+    Called only from the enrich worker thread, so the module-level
+    ``_rate_limiter`` state needs no lock.
+    """
+    global _rate_limiter
+    if _rate_limiter is None:
+        from romulus.metadata import RateLimiter
+
+        _rate_limiter = RateLimiter(MIN_REQUEST_INTERVAL)
+    # Rebind so monkeypatched ``MIN_REQUEST_INTERVAL`` is honoured per-call.
+    _rate_limiter.min_interval = MIN_REQUEST_INTERVAL  # type: ignore[attr-defined]
+    _rate_limiter.wait()  # type: ignore[attr-defined]
 
 
 def has_credentials(credentials: dict[str, str] | None) -> bool:
@@ -87,6 +95,9 @@ def test_connection(
     surfacing in a settings dialog. The current form values are passed in
     directly — callers should not save credentials first.
     """
+    # Deferred import to dodge the circular import with metadata/__init__.py.
+    from romulus.metadata import http_client
+
     if not username or not password:
         return False, "Enter a username and password before testing."
 
@@ -100,13 +111,13 @@ def test_connection(
     }
     url = f"{SCREENSCRAPER_BASE_URL}/ssuserInfos.php"
 
-    owns_client = client is None
-    if client is None:
-        client = httpx.Client(timeout=timeout)
-
-    try:
+    # NB: ``test_connection`` intentionally does NOT call ``_respect_rate_
+    # limit`` — the settings dialog disables the "Test" button while a test is
+    # in flight (ui/settings_dialog.py), giving us UI-side throttling already.
+    # The 1s server-side spacing only matters for bulk lookups.
+    with http_client(client, timeout) as http:
         try:
-            response = client.get(url, params=params)
+            response = http.get(url, params=params)
         except httpx.HTTPError as exc:
             return False, f"Network error: {exc}"
 
@@ -126,9 +137,6 @@ def test_connection(
         if not isinstance(response_block, dict) or "ssuser" not in response_block:
             return False, "ScreenScraper did not return user info — credentials may be invalid."
         return True, "Connection successful."
-    finally:
-        if owns_client:
-            client.close()
 
 
 def lookup_game(
@@ -139,6 +147,9 @@ def lookup_game(
     rate_limit: bool = True,
 ) -> MetadataPayload | None:
     """Look up a game by SHA-1 via ScreenScraper. Returns None if disabled/miss."""
+    # Deferred import to dodge the circular import with metadata/__init__.py.
+    from romulus.metadata import http_client
+
     if not has_credentials(credentials):
         return None
     if not sha1:
@@ -155,15 +166,11 @@ def lookup_game(
     }
     url = f"{SCREENSCRAPER_BASE_URL}/jeuInfos.php"
 
-    owns_client = client is None
-    if client is None:
-        client = httpx.Client(timeout=DEFAULT_TIMEOUT)
-
-    try:
+    with http_client(client, DEFAULT_TIMEOUT) as http:
         if rate_limit:
             _respect_rate_limit()
         try:
-            response = client.get(url, params=params)
+            response = http.get(url, params=params)
         except httpx.HTTPError as exc:
             logger.warning("screenscraper request failed: err=%s", exc)
             return None
@@ -179,6 +186,3 @@ def lookup_game(
             logger.warning("screenscraper returned non-JSON body")
             return None
         return parse_screenscraper_response(payload)
-    finally:
-        if owns_client:
-            client.close()

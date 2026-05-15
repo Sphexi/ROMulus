@@ -39,3 +39,12 @@ testpaths = ["tests"]
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# Ship the built-in destination profiles inside the wheel so a
+# ``pip install .`` produces a working app. Loaded via importlib.resources
+# in romulus.core.exporter (no more brittle ``parents[3]`` calculation).
+"romulus.data.profiles" = ["*.yaml"]

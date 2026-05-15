@@ -14,10 +14,15 @@ import json
 import sqlite3
 from pathlib import Path
 
+#: Default on-disk location for cached cover-art images. Single source of
+#: truth shared between :data:`DEFAULT_CONFIG` (seeded on first run) and the
+#: metadata module's fallback in :func:`romulus.metadata._resolve_cache_dir`.
+DEFAULT_COVER_CACHE_DIR: Path = Path.home() / ".romulus" / "covers"
+
 DEFAULT_CONFIG: dict[str, str] = {
     "library_path": "",
     "dat_paths": json.dumps(["data/dats"]),
-    "cover_cache_path": str(Path.home() / ".romulus" / "covers"),
+    "cover_cache_path": str(DEFAULT_COVER_CACHE_DIR),
     "screenscraper_username": "",
     "screenscraper_password": "",
     "theme": "system",

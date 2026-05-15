@@ -17,12 +17,36 @@ if TYPE_CHECKING:
 
 # Ordering of match_confidence values. Used in upsert_rom so a re-scan never
 # downgrades a stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
-_CONFIDENCE_RANK: dict[str, int] = {
+# Single source of truth across the codebase — imported by ui.detail_panel and
+# expanded into the upsert_rom SQL CASE expression below via f-string at
+# module-import time (rank values are integer literals, not user input).
+CONFIDENCE_RANK: dict[str, int] = {
     "unmatched": 0,
     "fuzzy": 1,
     "header": 2,
     "dat_verified": 3,
 }
+# Back-compat alias for any code still importing the private name.
+_CONFIDENCE_RANK = CONFIDENCE_RANK
+
+
+def _sql_confidence_case(column: str) -> str:
+    """Build a SQL CASE expression that maps ``column`` to its rank integer.
+
+    Built from :data:`CONFIDENCE_RANK` at module-import time so the Python dict
+    and the SQL CASE can never drift. Rank values are integer literals (not
+    user input) so f-string interpolation is safe here.
+    """
+    whens = "\n            ".join(
+        f"WHEN '{name}' THEN {rank}" for name, rank in CONFIDENCE_RANK.items()
+    )
+    return f"""CASE {column}
+            {whens}
+            ELSE 0
+        END"""
+
+
+_UPSERT_ROM_CONFIDENCE_CASE: str = _sql_confidence_case("roms.match_confidence")
 
 
 class RomUpsertData(TypedDict):
@@ -95,9 +119,9 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
     Optional keys: fuzzy_key, header_title, scan_id, dat_match, match_confidence.
     """
     incoming_confidence = rom_data.get("match_confidence", "unmatched")
-    incoming_rank = _CONFIDENCE_RANK.get(incoming_confidence, 0)
+    incoming_rank = CONFIDENCE_RANK.get(incoming_confidence, 0)
     cursor = conn.execute(
-        """
+        f"""
         INSERT INTO roms (
             path, filename, extension, size_bytes, mtime,
             system_id, scan_id, fuzzy_key, header_title,
@@ -114,13 +138,7 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
             header_title = COALESCE(excluded.header_title, roms.header_title),
             dat_match = COALESCE(excluded.dat_match, roms.dat_match),
             match_confidence = CASE
-                WHEN ? >= CASE roms.match_confidence
-                    WHEN 'unmatched' THEN 0
-                    WHEN 'fuzzy' THEN 1
-                    WHEN 'header' THEN 2
-                    WHEN 'dat_verified' THEN 3
-                    ELSE 0
-                END
+                WHEN ? >= {_UPSERT_ROM_CONFIDENCE_CASE}
                 THEN excluded.match_confidence
                 ELSE roms.match_confidence
             END
@@ -196,7 +214,9 @@ def upsert_game(conn: sqlite3.Connection, game_data: GameUpsertData) -> int:
             int(bool(game_data.get("is_bios", False))),
         ),
     )
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into games did not produce a lastrowid"
+    return new_id
 
 
 def link_rom_to_game(conn: sqlite3.Connection, rom_id: int, game_id: int) -> None:
@@ -255,7 +275,9 @@ def insert_scan_history(conn: sqlite3.Connection, scan_data: ScanHistoryData) ->
             scan_data.get("errors", 0),
         ),
     )
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into scan_history did not produce a lastrowid"
+    return new_id
 
 
 def update_scan_history(
@@ -378,7 +400,9 @@ def insert_dat_entry(conn: sqlite3.Connection, entry: DatEntry) -> int:
             int(bool(entry.is_bios)),
         ),
     )
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into dat_entries did not produce a lastrowid"
+    return new_id
 
 
 def get_dat_by_sha1(
@@ -400,6 +424,9 @@ def get_dat_by_crc_size(
 
     Returns None if either argument is missing OR if more than one entry
     matches — ambiguous CRC32s shouldn't be auto-applied (ROM-DEDUP §5.4).
+    The ambiguous case is logged at DEBUG level so a future "why isn't my
+    ROM DAT-verified?" support question can be diagnosed without changing
+    behaviour.
     """
     if not crc32 or size_bytes is None:
         return None
@@ -409,6 +436,18 @@ def get_dat_by_crc_size(
     ).fetchall()
     if len(rows) == 1:
         return rows[0]
+    if len(rows) > 1:
+        # Lazy logger import — queries.py is otherwise log-free, and pulling
+        # logging at module level would only matter for this one rare path.
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "ambiguous DAT match for crc32=%s size=%s — %d entries; not "
+            "auto-applying (ROM-DEDUP §5.4)",
+            crc32,
+            size_bytes,
+            len(rows),
+        )
     return None
 
 
@@ -496,7 +535,9 @@ def insert_cover(
         """,
         (game_id, cover_type, source_url, local_path, width, height),
     )
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into covers did not produce a lastrowid"
+    return new_id
 
 
 def get_covers(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
@@ -581,7 +622,9 @@ def ensure_favorites_collection(conn: sqlite3.Connection) -> int:
         (FAVORITES_NAME, "Built-in favorites collection"),
     )
     conn.commit()
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into collections did not produce a lastrowid"
+    return new_id
 
 
 def create_collection(
@@ -599,7 +642,9 @@ def create_collection(
         (name, description, int(bool(is_system))),
     )
     conn.commit()
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into collections did not produce a lastrowid"
+    return new_id
 
 
 def delete_collection(conn: sqlite3.Connection, collection_id: int) -> None:
@@ -818,7 +863,9 @@ def insert_organize_plan(
         ),
     )
     conn.commit()
-    return cursor.lastrowid
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into organize_plans did not produce a lastrowid"
+    return new_id
 
 
 def update_plan_status(

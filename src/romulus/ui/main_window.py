@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
         game_id = self.detail_panel.current_game_id
         if game_id is None:
             # Fall back to the game-table selection if the panel is blank.
-            game_id = self.game_table._selected_game_id()
+            game_id = self.game_table.selected_game_id()
         if game_id is None:
             return
         q.add_game_to_collection(self._conn, collection_id, game_id)
@@ -246,7 +246,7 @@ class MainWindow(QMainWindow):
     def _on_new_collection(self, name: str) -> None:
         game_id = self.detail_panel.current_game_id
         if game_id is None:
-            game_id = self.game_table._selected_game_id()
+            game_id = self.game_table.selected_game_id()
         try:
             collection_id = q.create_collection(self._conn, name)
         except sqlite3.IntegrityError:
@@ -449,7 +449,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "No destination profiles",
-                "No destination profiles were found in data/profiles/.",
+                "No destination profiles were found. The bundled profiles "
+                "ship inside the Romulus package; if you see this message "
+                "the install is incomplete.",
             )
             return
 

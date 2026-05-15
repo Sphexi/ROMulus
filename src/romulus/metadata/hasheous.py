@@ -43,8 +43,6 @@ _FIELD_SYNONYMS: tuple[tuple[str, tuple[str, ...]], ...] = (
 _HEX_RE = re.compile(r"^[0-9a-f]+$")
 _VALID_HASH_LENGTHS = (8, 32, 40)
 
-_last_request_ts = 0.0
-
 
 def _is_valid_hash(value: str) -> bool:
     """True if `value` looks like a CRC32 / MD5 / SHA-1 hex digest."""
@@ -52,13 +50,27 @@ def _is_valid_hash(value: str) -> bool:
     return bool(_HEX_RE.match(lowered)) and len(lowered) in _VALID_HASH_LENGTHS
 
 
+# Lazily-built shared rate limiter — deferred init avoids a circular import
+# between this module and ``metadata/__init__.py`` (which holds the class).
+_rate_limiter: object | None = None
+
+
 def _respect_rate_limit() -> None:
-    """Sleep just long enough to keep request spacing >= MIN_REQUEST_INTERVAL."""
-    global _last_request_ts
-    elapsed = time.monotonic() - _last_request_ts
-    if elapsed < MIN_REQUEST_INTERVAL:
-        time.sleep(MIN_REQUEST_INTERVAL - elapsed)
-    _last_request_ts = time.monotonic()
+    """Sleep just long enough to keep request spacing >= MIN_REQUEST_INTERVAL.
+
+    Reads ``MIN_REQUEST_INTERVAL`` at call time so test code that monkey-
+    patches it to ``0.0`` (see ``tests/test_metadata.py::TestLookupByHash``)
+    works without further changes. Called only from the enrich worker thread,
+    so the module-level ``_rate_limiter`` state needs no lock.
+    """
+    global _rate_limiter
+    if _rate_limiter is None:
+        from romulus.metadata import RateLimiter
+
+        _rate_limiter = RateLimiter(MIN_REQUEST_INTERVAL)
+    # Rebind so monkeypatched ``MIN_REQUEST_INTERVAL`` is honoured per-call.
+    _rate_limiter.min_interval = MIN_REQUEST_INTERVAL  # type: ignore[attr-defined]
+    _rate_limiter.wait()  # type: ignore[attr-defined]
 
 
 def parse_hasheous_response(payload: dict[str, Any]) -> MetadataPayload:
@@ -90,6 +102,10 @@ def lookup_by_hash(
     rate_limit: bool = True,
 ) -> MetadataPayload | None:
     """Look up metadata by hash. Returns parsed dict, or None on miss/error."""
+    # Deferred import to avoid a circular import at module load time
+    # (metadata/__init__.py imports this module).
+    from romulus.metadata import http_client
+
     if not sha1:
         return None
     if not _is_valid_hash(sha1):
@@ -97,16 +113,12 @@ def lookup_by_hash(
         return None
     url = f"{HASHEOUS_BASE_URL}/{hash_type}/{sha1.lower()}"
 
-    owns_client = client is None
-    if client is None:
-        client = httpx.Client(timeout=DEFAULT_TIMEOUT)
-
-    try:
+    with http_client(client, DEFAULT_TIMEOUT) as http:
         for attempt in range(MAX_RETRIES):
             if rate_limit:
                 _respect_rate_limit()
             try:
-                response = client.get(url)
+                response = http.get(url)
             except httpx.HTTPError as exc:
                 logger.warning("hasheous request failed: url=%s err=%s", url, exc)
                 return None
@@ -134,8 +146,5 @@ def lookup_by_hash(
             if not isinstance(payload, dict):
                 return None
             return parse_hasheous_response(payload)
-    finally:
-        if owns_client:
-            client.close()
 
     return None

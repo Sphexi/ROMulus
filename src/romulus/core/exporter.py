@@ -32,6 +32,7 @@ Session 10 carry-forward:
 
 from __future__ import annotations
 
+import importlib.resources
 import logging
 import re
 import sqlite3
@@ -49,11 +50,22 @@ from romulus.models.profile import DestinationProfile, SystemMapping
 
 logger = logging.getLogger(__name__)
 
-#: Default name used to find the built-in profile directory when the caller
-#: doesn't pass one. Resolved relative to the package data folder.
-BUILTIN_PROFILES_DIR: Path = (
-    Path(__file__).resolve().parents[3] / "data" / "profiles"
-)
+
+def _resolve_builtin_profiles_dir() -> Path:
+    """Locate the built-in profile YAMLs shipped inside the wheel.
+
+    Uses :mod:`importlib.resources` so the path is correct whether Romulus is
+    running from source, an editable install, or a ``pip install .`` wheel.
+    The previous implementation relied on ``Path(__file__).parents[3]`` which
+    silently broke for installed packages (the ``data/`` sibling was outside
+    the wheel). Profile YAMLs now live at
+    ``src/romulus/data/profiles/*.yaml``.
+    """
+    return Path(str(importlib.resources.files("romulus.data.profiles")))
+
+
+#: Default location of the built-in destination profile YAMLs.
+BUILTIN_PROFILES_DIR: Path = _resolve_builtin_profiles_dir()
 
 #: A progress callback for the export loop. Signature is ``(current_index,
 #: total, filename)`` mirroring the scanner/organizer workers.

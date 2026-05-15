@@ -25,15 +25,14 @@ DEFAULT_TIMEOUT = 15.0
 # Characters libretro-thumbnails replaces with `_` in the filename portion of
 # the URL. From the session-6 spec: `&*/:\<>?\|"`. After de-duplicating the
 # `\` that appears twice in the spec, the unique set is the 10 chars below.
-_SANITIZE_CHARS = '&*/:\\<>?|"'
+# Stored as a frozenset so the test suite can audit ``len(_SANITIZE_CHARS) ==
+# 10`` cheaply and the membership check inside ``sanitize_game_name`` is O(1).
+_SANITIZE_CHARS: frozenset[str] = frozenset('&*/:\\<>?|"')
 
 
 def sanitize_game_name(name: str) -> str:
     """Replace characters libretro-thumbnails forbids with underscores."""
-    result = name
-    for ch in _SANITIZE_CHARS:
-        result = result.replace(ch, "_")
-    return result
+    return "".join("_" if ch in _SANITIZE_CHARS else ch for ch in name)
 
 
 def build_thumbnail_url(libretro_name: str, game_name: str, cover_type: str) -> str:
@@ -70,22 +69,19 @@ def fetch_cover(
     Skips the download (and returns the existing path) if the file is already
     on disk — covers are immutable, no need to refetch.
     """
+    from romulus.metadata import http_client
+
     url = build_thumbnail_url(libretro_name, game_name, cover_type)
     dest = cover_cache_path(cache_dir, system_id, cover_type, game_name)
     if dest.exists() and dest.stat().st_size > 0:
         return dest, url
 
-    owns_client = client is None
-    if client is None:
-        client = httpx.Client(timeout=DEFAULT_TIMEOUT)
-    try:
-        response = client.get(url)
-    except httpx.HTTPError as exc:
-        logger.warning("libretro cover fetch failed: url=%s err=%s", url, exc)
-        return None
-    finally:
-        if owns_client:
-            client.close()
+    with http_client(client, DEFAULT_TIMEOUT) as http:
+        try:
+            response = http.get(url)
+        except httpx.HTTPError as exc:
+            logger.warning("libretro cover fetch failed: url=%s err=%s", url, exc)
+            return None
 
     if response.status_code == 404:
         return None

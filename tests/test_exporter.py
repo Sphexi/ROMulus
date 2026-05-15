@@ -85,7 +85,12 @@ def _insert_rom_with_game(
 def _build_minimal_profile(
     *, gamelist: str | None = "emulationstation_xml"
 ) -> DestinationProfile:
-    """A tiny profile mapping snes + nes + gba; everything else unsupported."""
+    """A tiny profile mapping snes + nes + gba + psx + pcenginecd.
+
+    PSX and PC Engine CD are included so multi-disc m3u tests can use the
+    right ``system_id`` rather than smuggling a .cue under ``snes``.
+    Everything else in the registry is left explicitly unsupported.
+    """
     systems: dict[str, SystemMapping] = {}
     for sys_def in SYSTEM_REGISTRY:
         if sys_def.id == "snes":
@@ -99,6 +104,16 @@ def _build_minimal_profile(
         elif sys_def.id == "gba":
             systems[sys_def.id] = SystemMapping(
                 folder="gba", extensions=[".gba"], supported=True
+            )
+        elif sys_def.id == "psx":
+            systems[sys_def.id] = SystemMapping(
+                folder="psx", extensions=[".cue", ".bin"], supported=True
+            )
+        elif sys_def.id == "pcenginecd":
+            systems[sys_def.id] = SystemMapping(
+                folder="pcenginecd",
+                extensions=[".cue", ".bin"],
+                supported=True,
             )
         else:
             systems[sys_def.id] = SystemMapping(folder="", supported=False)
@@ -300,6 +315,146 @@ class TestPreviewExport:
         )
         assert preview.file_count == 1
         assert preview.by_system == {"nes": 1}
+
+    def test_region_filter_excludes_other_regions(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Region filter keeps only ROMs whose game.region matches the list."""
+        usa_path = tmp_path / "lib" / "snes" / "usa.sfc"
+        jp_path = tmp_path / "lib" / "snes" / "jp.sfc"
+        _make_rom_file(usa_path)
+        _make_rom_file(jp_path)
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(usa_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="usa.sfc",
+            size_bytes=10,
+            title="USA Game",
+            region="USA",
+        )
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(jp_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="jp.sfc",
+            size_bytes=20,
+            title="Japan Game",
+            region="Japan",
+        )
+        profile = _build_minimal_profile()
+        preview = preview_export(
+            seeded_db,
+            profile,
+            tmp_path / "out",
+            ExportFilters(regions=["USA"]),
+        )
+        assert preview.file_count == 1
+        # The Japan ROM was filtered out.
+        assert preview.total_size_bytes == 10
+
+    def test_region_filter_other_includes_null_and_unlisted(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """The ``Other`` bucket includes NULL-region games AND any region not
+        explicitly listed in the filter — the special-case behaviour the
+        export-dialog UI exposes via its ``Other`` checkbox.
+        """
+        no_region = tmp_path / "lib" / "snes" / "nores.sfc"
+        brazil = tmp_path / "lib" / "snes" / "brazil.sfc"
+        usa = tmp_path / "lib" / "snes" / "usa.sfc"
+        for p in (no_region, brazil, usa):
+            _make_rom_file(p)
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(no_region).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="nores.sfc",
+            size_bytes=10,
+            title="NoRegion",
+            region=None,
+        )
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(brazil).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="brazil.sfc",
+            size_bytes=20,
+            title="Brazil Game",
+            region="Brazil",
+        )
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(usa).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="usa.sfc",
+            size_bytes=30,
+            title="USA Game",
+            region="USA",
+        )
+        profile = _build_minimal_profile()
+        # ``Other`` plus an explicit ``Brazil`` — both the null-region and the
+        # listed-region rows must come through; USA must NOT come through.
+        # Note: the SQL is ``g.region IS NULL OR g.region IN (?)`` so listing
+        # Brazil explicitly while also including ``Other`` is what makes the
+        # NULL-region row pass.
+        preview = preview_export(
+            seeded_db,
+            profile,
+            tmp_path / "out",
+            ExportFilters(regions=["Brazil", "Other"]),
+        )
+        # NoRegion + Brazil pass; USA filtered out.
+        assert preview.file_count == 2
+        assert preview.total_size_bytes == 10 + 20
+
+    def test_collection_filter_intersects_with_collection_games(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """``collection_id`` filter restricts the candidate set via the
+        ``collection_games`` join — only ROMs whose game is in the given
+        collection are returned.
+        """
+        a_path = tmp_path / "lib" / "snes" / "a.sfc"
+        b_path = tmp_path / "lib" / "snes" / "b.sfc"
+        _make_rom_file(a_path)
+        _make_rom_file(b_path)
+        _rom_a, game_a = _insert_rom_with_game(
+            seeded_db,
+            path=str(a_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="a.sfc",
+            size_bytes=10,
+            title="A",
+        )
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(b_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="b.sfc",
+            size_bytes=20,
+            title="B",
+        )
+        # Put only game A in a "Favorites"-style collection.
+        coll_id = q.create_collection(seeded_db, "MyCollection")
+        q.add_game_to_collection(seeded_db, coll_id, game_a)
+
+        profile = _build_minimal_profile()
+        preview = preview_export(
+            seeded_db,
+            profile,
+            tmp_path / "out",
+            ExportFilters(collection_id=coll_id),
+        )
+        assert preview.file_count == 1
+        assert preview.total_size_bytes == 10
 
 
 # ---------------------------------------------------------------------------
@@ -588,6 +743,9 @@ class TestM3uGeneration:
     def test_multi_disc_playlist_written(
         self, seeded_db, tmp_path: Path
     ) -> None:
+        # Multi-disc lives on PSX / PC Engine CD in the wild — using the right
+        # system_id here ensures _build_minimal_profile's psx mapping is
+        # exercising the real path rather than smuggling a .cue under snes.
         disc1 = tmp_path / "lib" / "psx" / "Game (Disc 1).cue"
         disc2 = tmp_path / "lib" / "psx" / "Game (Disc 2).cue"
         _make_rom_file(disc1)
@@ -599,8 +757,7 @@ class TestM3uGeneration:
             _insert_rom_with_game(
                 seeded_db,
                 path=str(src).replace("\\", "/"),
-                # snes used so the minimal profile copies the file.
-                system_id="snes",
+                system_id="psx",
                 extension=".cue",
                 filename=name,
                 size_bytes=4,
@@ -614,7 +771,7 @@ class TestM3uGeneration:
             ExportFilters(),
             ExportOptions(generate_gamelist=False, generate_m3u=True),
         )
-        m3u = tmp_path / "out" / "roms" / "snes" / "Game.m3u"
+        m3u = tmp_path / "out" / "roms" / "psx" / "Game.m3u"
         assert m3u.exists()
         contents = m3u.read_text(encoding="utf-8").strip().splitlines()
         assert contents == ["Game (Disc 1).cue", "Game (Disc 2).cue"]

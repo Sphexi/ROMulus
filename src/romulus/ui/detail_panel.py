@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from romulus.db import queries as q
+from romulus.db.queries import CONFIDENCE_RANK
 
 COVER_WIDTH = 240
 COVER_HEIGHT = 320
@@ -35,18 +37,35 @@ _MATCH_BADGES: dict[str, tuple[str, str, str]] = {
     "unmatched": ("Unmatched", "#888888", "#ffffff"),
 }
 
-# Ordering for picking the strongest match across a game's linked ROMs.
-_CONFIDENCE_RANK: dict[str, int] = {
-    "unmatched": 0,
-    "fuzzy": 1,
-    "header": 2,
-    "dat_verified": 3,
-}
-
 
 def _badge_text_for(confidence: str) -> tuple[str, str, str]:
     """Look up a badge label and colors for a match_confidence value."""
     return _MATCH_BADGES.get(confidence, _MATCH_BADGES["unmatched"])
+
+
+# Recognized CSS color values for ``_match_badge_stylesheet``: hex (#rrggbb or
+# #rgb) only. Anything else is rejected before interpolation into a Qt style
+# sheet — even though today's _MATCH_BADGES values are hard-coded literals, a
+# future "themable colours from config" feature must not be able to inject
+# arbitrary CSS through the colour fields.
+_HEX_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def _match_badge_stylesheet(bg: str, fg: str) -> str:
+    """Build the QLabel stylesheet for the match badge.
+
+    Both colours are validated against :data:`_HEX_COLOR_RE` so a malformed
+    constant (or a future user-supplied theme value) can never inject CSS
+    syntax into the stylesheet. Invalid values fall back to neutral colours.
+    """
+    if not _HEX_COLOR_RE.match(bg):
+        bg = "#888888"
+    if not _HEX_COLOR_RE.match(fg):
+        fg = "#ffffff"
+    return (
+        f"QLabel {{ background-color: {bg}; color: {fg}; "
+        "border-radius: 6px; padding: 2px 6px; }}"
+    )
 
 
 class DetailPanel(QWidget):
@@ -240,10 +259,7 @@ class DetailPanel(QWidget):
         best_confidence = self._best_confidence(roms)
         label, bg, fg = _badge_text_for(best_confidence)
         self.match_badge.setText(f"  {label}  ")
-        self.match_badge.setStyleSheet(
-            f"QLabel {{ background-color: {bg}; color: {fg}; "
-            "border-radius: 6px; padding: 2px 6px; }}"
-        )
+        self.match_badge.setStyleSheet(_match_badge_stylesheet(bg, fg))
 
         # ROM list (filename + size on one line each).
         self.rom_list.setPlainText(self._format_rom_list(roms))
@@ -296,12 +312,16 @@ class DetailPanel(QWidget):
 
     @staticmethod
     def _best_confidence(roms: list[sqlite3.Row]) -> str:
-        """Pick the highest-ranked match_confidence across ROMs for the game."""
+        """Pick the highest-ranked match_confidence across ROMs for the game.
+
+        Uses :data:`romulus.db.queries.CONFIDENCE_RANK` so the Python and SQL
+        sides cannot drift (see queries.upsert_rom for the matching SQL CASE).
+        """
         if not roms:
             return "unmatched"
         return max(
             (rom["match_confidence"] or "unmatched" for rom in roms),
-            key=lambda c: _CONFIDENCE_RANK.get(c, 0),
+            key=lambda c: CONFIDENCE_RANK.get(c, 0),
         )
 
     @staticmethod

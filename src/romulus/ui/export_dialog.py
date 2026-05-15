@@ -53,15 +53,10 @@ from romulus.models.system import SYSTEM_REGISTRY
 _REGION_OPTIONS: tuple[str, ...] = ("USA", "Europe", "Japan", "World", "Other")
 
 
-def _format_bytes(n: int) -> str:
-    """Human-friendly byte size string, used in the preview summary."""
-    units = ("B", "KB", "MB", "GB", "TB")
-    size = float(n)
-    for unit in units:
-        if size < 1024 or unit == units[-1]:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{n} B"
+# ``_format_bytes`` used to be a near-duplicate of ``_format_size`` in
+# ``ui/game_table.py``. Re-exported here so existing call sites and any
+# future readers see one canonical implementation.
+from romulus.ui.game_table import _format_size as _format_bytes  # noqa: E402
 
 
 class ExportDialog(QDialog):

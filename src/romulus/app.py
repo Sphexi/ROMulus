@@ -57,6 +57,10 @@ def run() -> int:
     """Bootstrap QApplication, init the DB, and show the main window."""
     app = QApplication.instance() or QApplication(sys.argv)
     conn = initialize_database(DEFAULT_DB_PATH)
+    # Late import is INTENTIONAL: ``MainWindow`` (and the chain of Qt widget
+    # classes it pulls in) requires a live QApplication to exist before any
+    # QWidget subclass is even imported on some Qt builds. Moving this back to
+    # the top of the file regresses headless startup. Do not "clean up".
     from romulus.ui.main_window import MainWindow
 
     window = MainWindow(conn)

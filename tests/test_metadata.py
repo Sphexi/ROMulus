@@ -36,6 +36,12 @@ class TestSanitizeGameName:
     def test_preserves_unicode(self) -> None:
         assert libretro.sanitize_game_name("Pokémon Ω") == "Pokémon Ω"
 
+    def test_sanitize_chars_has_exactly_ten_entries(self) -> None:
+        """The libretro-thumbnails spec lists 10 distinct forbidden chars;
+        a future edit must not silently change the count.
+        """
+        assert len(libretro._SANITIZE_CHARS) == 10
+
 
 class TestBuildThumbnailUrl:
     def test_snes_boxart_url(self) -> None:

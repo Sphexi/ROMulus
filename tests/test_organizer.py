@@ -357,8 +357,8 @@ class TestExecuteRename:
             target_path=str(dest).replace("\\", "/"),
         )
         summary = execute_plan(seeded_db, [action])
-        assert summary["applied"] == 1
-        assert summary["failed"] == 0
+        assert summary.applied == 1
+        assert summary.failed == 0
         assert not src.exists()
         assert dest.exists()
         row = q.get_rom_by_id(seeded_db, rom_id)
@@ -383,8 +383,8 @@ class TestExecuteRename:
             target_path=str(dest).replace("\\", "/"),
         )
         summary = execute_plan(seeded_db, [action])
-        assert summary["failed"] == 1
-        assert summary["applied"] == 0
+        assert summary.failed == 1
+        assert summary.applied == 0
         # Both files should still exist with their original contents.
         assert src.read_bytes() == b"src"
         assert dest.read_bytes() == b"existing"
@@ -415,7 +415,7 @@ class TestExecuteDeleteDuplicate:
             target_path=str(keeper_path).replace("\\", "/"),
         )
         summary = execute_plan(seeded_db, [action])
-        assert summary["applied"] == 1
+        assert summary.applied == 1
         assert not dup_path.exists()
         assert keeper_path.exists()
         assert q.get_rom_by_id(seeded_db, dup_id) is None
@@ -451,7 +451,7 @@ class TestExecuteMergeFolder:
             target_path=str(canonical).replace("\\", "/"),
         )
         summary = execute_plan(seeded_db, [action])
-        assert summary["applied"] == 1
+        assert summary.applied == 1
         assert (canonical / "Sonic.md").exists()
         assert (canonical / "Streets.md").exists()
         for rom_id, fname in ((rom_a, "Sonic.md"), (rom_b, "Streets.md")):
@@ -478,8 +478,8 @@ class TestExecuteCollisions:
             target_path=str(target).replace("\\", "/"),
         )
         summary = execute_plan(seeded_db, [action])
-        assert summary["skipped"] == 1
-        assert summary["applied"] == 0
+        assert summary.skipped == 1
+        assert summary.applied == 0
         assert target.read_bytes() == b"existing"
 
 
@@ -517,8 +517,8 @@ class TestAtomicAndRollback:
         monkeypatch.setattr(atomic.os, "replace", _always_raise)
 
         summary = execute_plan(seeded_db, [action])
-        assert summary["failed"] == 1
-        assert summary["applied"] == 0
+        assert summary.failed == 1
+        assert summary.applied == 0
         # Source still intact.
         assert src.exists()
         assert src.read_bytes() == b"original-bytes"
@@ -565,20 +565,28 @@ class TestAtomicAndRollback:
         ]
 
         real_replace = os.replace
+        # Capture the exact source/dest paths for action B so the flaky_replace
+        # check is path-equality based rather than substring-based. A future
+        # rename of the test fixtures (e.g. "b.sfc" -> "sample-b.sfc") would
+        # otherwise silently stop exercising the rollback path.
+        b_src_path, b_dest_path = files["b"]
+        b_src_str = str(b_src_path)
+        b_dest_str = str(b_dest_path)
 
         def flaky_replace(s, d):
-            # Fail every replace touching action B's source/dest. The fallback
-            # copy-via-tempfile path also calls os.replace, so we filter on the
-            # destination path being the .part tempfile-or-final variant.
-            if "b.sfc" in str(s) or "GameB.sfc" in str(d):
+            # Fail every replace involving action B specifically. The fallback
+            # copy-via-tempfile path also routes through os.replace, but the
+            # ``s`` (source) or ``d`` (final destination) always traces back to
+            # action B's exact paths.
+            if str(s) == b_src_str or str(d) == b_dest_str:
                 raise OSError("simulated second-action failure")
             return real_replace(s, d)
 
         monkeypatch.setattr(atomic.os, "replace", flaky_replace)
 
         summary = execute_plan(seeded_db, actions)
-        assert summary["applied"] == 2
-        assert summary["failed"] == 1
+        assert summary.applied == 2
+        assert summary.failed == 1
         # First and third actions applied; second left untouched.
         a_src, a_dest = files["a"]
         b_src, b_dest = files["b"]
