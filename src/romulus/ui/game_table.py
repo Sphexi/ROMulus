@@ -338,15 +338,17 @@ class GameTable(QWidget):
         self.view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
         self.view.setAlternatingRowColors(True)
         self.view.verticalHeader().setVisible(False)
-        # Name column stretches to fill remaining space; the rest are
-        # Interactive (user can drag-resize). Path defaults to 280px and the
-        # cell tooltip shows the full path on hover; we deliberately do NOT
-        # auto-fit Path to content because long Windows paths squeeze Name
-        # to ~0px when Stretch competes with a 1000+px Path column.
+        # Name stretches to fill leftover space; everything else is
+        # Interactive (user can drag-resize). Path is auto-fit to its widest
+        # entry on every set_rows() so full Windows paths render without
+        # ellipsis. ``minimumSectionSize`` guarantees Name can't be squeezed
+        # below 200px when a long Path eats most of the viewport — the
+        # horizontal scrollbar picks up any further overflow.
         header = self.view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
         header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
+        header.setMinimumSectionSize(200)
         self.view.setColumnWidth(_COL_SYSTEM, 110)
         self.view.setColumnWidth(_COL_REGION, 90)
         self.view.setColumnWidth(_COL_SIZE, 80)
@@ -384,8 +386,15 @@ class GameTable(QWidget):
         )
 
     def set_rows(self, rows: list[GameRow]) -> None:
-        """Hand the underlying model a fresh list of rows."""
+        """Hand the underlying model a fresh list of rows.
+
+        Auto-fits the Path column to its widest entry so full Windows paths
+        render without ellipsis. Name keeps Stretch + a 200px minimum so it
+        can't be squeezed to nothing when a wide Path runs the table wider
+        than the viewport — the horizontal scrollbar picks up any overflow.
+        """
         self.model.set_rows(rows)
+        self.view.resizeColumnToContents(_COL_PATH)
 
     def set_collection_context(self, in_collection: bool) -> None:
         """Tell the table whether the current view is filtered to a collection."""
