@@ -30,7 +30,11 @@ MANIFEST
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
+# Romulus tracks its own romulus.spec (committed to repo for the release
+# workflow). Any OTHER .spec files (PyInstaller scratchpads, user
+# experiments) stay ignored.
 *.spec
+!romulus.spec
 
 # Installer logs
 pip-log.txt
@@ -182,3 +186,12 @@ cython_debug/
 
 # Romulus local data
 .romulus/
+# v0.2.0 portable layout: runtime-generated files live under <install_dir>/data
+# (covers cache + romulus.db) and <install_dir>/logs. Keep the directories
+# (with .gitkeep) but ignore the contents.
+data/covers/
+data/romulus.db
+data/romulus.db-shm
+data/romulus.db-wal
+logs/*.log
+logs/*.log.*

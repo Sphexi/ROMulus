@@ -8,6 +8,8 @@ from romulus.models.system import (
     SystemDef,
     get_extensions_by_system,
     get_systems_by_alias,
+    load_systems_from_yaml,
+    reload_registry,
     seed_systems,
 )
 
@@ -20,5 +22,7 @@ __all__ = [
     "SystemMapping",
     "get_extensions_by_system",
     "get_systems_by_alias",
+    "load_systems_from_yaml",
+    "reload_registry",
     "seed_systems",
 ]

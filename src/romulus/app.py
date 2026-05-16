@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sqlite3
 import sys
 from logging.handlers import RotatingFileHandler
@@ -12,7 +13,6 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from romulus.db import (
-    DEFAULT_DB_PATH,
     create_tables,
     get_config,
     get_connection,
@@ -26,6 +26,26 @@ _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 _VALID_LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR")
+
+#: Env var that lets a user pin the data directory regardless of where the
+#: app is installed. Honored first by :func:`resolve_data_dir`.
+DATA_DIR_ENV_VAR: str = "ROMULUS_DATA_DIR"
+
+#: Legacy data directory used by v0.1.0 (and as the last-resort fallback
+#: when the install dir isn't writable).
+LEGACY_DATA_DIR: Path = Path.home() / ".romulus"
+
+# Third-party loggers whose DEBUG output is rarely useful even when we want
+# verbose app logs. ``httpcore`` emits 10+ lines per HTTP request describing
+# TCP/TLS internals; ``httpx`` itself stays at INFO and reports the request
+# verb + URL + status, which IS useful. Capped at INFO so DEBUG-level ROMULUS
+# stays focused on our own code.
+_NOISY_THIRD_PARTY_LOGGERS: tuple[str, ...] = (
+    "httpcore",
+    "urllib3",
+    "asyncio",
+    "PIL",
+)
 
 
 def _resolve_install_dir() -> Path:
@@ -51,17 +71,181 @@ INSTALL_DIR = _resolve_install_dir()
 DEFAULT_LOG_DIR = INSTALL_DIR / "logs"
 DEFAULT_LOG_PATH = DEFAULT_LOG_DIR / "romulus.log"
 
-# Third-party loggers whose DEBUG output is rarely useful even when we want
-# verbose app logs. ``httpcore`` emits 10+ lines per HTTP request describing
-# TCP/TLS internals; ``httpx`` itself stays at INFO and reports the request
-# verb + URL + status, which IS useful. Capped at INFO so DEBUG-level ROMULUS
-# stays focused on our own code.
-_NOISY_THIRD_PARTY_LOGGERS: tuple[str, ...] = (
-    "httpcore",
-    "urllib3",
-    "asyncio",
-    "PIL",
-)
+
+def _is_writable_dir(path: Path) -> bool:
+    """Return True iff ``path`` (or its parent) can accept a new file.
+
+    Used by :func:`resolve_data_dir` to decide whether to use the install
+    directory or fall back to the user's home. The check creates and removes
+    a probe file rather than trusting ``os.access`` — on Windows the latter
+    lies about ACL-restricted directories that mkdir would fail in.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return False
+    probe = path / ".romulus_write_probe"
+    try:
+        probe.touch()
+        probe.unlink()
+    except OSError:
+        return False
+    return True
+
+
+def resolve_data_dir() -> Path:
+    """Pick where the SQLite DB and cover cache live for this run.
+
+    Resolution order:
+
+    1. ``ROMULUS_DATA_DIR`` env var — explicit user override always wins.
+       The directory is created if missing.
+    2. ``<install_dir>/data/`` — preferred for portable ZIP installs so the
+       user can copy/back-up the whole folder as one unit.
+    3. ``~/.romulus/`` — legacy v0.1.0 location; used when the install dir
+       isn't writable (read-only mount, system-protected ``Program Files``
+       layout, etc.).
+
+    Always creates the chosen directory before returning so callers can
+    write to it immediately.
+    """
+    override = os.environ.get(DATA_DIR_ENV_VAR, "").strip()
+    if override:
+        chosen = Path(override).expanduser()
+        chosen.mkdir(parents=True, exist_ok=True)
+        return chosen
+    install_data = INSTALL_DIR / "data"
+    if _is_writable_dir(install_data):
+        return install_data
+    LEGACY_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return LEGACY_DATA_DIR
+
+
+def _copy_yaml_dir_if_missing(
+    source: Path, dest: Path, label: str
+) -> int:
+    """Copy every ``*.yaml`` from ``source`` to ``dest`` iff ``dest`` is empty.
+
+    Idempotent — once the user has any file in ``dest`` we keep our hands
+    off so user edits survive subsequent launches. Returns the count of
+    files copied (0 if nothing changed).
+    """
+    if not source.is_dir():
+        return 0
+    dest.mkdir(parents=True, exist_ok=True)
+    has_existing = any(dest.glob("*.yaml"))
+    if has_existing:
+        return 0
+    copied = 0
+    for src in sorted(source.glob("*.yaml")):
+        try:
+            shutil.copy2(src, dest / src.name)
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "could not seed %s file %s: %s", label, src.name, exc
+            )
+            continue
+        copied += 1
+    return copied
+
+
+def _copy_dat_dir_if_missing(source: Path, dest: Path) -> int:
+    """Seed the user-editable DAT directory on first launch (frozen builds).
+
+    In a dev clone the source IS ``data/dats/`` at the repo root, so the
+    "destination already populated" check below short-circuits and we never
+    copy. In a PyInstaller bundle the source is unpacked inside ``_internal/``
+    and the destination is empty on first launch, so we copy.
+    """
+    if not source.is_dir() or source.resolve() == dest.resolve():
+        return 0
+    dest.mkdir(parents=True, exist_ok=True)
+    has_existing = any(dest.glob("*.dat"))
+    if has_existing:
+        return 0
+    copied = 0
+    for src in sorted(source.glob("*.dat")):
+        try:
+            shutil.copy2(src, dest / src.name)
+        except OSError as exc:
+            logging.getLogger(__name__).warning(
+                "could not seed DAT file %s: %s", src.name, exc
+            )
+            continue
+        copied += 1
+    return copied
+
+
+def _frozen_payload_dir(subdir: str) -> Path | None:
+    """Locate a bundled data subdir inside a PyInstaller payload.
+
+    PyInstaller's ``--onedir`` mode unpacks added data files under
+    ``<install_dir>/_internal/<subdir>`` (newer versions) or
+    ``<install_dir>/<subdir>``. Returns the first one that exists, or None
+    when neither is present (dev run, no frozen payload).
+    """
+    candidates = [
+        INSTALL_DIR / "_internal" / subdir,
+        INSTALL_DIR / subdir,
+    ]
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def ensure_user_editable_files() -> None:
+    """Create the install-dir folder layout and seed bundled defaults.
+
+    Called once at startup, before any module looks for profiles or DATs.
+    Idempotent — every step is a "create if missing" so user edits across
+    launches survive.
+
+    Layout produced at ``<install_dir>/``:
+
+    * ``profiles/`` — destination profiles. Seeded from the bundled
+      ``profiles/`` directory at the repo root (or, in frozen builds, from
+      the PyInstaller payload).
+    * ``systems/``  — system registry YAMLs. Seeded with ``builtin.yaml``.
+    * ``dats/``     — No-Intro DAT files. Only seeded in frozen builds; in
+      dev mode the repo already has ``data/dats/`` and we leave it alone.
+    * ``data/``     — SQLite DB + cover cache. Created empty.
+    * ``logs/``     — rotating log file lives here.
+    """
+    logger = logging.getLogger(__name__)
+    user_profiles = INSTALL_DIR / "profiles"
+    user_systems = INSTALL_DIR / "systems"
+    user_profiles.mkdir(parents=True, exist_ok=True)
+    user_systems.mkdir(parents=True, exist_ok=True)
+
+    # In a frozen build the payload sits beside the exe; copy YAMLs into
+    # the user-editable location iff that location is empty. Dev runs hit
+    # this branch only if someone manually deletes the in-repo files and
+    # the frozen payload check above returns None, so it's a no-op there.
+    frozen_profiles = _frozen_payload_dir("profiles")
+    if frozen_profiles and frozen_profiles.resolve() != user_profiles.resolve():
+        copied = _copy_yaml_dir_if_missing(frozen_profiles, user_profiles, "profile")
+        if copied:
+            logger.info("seeded %d profile file(s) into %s", copied, user_profiles)
+
+    frozen_systems = _frozen_payload_dir("systems")
+    if frozen_systems and frozen_systems.resolve() != user_systems.resolve():
+        copied = _copy_yaml_dir_if_missing(frozen_systems, user_systems, "system")
+        if copied:
+            logger.info("seeded %d system file(s) into %s", copied, user_systems)
+
+    if getattr(sys, "frozen", False):
+        # DATs only seeded for frozen builds — dev clones have data/dats/.
+        frozen_dats = _frozen_payload_dir("dats")
+        if frozen_dats is not None:
+            dats_dest = INSTALL_DIR / "dats"
+            copied = _copy_dat_dir_if_missing(frozen_dats, dats_dest)
+            if copied:
+                logger.info("seeded %d DAT file(s) into %s", copied, dats_dest)
+
+    # data/ + logs/ — created here so subsequent module imports can write.
+    resolve_data_dir()
+    DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def setup_logging(log_path: Path | str | None = None) -> Path:
@@ -69,7 +253,8 @@ def setup_logging(log_path: Path | str | None = None) -> Path:
 
     Routes every ``logging.getLogger(...)`` call in the codebase to:
 
-    1. A rotating file at ``~/.romulus/romulus.log`` (5 MB × 3 backups), and
+    1. A rotating file at ``<install_dir>/logs/romulus.log`` (5 MB × 3
+       backups), and
     2. ``stderr`` so a developer running ``python -m romulus`` sees output too.
 
     Level defaults to ``INFO``; override with the ``ROMULUS_LOG_LEVEL`` env var
@@ -126,8 +311,20 @@ def set_log_level(level_name: str) -> None:
         logging.getLogger(noisy).setLevel(logging.INFO)
 
 
+def resolve_db_path() -> Path:
+    """Return the resolved on-disk path for ``romulus.db``.
+
+    Lives under :func:`resolve_data_dir`. Module-level callers that historically
+    grabbed ``DEFAULT_DB_PATH`` at import time should call this each time
+    instead so a ``ROMULUS_DATA_DIR`` override at startup is honored.
+    """
+    return resolve_data_dir() / "romulus.db"
+
+
 def initialize_database(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Open the app DB, create tables, and seed systems + defaults + favorites."""
+    if db_path is None:
+        db_path = resolve_db_path()
     conn = get_connection(db_path)
     create_tables(conn)
     seed_systems(conn)
@@ -164,8 +361,9 @@ def run() -> int:
     log_path = setup_logging()
     logger = logging.getLogger("romulus")
     logger.info("Romulus starting up (log file: %s)", log_path)
+    ensure_user_editable_files()
     app = QApplication.instance() or QApplication(sys.argv)
-    conn = initialize_database(DEFAULT_DB_PATH)
+    conn = initialize_database(resolve_db_path())
     # Re-apply the user's configured log level now that the DB is up.
     configured = get_config(conn, "log_level") or "INFO"
     set_log_level(configured)

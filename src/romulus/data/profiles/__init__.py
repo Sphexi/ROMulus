@@ -1,7 +1,11 @@
-"""Bundled destination profile YAML files (one per supported target device).
+"""Compatibility shim for the historical bundled-profile location.
 
-This subpackage is intentionally code-free — its sole purpose is to mark
-``romulus/data/profiles/*.yaml`` as package data so ``importlib.resources``
-can locate the YAML files reliably regardless of how Romulus was installed
-(``pip install .``, editable install, or running from source).
+v0.1.0 shipped destination-profile YAMLs inside the wheel at
+``src/romulus/data/profiles/``. v0.2.0 moves them out to a top-level
+``profiles/`` directory at the install root so end users can edit them
+without digging into the package. This subpackage is kept as an importable
+module only because :mod:`romulus.core.exporter` historically resolved the
+built-in directory via :mod:`importlib.resources` against it. The exporter
+now falls back to the in-repo / install-root ``profiles/`` directory first
+and only consults this package as a last resort.
 """

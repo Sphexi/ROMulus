@@ -26,7 +26,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from romulus.app import DEFAULT_LOG_PATH, set_log_level
+from romulus.app import (
+    DEFAULT_LOG_PATH,
+    INSTALL_DIR,
+    resolve_data_dir,
+    set_log_level,
+)
 from romulus.db import get_config, set_config
 from romulus.metadata.screenscraper import test_connection as screenscraper_test_connection
 from romulus.ui.themes import AVAILABLE_THEMES, apply_theme
@@ -218,16 +223,28 @@ class _DiagnosticsTab(QWidget):
         idx = max(0, self.level.findText(current))
         self.level.setCurrentIndex(idx)
 
-        log_path_label = QLabel(str(DEFAULT_LOG_PATH))
-        log_path_label.setTextInteractionFlags(
-            log_path_label.textInteractionFlags()
-            | Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        log_path_label.setToolTip("Click to select; copy with Ctrl+C.")
+        log_path_label = self._selectable_label(str(DEFAULT_LOG_PATH))
+        install_dir_label = self._selectable_label(str(INSTALL_DIR))
+        data_dir_label = self._selectable_label(str(resolve_data_dir()))
 
         form = QFormLayout(self)
         form.addRow("Log level:", self.level)
         form.addRow("Log file:", log_path_label)
+        form.addRow("Install dir:", install_dir_label)
+        form.addRow("Data dir:", data_dir_label)
+
+    @staticmethod
+    def _selectable_label(text: str) -> QLabel:
+        """Build a mouse-selectable QLabel — used for paths the user may want
+        to copy into a bug report.
+        """
+        lbl = QLabel(text)
+        lbl.setTextInteractionFlags(
+            lbl.textInteractionFlags()
+            | Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        lbl.setToolTip("Click to select; copy with Ctrl+C.")
+        return lbl
 
     def save(self) -> None:
         chosen = self.level.currentText()

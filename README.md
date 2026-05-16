@@ -6,8 +6,10 @@ collection to whatever device you actually play on — Anbernic handhelds,
 Batocera setups, MiSTer FPGAs, Analogue Pocket, RetroPie, muOS, and Onion OS.
 
 No server. No cloud account required. No external services to keep running.
-Everything lives in a single SQLite database under `~/.romulus/` and a folder
-of cached cover art. Built with Python 3.12+, PySide6 (Qt 6), and SQLite.
+Everything lives in a single SQLite database under the install folder
+(`<install_dir>/data/`, with a `~/.romulus/` fallback if the install dir is
+read-only) and a folder of cached cover art. Built with Python 3.12+,
+PySide6 (Qt 6), and SQLite.
 
 **Project status:** v0.1.0 — first complete end-to-end release. The full
 scan → identify → enrich → organize → export pipeline works. See
@@ -38,11 +40,45 @@ a single desktop app that:
 
 ---
 
-## Installation
+## Installation (portable, Windows)
 
-Romulus is a Python application. The repo is pure source — no PyPI release
-yet for v0.1.0. Clone it, create a virtual environment, install in editable
-mode, and launch.
+The easiest way to run Romulus on Windows is the portable ZIP:
+
+1. Download `romulus-windows-x64.zip` from the [Releases][releases] page.
+2. Extract it anywhere you like — `C:\Tools\Romulus\`, a USB stick,
+   wherever. There's no installer, no registry entry, nothing to uninstall.
+3. Double-click `romulus.exe`.
+
+After first launch the folder looks like this:
+
+```
+Romulus\
+  romulus.exe
+  _internal\               (Python runtime + PySide6 — leave it alone)
+  profiles\*.yaml          (destination profiles — edit freely)
+  systems\*.yaml           (system registry — drop in extra YAMLs to extend)
+  dats\*.dat               (bundled No-Intro DAT files)
+  data\                    (romulus.db + covers cache — everything live)
+  logs\                    (rotating log file)
+```
+
+Want to back up your library? Zip the whole folder. Want to move it to
+another PC? Copy the folder. Everything is local; nothing else on your
+machine is touched.
+
+You can also pin the data directory anywhere with the `ROMULUS_DATA_DIR`
+env var — useful when you want the exe on a fast SSD but the SQLite DB
+and cover cache on a roomier drive.
+
+[releases]: https://github.com/Sphexi/ROMulous/releases
+
+---
+
+## Installation (from source)
+
+If you'd rather run from source — required for macOS / Linux today, since
+the binary distribution is Windows-only for v0.2.0 — clone the repo,
+create a virtual environment, install in editable mode, and launch.
 
 ### Prerequisites
 
@@ -69,14 +105,15 @@ pip install -e .
 python -m romulus
 ```
 
-For development (adds pytest + ruff):
+For development (adds pytest + ruff + PyInstaller):
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-The first launch creates `~/.romulus/` and an empty `romulus.db`. Nothing
-else on your system is touched.
+The first launch creates a `data/` folder under the repo root for the
+SQLite DB and cover cache (falling back to `~/.romulus/` if the repo is
+read-only). Nothing else on your system is touched.
 
 ---
 

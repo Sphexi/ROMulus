@@ -1,0 +1,55 @@
+name: Release (portable ZIP)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Need ``contents: write`` so the GH Actions runner can attach the built ZIP
+# as a release asset. Everything else stays read-only.
+permissions:
+  contents: write
+
+jobs:
+  build-portable-zip:
+    name: Build Windows portable ZIP
+    runs-on: windows-latest
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+
+    steps:
+      - name: Check out repository
+        # SHA-pinned (v4.2.2) per security audit v0.1.0 finding #10 —
+        # major-version tags are mutable.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Set up Python 3.12
+        # SHA-pinned (v5.3.0) per security audit v0.1.0 finding #10.
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project with dev extras (includes PyInstaller)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Build portable ZIP
+        # build-portable.ps1 cleans dist/, runs PyInstaller, and produces
+        # dist/romulus-windows-x64.zip. Failure causes a non-zero exit and
+        # the workflow stops here.
+        run: .\build-portable.ps1
+        shell: pwsh
+
+      - name: Upload ZIP as release asset
+        # SHA-pinned (softprops/action-gh-release v2.0.8). Creates the
+        # release if the tag doesn't have one yet, otherwise attaches the
+        # ZIP to the existing release.
+        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191
+        with:
+          files: dist/romulus-windows-x64.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true

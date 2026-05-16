@@ -5,17 +5,27 @@ Each entry codifies the accepted file extensions, folder-name aliases (across
 RetroArch / Batocera / Anbernic / Onion / muOS / ArkOS / ROCKNIX), a header rule
 used for normalization prior to hashing, and the libretro thumbnail folder name.
 
-The registry is seeded into the `systems` SQLite table on first run. Adding a
-new system is a code change here, not a data-file edit.
+The registry is seeded into the `systems` SQLite table on first run. At import
+time it is loaded from ``systems/builtin.yaml`` (next to the install dir, or
+the in-repo copy when running from source). The hardcoded ``_FALLBACK_REGISTRY``
+below stays as a safety net: if the YAML is missing or malformed we log a loud
+error and use the in-code list so the app still starts.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
-from typing import Literal
+import sys
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+import yaml
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+logger = logging.getLogger(__name__)
 
 HeaderRule = Literal["smc_512", "ines_16", "n64_byteswap", "lynx_64"]
 
@@ -73,7 +83,7 @@ class SystemDef(BaseModel):
 # lowercase. Both are matched case-insensitively at runtime.
 # ---------------------------------------------------------------------------
 
-SYSTEM_REGISTRY: list[SystemDef] = [
+_FALLBACK_REGISTRY: list[SystemDef] = [
     # --- Nintendo ---
     SystemDef(
         id="nes",
@@ -1185,6 +1195,159 @@ SYSTEM_REGISTRY: list[SystemDef] = [
 #    eboot DATs are mapped above; UMD media isn't a ROM-management
 #    concern.
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# YAML loader
+# ---------------------------------------------------------------------------
+
+
+class _DuplicateSystemIdError(ValueError):
+    """Raised when two YAML entries claim the same system id."""
+
+
+def load_systems_from_yaml(yaml_paths: Iterable[Path | str]) -> list[SystemDef]:
+    """Load and validate system definitions from one or more YAML sources.
+
+    ``yaml_paths`` may contain individual ``.yaml`` files or directories — in
+    the directory case every ``*.yaml`` inside it is loaded. Each file must be
+    a mapping with a top-level ``systems:`` sequence; each entry is validated
+    against :class:`SystemDef`. Duplicate ids across files raise
+    ``_DuplicateSystemIdError`` so a user-supplied YAML can't silently shadow
+    a bundled one.
+
+    Returns the combined list in load order (sorted file order within each
+    directory, plus a stable iteration over ``yaml_paths``).
+    """
+    seen_ids: dict[str, Path] = {}
+    out: list[SystemDef] = []
+    for entry in yaml_paths:
+        path = Path(entry)
+        if path.is_dir():
+            files = sorted(path.glob("*.yaml"))
+        elif path.is_file():
+            files = [path]
+        else:
+            continue
+        for file_path in files:
+            with file_path.open("r", encoding="utf-8") as fh:
+                data: Any = yaml.safe_load(fh)
+            if data is None:
+                continue
+            if not isinstance(data, dict) or "systems" not in data:
+                raise ValueError(
+                    f"{file_path}: top-level must be a mapping with a "
+                    f"'systems:' sequence"
+                )
+            systems_block = data["systems"]
+            if not isinstance(systems_block, list):
+                raise ValueError(
+                    f"{file_path}: 'systems' must be a list of entries"
+                )
+            for raw in systems_block:
+                if not isinstance(raw, dict):
+                    raise ValueError(
+                        f"{file_path}: each system entry must be a mapping, "
+                        f"got {type(raw).__name__}"
+                    )
+                try:
+                    sys_def = SystemDef.model_validate(raw)
+                except ValidationError as exc:
+                    raise ValueError(
+                        f"{file_path}: invalid system entry "
+                        f"id={raw.get('id')!r}: {exc}"
+                    ) from exc
+                if sys_def.id in seen_ids:
+                    raise _DuplicateSystemIdError(
+                        f"system id {sys_def.id!r} is defined in both "
+                        f"{seen_ids[sys_def.id]} and {file_path}"
+                    )
+                seen_ids[sys_def.id] = file_path
+                out.append(sys_def)
+    return out
+
+
+def _resolve_bundled_systems_dir() -> Path | None:
+    """Locate the ``systems/`` directory shipped with this Romulus install.
+
+    Three strategies, tried in order — mirroring ``app._resolve_install_dir``
+    but without importing from ``romulus.app`` (this module is imported
+    earlier in the bootstrap, and importing app here would create a cycle):
+
+    1. PyInstaller-frozen exe -> ``<exe parent>/systems``.
+    2. Editable / dev clone   -> walk up from this file for ``pyproject.toml``
+       and return ``<repo root>/systems``.
+    3. Fall back to ``None``  -> caller uses ``_FALLBACK_REGISTRY``.
+    """
+    if getattr(sys, "frozen", False):
+        candidate = Path(sys.executable).resolve().parent / "systems"
+        return candidate if candidate.is_dir() else None
+    cursor = Path(__file__).resolve()
+    for parent in cursor.parents:
+        if (parent / "pyproject.toml").is_file():
+            candidate = parent / "systems"
+            return candidate if candidate.is_dir() else None
+    return None
+
+
+def _initial_registry() -> list[SystemDef]:
+    """Pick the live registry: bundled YAML if present, hardcoded fallback otherwise."""
+    bundled_dir = _resolve_bundled_systems_dir()
+    if bundled_dir is None:
+        logger.info(
+            "no systems/ directory found, using hardcoded _FALLBACK_REGISTRY "
+            "(%d systems)",
+            len(_FALLBACK_REGISTRY),
+        )
+        return list(_FALLBACK_REGISTRY)
+    try:
+        loaded = load_systems_from_yaml([bundled_dir])
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        logger.error(
+            "failed to load systems/*.yaml from %s: %s — using hardcoded "
+            "fallback (%d systems)",
+            bundled_dir,
+            exc,
+            len(_FALLBACK_REGISTRY),
+        )
+        return list(_FALLBACK_REGISTRY)
+    if not loaded:
+        logger.warning(
+            "systems/ directory %s contained no system entries — using "
+            "hardcoded fallback (%d systems)",
+            bundled_dir,
+            len(_FALLBACK_REGISTRY),
+        )
+        return list(_FALLBACK_REGISTRY)
+    return loaded
+
+
+#: The live system registry. Populated from ``systems/*.yaml`` at import time,
+#: or from ``_FALLBACK_REGISTRY`` if the YAML load fails. Reassigned in-place
+#: by :func:`reload_registry` so callers that have already grabbed the binding
+#: pick up the new list.
+SYSTEM_REGISTRY: list[SystemDef] = _initial_registry()
+
+
+def reload_registry(yaml_paths: Iterable[Path | str] | None = None) -> int:
+    """Re-populate ``SYSTEM_REGISTRY`` from disk.
+
+    With no arguments, reloads from the bundled ``systems/`` directory. Pass
+    explicit paths to load from a user-controlled directory (or a mix). The
+    function clears the module-level list in place and returns the new entry
+    count. On any error the list is left untouched and the error is re-raised
+    — callers that need graceful failure should wrap the call themselves.
+    """
+    if yaml_paths is None:
+        bundled_dir = _resolve_bundled_systems_dir()
+        if bundled_dir is None:
+            raise FileNotFoundError("no bundled systems/ directory found")
+        loaded = load_systems_from_yaml([bundled_dir])
+    else:
+        loaded = load_systems_from_yaml(yaml_paths)
+    SYSTEM_REGISTRY.clear()
+    SYSTEM_REGISTRY.extend(loaded)
+    return len(SYSTEM_REGISTRY)
 
 
 # ---------------------------------------------------------------------------

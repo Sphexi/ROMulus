@@ -36,6 +36,7 @@ import importlib.resources
 import logging
 import re
 import sqlite3
+import sys
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
@@ -51,20 +52,49 @@ from romulus.models.profile import DestinationProfile, SystemMapping
 logger = logging.getLogger(__name__)
 
 
-def _resolve_builtin_profiles_dir() -> Path:
-    """Locate the built-in profile YAMLs shipped inside the wheel.
+def _resolve_install_dir() -> Path:
+    """Frozen-exe parent dir, or the repo root in a dev clone.
 
-    Uses :mod:`importlib.resources` so the path is correct whether Romulus is
-    running from source, an editable install, or a ``pip install .`` wheel.
-    The previous implementation relied on ``Path(__file__).parents[3]`` which
-    silently broke for installed packages (the ``data/`` sibling was outside
-    the wheel). Profile YAMLs now live at
-    ``src/romulus/data/profiles/*.yaml``.
+    Duplicates :func:`romulus.app._resolve_install_dir` to keep the exporter
+    importable without dragging in Qt. The two implementations MUST stay in
+    sync — there's a test (test_install_dir_consistency) pinning that.
     """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    cursor = Path(__file__).resolve()
+    for parent in cursor.parents:
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    return Path.home() / ".romulus"
+
+
+def _resolve_install_profiles_dir() -> Path:
+    """Where install-time bundled profiles live (top-level ``profiles/``)."""
+    return _resolve_install_dir() / "profiles"
+
+
+def _resolve_package_profiles_dir() -> Path:
+    """Legacy in-wheel location, kept as the deepest fallback."""
     return Path(str(importlib.resources.files("romulus.data.profiles")))
 
 
-#: Default location of the built-in destination profile YAMLs.
+def _resolve_builtin_profiles_dir() -> Path:
+    """Locate the built-in profile YAMLs.
+
+    Prefers ``<install_dir>/profiles/`` (the portable layout introduced for
+    v0.2.0 ZIP distributions) and falls back to the legacy in-wheel location
+    when the install-dir copy is missing. Either way callers get a usable
+    directory at module import time.
+    """
+    install_profiles = _resolve_install_profiles_dir()
+    if install_profiles.is_dir() and any(install_profiles.glob("*.yaml")):
+        return install_profiles
+    return _resolve_package_profiles_dir()
+
+
+#: Default location of the built-in destination profile YAMLs. Resolved at
+#: import; callers that want the live three-tier search should use
+#: :func:`load_all_profiles` instead.
 BUILTIN_PROFILES_DIR: Path = _resolve_builtin_profiles_dir()
 
 #: A progress callback for the export loop. Signature is ``(current_index,
@@ -148,16 +178,42 @@ def load_profile(yaml_path: Path | str) -> DestinationProfile:
 def load_all_profiles(
     builtin_dir: Path | str | None = None,
     user_dir: Path | str | None = None,
+    install_dir: Path | str | None = None,
 ) -> dict[str, DestinationProfile]:
-    """Load every ``*.yaml`` profile from the two directories.
+    """Load ``*.yaml`` profiles from up to three directories.
 
-    Built-in profiles are loaded first; user profiles loaded second override
-    a built-in with the same ``id`` so users can customise without editing
-    package files. Profiles that fail to parse are logged and skipped — one
-    broken YAML never blocks the rest from loading.
+    Three-tier precedence — later entries override earlier ones, so the user
+    gets the final say:
+
+    1. ``builtin_dir`` (default: in-wheel ``romulus.data.profiles`` or
+       install-dir copy resolved at import) — the factory defaults.
+    2. ``install_dir`` (default: ``<install_dir>/profiles/``) — the editable
+       copy seeded next to the exe on first launch.
+    3. ``user_dir`` (default: caller's ``~/.romulus/profiles/``) — per-user
+       overrides; absolute final say.
+
+    Pass ``None`` for any tier to skip it (useful in tests). Profiles that
+    fail to parse are logged and skipped — one broken YAML never blocks the
+    rest from loading.
     """
     profiles: dict[str, DestinationProfile] = {}
-    for directory in (builtin_dir or BUILTIN_PROFILES_DIR, user_dir):
+    install_default = _resolve_install_profiles_dir()
+    install_arg: Path | str | None
+    if install_dir is None:
+        install_arg = (
+            install_default
+            if install_default.is_dir()
+            and install_default.resolve() != BUILTIN_PROFILES_DIR.resolve()
+            else None
+        )
+    else:
+        install_arg = install_dir
+    sources: tuple[Path | str | None, ...] = (
+        builtin_dir or BUILTIN_PROFILES_DIR,
+        install_arg,
+        user_dir,
+    )
+    for directory in sources:
         if directory is None:
             continue
         d = Path(directory)

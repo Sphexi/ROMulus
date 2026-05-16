@@ -21,6 +21,10 @@ dependencies = [
 dev = [
     "pytest",
     "ruff",
+    # PyInstaller is only needed by the portable-zip release workflow; it's
+    # opt-in so a plain ``pip install -e ".[dev]"`` doesn't pull a 100 MB
+    # extra for contributors who only run tests.
+    "pyinstaller>=6.0",
 ]
 
 [project.scripts]
@@ -50,7 +54,10 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-# Ship the built-in destination profiles inside the wheel so a
-# ``pip install .`` produces a working app. Loaded via importlib.resources
-# in romulus.core.exporter (no more brittle ``parents[3]`` calculation).
-"romulus.data.profiles" = ["*.yaml"]
+# v0.2.0 moves destination profiles and the system registry OUT of the wheel
+# and to the install root (``profiles/``, ``systems/``) so a user can edit
+# them without digging into Python's site-packages. The legacy
+# ``romulus.data.profiles`` subpackage remains importable (it's now an empty
+# shim) so any third-party tooling that did ``importlib.resources.files``
+# against it still gets a usable Path. Nothing is bundled inside the wheel
+# anymore.
