@@ -319,6 +319,61 @@ class TestSchemaMigration:
         assert "missing" in cols
         conn.close()
 
+    def test_create_tables_handles_legacy_db_without_new_columns(
+        self, tmp_path
+    ):
+        """``create_tables`` must NOT crash when running against a pre-v0.3.0 DB.
+
+        Regression test for a real user crash: ``CREATE INDEX ... ON
+        roms(library_root)`` in SCHEMA_STATEMENTS ran before the migration
+        helper added the column, so existing-DB bootstrap died with
+        ``no such column: library_root``. Indexes for the new columns must
+        live inside the migration helper, not the schema list.
+        """
+        from romulus.db import create_tables
+
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        # Build a pre-v0.3.0 roms table — no library_root / missing.
+        conn.execute(
+            """
+            CREATE TABLE roms (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                path             TEXT NOT NULL UNIQUE,
+                filename         TEXT NOT NULL,
+                extension        TEXT NOT NULL,
+                size_bytes       INTEGER NOT NULL,
+                mtime            REAL NOT NULL,
+                system_id        TEXT,
+                game_id          INTEGER,
+                scan_id          INTEGER,
+                fuzzy_key        TEXT,
+                header_title     TEXT,
+                dat_match        TEXT,
+                match_confidence TEXT DEFAULT 'unmatched'
+            )
+            """
+        )
+        conn.commit()
+
+        # Must not raise — this is the path that was crashing for the user.
+        create_tables(conn)
+
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(roms)")}
+        assert "library_root" in cols
+        assert "missing" in cols
+        # Both new indexes must exist after the migration ran.
+        index_names = {
+            row["name"]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert "idx_roms_library_root" in index_names
+        assert "idx_roms_missing" in index_names
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # upsert_rom resets missing on re-scan
