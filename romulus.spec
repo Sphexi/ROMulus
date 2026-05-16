@@ -1,28 +1,39 @@
 # PyInstaller spec for ROMulus — portable Windows ZIP distribution.
 #
-# Produces a ``--onedir`` build under ``dist/romulus/`` containing:
+# Produces a single-binary ``--onefile`` build: ``dist/romulus.exe`` contains
+# the entire Python runtime, PySide6, every Qt plugin, every bundled package
+# resource (themes, icons), and every transitive DLL. There is NO ``_internal/``
+# folder, no loose ``*.pyd``, no ``base_library.zip`` next to the exe.
 #
-#   romulus.exe
-#   _internal/                 (Python runtime, PySide6, Qt plugins)
-#   profiles/*.yaml            (seeded into <install_dir>/profiles on first launch)
-#   systems/*.yaml             (seeded into <install_dir>/systems on first launch)
-#   dats/*.dat                 (seeded into <install_dir>/dats on first launch)
-#   themes/*.qss               (Qt stylesheet themes)
+# At runtime the bootloader self-extracts the payload into a per-process temp
+# dir (``sys._MEIPASS``); ``romulus.app`` resolves resources relative to that.
+#
+# User-editable data folders (``dats/``, ``profiles/``, ``systems/``) are NOT
+# embedded in the exe — ``build-portable.ps1`` copies them next to the exe in
+# the final ZIP so users can see and edit them on first extract without having
+# to launch the app to trigger seeding. End-user layout::
+#
+#   romulus.exe        (single self-contained binary)
+#   dats/*.dat         (bundled No-Intro DAT files — user-editable)
+#   profiles/*.yaml    (destination profiles — user-editable)
+#   systems/*.yaml     (system registry YAMLs — user-editable)
 #
 # Build locally with::
 #
 #   .venv/Scripts/python.exe -m PyInstaller romulus.spec
 #
-# Or end-to-end via::
+# Or end-to-end (recommended) via::
 #
 #   .\build-portable.ps1
 #
-# Note: ``--onedir`` was chosen over ``--onefile`` deliberately. The single-exe
-# variant unpacks the entire payload to %TEMP% on every launch (slow first
-# start, redundant disk writes) and prevents the user from dropping custom
-# profiles/systems/dats next to romulus.exe — which is the whole point of the
-# portable layout. The onedir bundle is also dramatically easier to debug:
-# you can just open _internal/ and look.
+# Design notes:
+#
+# * ``--onefile`` was chosen so the distribution is exactly one binary plus the
+#   user-editable data folders — no ``_internal/`` clutter, no loose runtime
+#   DLLs. Cost: ~1.5s extra startup on first launch each session (bootloader
+#   unpacks ~80 MB to %TEMP%). Acceptable for an infrequently-updated portable.
+# * UPX is disabled — it trips Windows Defender heuristics and the savings are
+#   marginal compared to the ZIP compression applied to the final artifact.
 
 from pathlib import Path
 
@@ -30,22 +41,14 @@ from PyInstaller.utils.hooks import collect_submodules
 
 PROJECT_ROOT = Path.cwd()
 
-# Bundled data: top-level profiles/ and systems/ go beside the exe; DATs go
-# under ``dats/`` (the runtime first-launch step copies them to the editable
-# location only if it's empty). Qt themes ship as part of the Python package.
+# Embedded resources (live inside the exe and are extracted to ``sys._MEIPASS``
+# at launch). Only files the Python code reads via ``Path(__file__).parent``
+# go here — package resources for the Qt UI. User-editable data folders
+# (profiles, systems, dats) are deliberately NOT embedded; the build script
+# ships them as real folders alongside the exe in the final ZIP.
 datas = []
-profiles_dir = PROJECT_ROOT / "profiles"
-if profiles_dir.is_dir():
-    datas.append((str(profiles_dir / "*.yaml"), "profiles"))
-systems_dir = PROJECT_ROOT / "systems"
-if systems_dir.is_dir():
-    datas.append((str(systems_dir / "*.yaml"), "systems"))
-dats_dir = PROJECT_ROOT / "data" / "dats"
-if dats_dir.is_dir():
-    datas.append((str(dats_dir / "*.dat"), "dats"))
 themes_dir = PROJECT_ROOT / "src" / "romulus" / "ui" / "themes"
 if themes_dir.is_dir():
-    # ``*`` so any .qss / .css / palette file accompanies the package.
     datas.append((str(themes_dir / "*.qss"), "romulus/ui/themes"))
 icons_dir = PROJECT_ROOT / "src" / "romulus" / "ui" / "icons"
 if icons_dir.is_dir():
@@ -97,16 +100,20 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# ``--onefile`` layout: a.binaries + a.datas folded directly into the EXE.
+# No COLLECT() call — the EXE IS the distribution.
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name="romulus",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,  # UPX trips Windows Defender heuristics; skip it.
+    runtime_tmpdir=None,
     console=False,  # GUI app — no console window on launch.
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -114,14 +121,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=exe_icon,
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.datas,
-    strip=False,
-    upx=False,
-    upx_exclude=[],
-    name="romulus",
 )

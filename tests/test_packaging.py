@@ -260,8 +260,11 @@ class TestEnsureUserEditableFiles:
         edited = profiles_dir / "snes.yaml"
         edited.write_text("user-edited-content-do-not-overwrite", encoding="utf-8")
 
-        # Fake a frozen-bundle payload sitting beside the exe.
-        bundle = fake_install / "_internal" / "profiles"
+        # Stub a bundled-payload location separate from the user-editable
+        # folder. The portable build keeps these at the same path (so seeding
+        # short-circuits via source == dest), but we use a distinct dir here
+        # to exercise the actual seeding-vs-preserve logic.
+        bundle = tmp_path / "bundle" / "profiles"
         bundle.mkdir(parents=True)
         (bundle / "snes.yaml").write_text(
             "bundled-default-should-not-clobber", encoding="utf-8"
@@ -272,6 +275,11 @@ class TestEnsureUserEditableFiles:
         monkeypatch.setattr(romulus_app, "INSTALL_DIR", fake_install)
         monkeypatch.setattr(
             romulus_app, "DEFAULT_LOG_DIR", fake_install / "logs"
+        )
+        monkeypatch.setattr(
+            romulus_app,
+            "_frozen_payload_dir",
+            lambda subdir: bundle if subdir == "profiles" else None,
         )
 
         romulus_app.ensure_user_editable_files()
@@ -287,12 +295,12 @@ class TestEnsureUserEditableFiles:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When ``<install_dir>/profiles`` is empty AND a bundle is present,
-        copy the bundled defaults in.
+        """When ``<install_dir>/profiles`` is empty AND a separate bundled
+        payload exists, copy the bundled defaults in.
         """
         fake_install = tmp_path / "install"
         fake_install.mkdir()
-        bundle = fake_install / "_internal" / "profiles"
+        bundle = tmp_path / "bundle" / "profiles"
         bundle.mkdir(parents=True)
         (bundle / "x.yaml").write_text("id: x", encoding="utf-8")
 
@@ -300,6 +308,11 @@ class TestEnsureUserEditableFiles:
         monkeypatch.setattr(romulus_app, "INSTALL_DIR", fake_install)
         monkeypatch.setattr(
             romulus_app, "DEFAULT_LOG_DIR", fake_install / "logs"
+        )
+        monkeypatch.setattr(
+            romulus_app,
+            "_frozen_payload_dir",
+            lambda subdir: bundle if subdir == "profiles" else None,
         )
 
         romulus_app.ensure_user_editable_files()

@@ -53,8 +53,8 @@ After first launch the folder looks like this:
 
 ```
 ROMulus\
-  romulus.exe
-  _internal\               (Python runtime + PySide6 — leave it alone)
+  romulus.exe              (single self-contained binary — Python + PySide6
+                            + every DLL packed inside)
   profiles\*.yaml          (destination profiles — edit freely)
   systems\*.yaml           (system registry — drop in extra YAMLs to extend)
   dats\*.dat               (bundled No-Intro DAT files)

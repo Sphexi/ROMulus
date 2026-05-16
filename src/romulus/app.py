@@ -152,10 +152,10 @@ def _copy_yaml_dir_if_missing(
 def _copy_dat_dir_if_missing(source: Path, dest: Path) -> int:
     """Seed the user-editable DAT directory on first launch (frozen builds).
 
-    In a dev clone the source IS ``data/dats/`` at the repo root, so the
-    "destination already populated" check below short-circuits and we never
-    copy. In a PyInstaller bundle the source is unpacked inside ``_internal/``
-    and the destination is empty on first launch, so we copy.
+    Short-circuits when ``source`` doesn't exist or already IS the destination
+    — covers both dev clones (source = ``data/dats/`` at the repo root) and
+    the onefile portable layout where the build script has already placed the
+    DATs next to the exe.
     """
     if not source.is_dir() or source.resolve() == dest.resolve():
         return 0
@@ -177,17 +177,29 @@ def _copy_dat_dir_if_missing(source: Path, dest: Path) -> int:
 
 
 def _frozen_payload_dir(subdir: str) -> Path | None:
-    """Locate a bundled data subdir inside a PyInstaller payload.
+    """Locate a bundled data subdir for first-launch seeding.
 
-    PyInstaller's ``--onedir`` mode unpacks added data files under
-    ``<install_dir>/_internal/<subdir>`` (newer versions) or
-    ``<install_dir>/<subdir>``. Returns the first one that exists, or None
-    when neither is present (dev run, no frozen payload).
+    Lookup order:
+
+    1. ``sys._MEIPASS / subdir`` — the path where ``--onefile`` mode extracts
+       embedded resources at runtime. Only present if the data subdir is
+       embedded in the exe (which the current spec does NOT do for
+       profiles/systems/dats — those ship as external folders next to the
+       exe — but we keep the lookup so a future spec change still works).
+    2. ``<install_dir>/_internal/<subdir>`` — legacy ``--onedir`` layout.
+    3. ``<install_dir>/<subdir>`` — current flat layout. With profiles/
+       systems/dats placed directly next to the exe by the build script,
+       this resolves to the user-editable folder itself; the caller's
+       source == dest short-circuit then makes seeding a no-op.
+
+    Returns the first existing candidate, or None if no payload is found.
     """
-    candidates = [
-        INSTALL_DIR / "_internal" / subdir,
-        INSTALL_DIR / subdir,
-    ]
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / subdir)
+    candidates.append(INSTALL_DIR / "_internal" / subdir)
+    candidates.append(INSTALL_DIR / subdir)
     for candidate in candidates:
         if candidate.is_dir():
             return candidate
@@ -203,12 +215,13 @@ def ensure_user_editable_files() -> None:
 
     Layout produced at ``<install_dir>/``:
 
-    * ``profiles/`` — destination profiles. Seeded from the bundled
-      ``profiles/`` directory at the repo root (or, in frozen builds, from
-      the PyInstaller payload).
-    * ``systems/``  — system registry YAMLs. Seeded with ``builtin.yaml``.
-    * ``dats/``     — No-Intro DAT files. Only seeded in frozen builds; in
-      dev mode the repo already has ``data/dats/`` and we leave it alone.
+    * ``profiles/`` — destination profiles. In the portable build the ZIP
+      already places the bundled YAMLs here, so seeding is a no-op (source
+      == dest short-circuit).
+    * ``systems/``  — system registry YAMLs. Same story as profiles.
+    * ``dats/``     — No-Intro DAT files. Same story as above. In dev mode
+      the repo's ``data/dats/`` is the canonical location; this dir is left
+      empty unless the user manually populates it.
     * ``data/``     — SQLite DB + cover cache. Created empty.
     * ``logs/``     — rotating log file lives here.
     """

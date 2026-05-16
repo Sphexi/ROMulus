@@ -6,7 +6,12 @@
 #
 # Produces:
 #
-#   dist/romulus/                       — the unpacked onedir bundle
+#   dist/romulus.exe                    — onefile binary from PyInstaller
+#   dist/romulus/                       — assembled portable folder
+#     romulus.exe
+#     dats/*.dat                        — bundled No-Intro DAT files
+#     profiles/*.yaml                   — destination profiles
+#     systems/*.yaml                    — system registry
 #   dist/romulus-windows-x64.zip        — the shippable artifact
 #
 # The CI release workflow runs this exact script on a windows-latest
@@ -37,13 +42,41 @@ if ($LASTEXITCODE -ne 0) {
     if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
 }
 
-Write-Host "==> Running PyInstaller (--onedir)" -ForegroundColor Cyan
+Write-Host "==> Running PyInstaller (--onefile)" -ForegroundColor Cyan
 & $python -m PyInstaller romulus.spec --noconfirm
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed" }
 
+$exePath = Join-Path $PSScriptRoot "dist\romulus.exe"
+if (-not (Test-Path $exePath)) {
+    throw "Expected onefile binary at $exePath but it was not produced"
+}
+
+# Assemble the portable folder layout: exe + side-by-side data folders.
 $bundleDir = Join-Path $PSScriptRoot "dist\romulus"
-if (-not (Test-Path $bundleDir)) {
-    throw "Expected bundle at $bundleDir but it was not produced"
+Write-Host "==> Assembling portable folder at $bundleDir" -ForegroundColor Cyan
+New-Item -ItemType Directory -Path $bundleDir | Out-Null
+
+Move-Item -Path $exePath -Destination (Join-Path $bundleDir "romulus.exe")
+
+# Side-by-side user-editable folders. Each is copied from its canonical
+# repo location into the bundle root.
+$dataFolders = @(
+    @{ Source = "data\dats";  Target = "dats"     ; Filter = "*.dat"  },
+    @{ Source = "profiles";   Target = "profiles" ; Filter = "*.yaml" },
+    @{ Source = "systems";    Target = "systems"  ; Filter = "*.yaml" }
+)
+foreach ($folder in $dataFolders) {
+    $sourcePath = Join-Path $PSScriptRoot $folder.Source
+    $targetPath = Join-Path $bundleDir   $folder.Target
+    if (-not (Test-Path $sourcePath)) {
+        Write-Host "    skipping $($folder.Source) (does not exist)" -ForegroundColor Yellow
+        continue
+    }
+    New-Item -ItemType Directory -Path $targetPath -Force | Out-Null
+    Copy-Item -Path (Join-Path $sourcePath $folder.Filter) `
+              -Destination $targetPath -ErrorAction SilentlyContinue
+    $count = (Get-ChildItem -Path $targetPath -File).Count
+    Write-Host "    $($folder.Target)/ — $count file(s)" -ForegroundColor Gray
 }
 
 Write-Host "==> Creating dist/romulus-windows-x64.zip" -ForegroundColor Cyan
