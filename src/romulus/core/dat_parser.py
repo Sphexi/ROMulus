@@ -9,6 +9,7 @@ DAT XML files (see security audit v0.1.0 finding #3).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sqlite3
@@ -27,6 +28,8 @@ from defusedxml.common import DefusedXmlException
 from romulus.core._no_intro_tokens import REGION_COUNTRY_TOKENS, REVISION_RE
 from romulus.db import queries
 from romulus.models.system import SYSTEM_REGISTRY
+
+logger = logging.getLogger(__name__)
 
 # Region tokens we recognize inside parenthesized DAT name groups. Subset of the
 # scanner's list — DAT canonical names only carry country/super-region names,
@@ -137,13 +140,20 @@ def parse_dat_file(filepath: str | os.PathLike[str]) -> list[DatEntry]:
     No-Intro, common in MAME) produce one row per rom.
     """
     path = Path(filepath)
+    logger.debug("parse_dat_file: start path=%s", path)
     try:
         tree = ET.parse(path)
-    except (ET.ParseError, OSError, DefusedXmlException):
+    except (ET.ParseError, OSError, DefusedXmlException) as exc:
         # ``DefusedXmlException`` covers billion-laughs / external-entity /
         # external-DTD attacks blocked by defusedxml; the other two cover
         # malformed XML and filesystem errors. Returning an empty list lets a
         # bulk loader skip the bad file without aborting siblings.
+        logger.debug(
+            "parse_dat_file: parse failed path=%s err=%s err_type=%s",
+            path,
+            exc,
+            type(exc).__name__,
+        )
         return []
 
     root = tree.getroot()
@@ -154,6 +164,12 @@ def parse_dat_file(filepath: str | os.PathLike[str]) -> list[DatEntry]:
         if name_el is not None:
             header_name = (name_el.text or "").strip()
     system_id = _system_id_from_dat_name(header_name)
+    if header_name and system_id is None:
+        logger.debug(
+            "parse_dat_file: unrecognized DAT header path=%s header_name=%s",
+            path,
+            header_name,
+        )
 
     entries: list[DatEntry] = []
     for game in root.iter("game"):
@@ -182,6 +198,13 @@ def parse_dat_file(filepath: str | os.PathLike[str]) -> list[DatEntry]:
                     is_bios=is_bios,
                 )
             )
+    logger.debug(
+        "parse_dat_file: done path=%s header_name=%s system_id=%s entries=%d",
+        path,
+        header_name,
+        system_id,
+        len(entries),
+    )
     return entries
 
 
@@ -221,12 +244,21 @@ def load_all_dats(
     roots in a single call.
     """
     inserted = 0
-    for dat_path in _iter_dat_files(dat_paths):
+    dat_files = _iter_dat_files(dat_paths)
+    logger.debug("load_all_dats: discovered dat_files=%d", len(dat_files))
+    for dat_path in dat_files:
         entries = parse_dat_file(dat_path)
         for entry in entries:
             queries.insert_dat_entry(conn, entry)
             inserted += 1
+        logger.debug(
+            "load_all_dats: loaded dat=%s entries=%d running_total=%d",
+            dat_path.name,
+            len(entries),
+            inserted,
+        )
     conn.commit()
+    logger.debug("load_all_dats: complete inserted=%d", inserted)
     return inserted
 
 
@@ -246,6 +278,7 @@ def match_hashes(conn: sqlite3.Connection) -> int:
         WHERE r.match_confidence != 'dat_verified'
         """
     ).fetchall()
+    logger.debug("match_hashes: candidates rows=%d", len(rows))
 
     matched = 0
     for row in rows:
@@ -257,13 +290,31 @@ def match_hashes(conn: sqlite3.Connection) -> int:
         entry = None
         if sha1:
             entry = queries.get_dat_by_sha1(conn, sha1)
+        matched_by = "sha1" if entry is not None else None
         if entry is None and crc32 and size_bytes is not None:
             entry = queries.get_dat_by_crc_size(conn, crc32, size_bytes)
+            if entry is not None:
+                matched_by = "crc32+size"
 
         if entry is None:
+            logger.debug(
+                "match_hashes: no match rom_id=%s sha1=%s crc32=%s size=%s",
+                rom_id,
+                sha1,
+                crc32,
+                size_bytes,
+            )
             continue
+        logger.debug(
+            "match_hashes: matched rom_id=%s by=%s game_name=%s dat_file=%s",
+            rom_id,
+            matched_by,
+            entry["game_name"],
+            entry["dat_file"],
+        )
         queries.update_rom_match(conn, rom_id, entry["game_name"], "dat_verified")
         matched += 1
 
     conn.commit()
+    logger.debug("match_hashes: complete matched=%d candidates=%d", matched, len(rows))
     return matched

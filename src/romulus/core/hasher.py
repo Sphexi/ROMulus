@@ -141,11 +141,19 @@ def _read_zip_payload(
         with zipfile.ZipFile(path) as zf:
             files = [info for info in zf.infolist() if not info.is_dir()]
             if not files:
+                logger.debug("zip payload: empty archive path=%s", path)
                 return None
             target = (
                 files[0]
                 if len(files) == 1
                 else max(files, key=lambda i: i.file_size)
+            )
+            logger.debug(
+                "zip payload: inspecting inner=%s declared_size=%d archive=%s entries=%d",
+                target.filename,
+                target.file_size,
+                path,
+                len(files),
             )
             with zf.open(target) as inner:
                 buf = bytearray()
@@ -161,12 +169,24 @@ def _read_zip_payload(
                             f"(path={path!s}, entry={target.filename!r})"
                         )
                     buf.extend(chunk)
+                logger.debug(
+                    "zip payload: extracted inner=%s actual_size=%d archive=%s",
+                    target.filename,
+                    total,
+                    path,
+                )
                 return bytes(buf)
     except ZipPayloadTooLargeError:
         # Log + skip so a single bomb doesn't poison the whole Heavy Scan,
         # but make sure it's visible to operators.
         raise
-    except (zipfile.BadZipFile, OSError):
+    except (zipfile.BadZipFile, OSError) as exc:
+        logger.debug(
+            "zip payload: read failed path=%s err=%s err_type=%s",
+            path,
+            exc,
+            type(exc).__name__,
+        )
         return None
 
 
@@ -217,6 +237,16 @@ def hash_rom(
     """
     path = Path(file_path)
     try:
+        file_size = path.stat().st_size
+    except OSError:
+        file_size = -1
+    logger.debug(
+        "hash_rom: start path=%s size=%s header_rule=%s",
+        path,
+        file_size,
+        header_rule,
+    )
+    try:
         if path.suffix.lower() == ".zip":
             try:
                 payload = _read_zip_payload(path)
@@ -226,21 +256,47 @@ def hash_rom(
                 logger.warning("zip payload too large, skipping: %s", exc)
                 return None
             if payload is None:
+                logger.debug("hash_rom: zip payload empty path=%s", path)
                 return None
             normalized = normalize_rom_content(payload, header_rule)
-            return _digest_bytes(normalized)
+            result = _digest_bytes(normalized)
+            logger.debug(
+                "hash_rom: done path=%s sha1=%s crc32=%s normalized_size=%d",
+                path,
+                result.sha1,
+                result.crc32,
+                result.size,
+            )
+            return result
 
         if header_rule is None:
             # No normalization needed — stream the file directly.
-            return _digest_stream(path)
+            result = _digest_stream(path)
+            logger.debug(
+                "hash_rom: done path=%s sha1=%s crc32=%s size=%d (streamed)",
+                path,
+                result.sha1,
+                result.crc32,
+                result.size,
+            )
+            return result
 
         with path.open("rb") as f:
             raw = f.read()
-    except OSError:
+    except OSError as exc:
+        logger.debug("hash_rom: read failed path=%s err=%s", path, exc)
         return None
 
     normalized = normalize_rom_content(raw, header_rule)
-    return _digest_bytes(normalized)
+    result = _digest_bytes(normalized)
+    logger.debug(
+        "hash_rom: done path=%s sha1=%s crc32=%s normalized_size=%d",
+        path,
+        result.sha1,
+        result.crc32,
+        result.size,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +340,12 @@ def hash_library(
         allowed = frozenset(scope_rom_ids)
         pending = [r for r in pending if int(r["id"]) in allowed]
     total = len(pending)
+    logger.debug(
+        "hash_library: start pending=%d workers=%d scoped=%s",
+        total,
+        workers,
+        scope_rom_ids is not None,
+    )
     if total == 0:
         return 0
 
@@ -308,4 +370,10 @@ def hash_library(
                 progress_callback(done, total, path)
 
     conn.commit()
+    logger.debug(
+        "hash_library: complete successes=%d total=%d failures=%d",
+        successes,
+        total,
+        total - successes,
+    )
     return successes

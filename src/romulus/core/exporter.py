@@ -172,7 +172,14 @@ def load_profile(yaml_path: Path | str) -> DestinationProfile:
         data: dict[str, Any] = yaml.safe_load(fh)
     if not isinstance(data, dict):
         raise ValueError(f"profile YAML is not a mapping: {path}")
-    return DestinationProfile.model_validate(data)
+    profile = DestinationProfile.model_validate(data)
+    logger.debug(
+        "load_profile: path=%s id=%s systems=%d",
+        path,
+        profile.id,
+        len(profile.systems),
+    )
+    return profile
 
 
 def load_all_profiles(
@@ -417,6 +424,12 @@ def export_collection(
     target.mkdir(parents=True, exist_ok=True)
 
     candidates = _candidate_roms(conn, filters)
+    logger.debug(
+        "export_collection: start profile=%s target=%s candidates=%d",
+        profile.id,
+        target,
+        len(candidates),
+    )
     summary = ExportSummary()
     systems_touched: set[str] = set()
     # Group rows by system_id so we can emit one gamelist.xml / artwork pass
@@ -431,10 +444,20 @@ def export_collection(
         system_id = str(row["system_id"])
         mapping = profile.systems.get(system_id)
         if mapping is None or not mapping.is_supported:
+            logger.debug(
+                "export: skip-unsupported filename=%s system_id=%s",
+                row["filename"],
+                system_id,
+            )
             summary.files_skipped += 1
             continue
         source = Path(str(row["path"]))
         if not source.exists():
+            logger.debug(
+                "export: skip-missing-source filename=%s src=%s",
+                row["filename"],
+                source,
+            )
             summary.files_skipped += 1
             summary.errors.append(f"source missing: {source}")
             continue
@@ -447,6 +470,12 @@ def export_collection(
                 # Already exported — treat as a successful no-op so re-running
                 # the exporter against a partially-populated SD card is
                 # idempotent.
+                logger.debug(
+                    "export: skip-already-present filename=%s dest=%s size=%d",
+                    row["filename"],
+                    dest,
+                    size_bytes,
+                )
                 summary.files_skipped += 1
                 systems_touched.add(system_id)
                 by_system[system_id].append(row)
@@ -457,15 +486,37 @@ def export_collection(
             # picked the wrong target folder, or a profile escaped its base).
             # Skip + report so the user can investigate rather than losing
             # data.
+            logger.debug(
+                "export: refuse-overwrite filename=%s dest=%s "
+                "existing_size=%d source_size=%d",
+                row["filename"],
+                dest,
+                existing_size,
+                size_bytes,
+            )
             summary.files_skipped += 1
             summary.errors.append(
                 f"refusing to overwrite existing file at {dest} "
                 f"(existing={existing_size}B, source={size_bytes}B)"
             )
             continue
+        logger.debug(
+            "export: copy filename=%s src=%s dest=%s size=%d",
+            row["filename"],
+            source,
+            dest,
+            size_bytes,
+        )
         try:
             atomic.atomic_copy(source, dest)
         except OSError as exc:
+            logger.debug(
+                "export: copy failed filename=%s src=%s dest=%s err=%s",
+                row["filename"],
+                source,
+                dest,
+                exc,
+            )
             summary.errors.append(f"copy failed {source} -> {dest}: {exc}")
             continue
         summary.files_copied += 1
@@ -474,6 +525,14 @@ def export_collection(
         by_system[system_id].append(row)
 
     summary.systems = sorted(systems_touched)
+    logger.debug(
+        "export_collection: copy phase complete copied=%d skipped=%d errors=%d "
+        "systems=%d",
+        summary.files_copied,
+        summary.files_skipped,
+        len(summary.errors),
+        len(summary.systems),
+    )
 
     # ---- Sidecars -------------------------------------------------------
     for system_id in summary.systems:
@@ -599,6 +658,13 @@ def generate_gamelist_xml(
         root, encoding="utf-8"
     ) + b"\n"
     dest = _gamelist_path(system_dir)
+    logger.debug(
+        "gamelist.xml: writing system_id=%s dest=%s bytes=%d games=%d",
+        system_id,
+        dest,
+        len(payload),
+        len(seen_game_ids),
+    )
     atomic.atomic_write_bytes(payload, dest)
     return dest
 
@@ -681,9 +747,19 @@ def copy_artwork(
             (int(game_id),),
         ).fetchone()
         if cover_row is None:
+            logger.debug(
+                "artwork: no cover for game_id=%d filename=%s",
+                int(game_id),
+                row["filename"],
+            )
             continue
         local_path = Path(str(cover_row["local_path"]))
         if not local_path.exists():
+            logger.debug(
+                "artwork: cover missing on disk game_id=%d local_path=%s",
+                int(game_id),
+                local_path,
+            )
             continue
         # Filename template is per-profile so each launcher's convention is
         # honored: EmulationStation classic wants ``{stem}-image{ext}``,
@@ -693,12 +769,23 @@ def copy_artwork(
             stem=stem, ext=local_path.suffix
         )
         dest = artwork_dir / filename
+        logger.debug(
+            "artwork: copy game_id=%d src=%s dest=%s",
+            int(game_id),
+            local_path,
+            dest,
+        )
         try:
             atomic.atomic_copy(local_path, dest)
         except OSError as exc:
             logger.warning("artwork copy failed: src=%s err=%s", local_path, exc)
             continue
         copied += 1
+    logger.debug(
+        "artwork: complete system_id=%s copied=%d",
+        system_id,
+        copied,
+    )
     return copied
 
 

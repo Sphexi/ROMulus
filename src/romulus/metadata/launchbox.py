@@ -101,16 +101,22 @@ def parse_launchbox_xml(xml_path: Path | str) -> list[LaunchBoxEntry]:
     Only `<Game>` elements are extracted — other top-level elements are skipped.
     """
     path = Path(xml_path)
+    logger.debug("launchbox parse: start path=%s", path)
     entries: list[LaunchBoxEntry] = []
+    skipped_no_title = 0
+    unmapped_platforms: set[str] = set()
     for _event, element in safe_iterparse(str(path), events=("end",)):
         if element.tag != "Game":
             continue
         title = _text(element, "Name")
         if not title:
+            skipped_no_title += 1
             element.clear()
             continue
         platform = _text(element, "Platform")
         system_id = _LAUNCHBOX_PLATFORM_MAP.get(platform or "")
+        if platform and system_id is None:
+            unmapped_platforms.add(platform)
         entries.append(
             LaunchBoxEntry(
                 title=title,
@@ -125,6 +131,19 @@ def parse_launchbox_xml(xml_path: Path | str) -> list[LaunchBoxEntry]:
             )
         )
         element.clear()
+    logger.debug(
+        "launchbox parse: done path=%s entries=%d skipped_no_title=%d "
+        "unmapped_platforms=%d",
+        path,
+        len(entries),
+        skipped_no_title,
+        len(unmapped_platforms),
+    )
+    if unmapped_platforms:
+        logger.debug(
+            "launchbox parse: unmapped platforms=%s",
+            sorted(unmapped_platforms),
+        )
     return entries
 
 
@@ -146,8 +165,26 @@ def match_game(
     normalized = _normalize_title(title)
     entry = index.get((system_id, normalized))
     if entry is not None:
+        logger.debug(
+            "launchbox match: title=%s system_id=%s via=system_specific",
+            title,
+            system_id,
+        )
         return entry
-    return index.get((None, normalized))
+    fallback = index.get((None, normalized))
+    if fallback is not None:
+        logger.debug(
+            "launchbox match: title=%s system_id=%s via=title_only_fallback",
+            title,
+            system_id,
+        )
+    else:
+        logger.debug(
+            "launchbox match: title=%s system_id=%s -> no match",
+            title,
+            system_id,
+        )
+    return fallback
 
 
 def entry_to_metadata(entry: LaunchBoxEntry) -> MetadataPayload:

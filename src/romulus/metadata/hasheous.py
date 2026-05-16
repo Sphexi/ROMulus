@@ -112,6 +112,12 @@ def lookup_by_hash(
         logger.warning("hasheous lookup rejected: malformed hash value")
         return None
     url = f"{HASHEOUS_BASE_URL}/{hash_type}/{sha1.lower()}"
+    logger.debug(
+        "hasheous lookup: hash_type=%s hash=%s url=%s",
+        hash_type,
+        sha1.lower(),
+        url,
+    )
 
     with http_client(client, DEFAULT_TIMEOUT) as http:
         for attempt in range(MAX_RETRIES):
@@ -123,7 +129,14 @@ def lookup_by_hash(
                 logger.warning("hasheous request failed: url=%s err=%s", url, exc)
                 return None
 
+            logger.debug(
+                "hasheous response: url=%s status=%d attempt=%d",
+                url,
+                response.status_code,
+                attempt + 1,
+            )
             if response.status_code == 404:
+                logger.debug("hasheous miss: hash=%s", sha1.lower())
                 return None
             if response.status_code == 429:
                 wait = BACKOFF_BASE * (2**attempt)
@@ -144,7 +157,18 @@ def lookup_by_hash(
                 logger.warning("hasheous returned non-JSON body for %s", url)
                 return None
             if not isinstance(payload, dict):
+                logger.debug(
+                    "hasheous: response is not a dict url=%s type=%s",
+                    url,
+                    type(payload).__name__,
+                )
                 return None
-            return parse_hasheous_response(payload)
+            parsed = parse_hasheous_response(payload)
+            logger.debug(
+                "hasheous match: hash=%s title=%s",
+                sha1.lower(),
+                parsed.get("title") if isinstance(parsed, dict) else None,
+            )
+            return parsed
 
     return None

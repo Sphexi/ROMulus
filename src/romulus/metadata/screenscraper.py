@@ -152,6 +152,7 @@ def lookup_game(
     from romulus.metadata import http_client
 
     if not has_credentials(credentials):
+        logger.debug("screenscraper lookup: skipped (no credentials)")
         return None
     if not sha1:
         return None
@@ -166,6 +167,14 @@ def lookup_game(
         "sha1": sha1.lower(),
     }
     url = f"{SCREENSCRAPER_BASE_URL}/jeuInfos.php"
+    # NOTE: credentials are intentionally NOT logged here — params dict is
+    # consumed by httpx only. See security audit v0.1.0.
+    logger.debug(
+        "screenscraper lookup: sha1=%s system_id=%s url=%s",
+        sha1.lower(),
+        system_id,
+        url,
+    )
 
     with http_client(client, DEFAULT_TIMEOUT) as http:
         if rate_limit:
@@ -176,6 +185,12 @@ def lookup_game(
             logger.warning("screenscraper request failed: err=%s", exc)
             return None
 
+        logger.debug(
+            "screenscraper response: sha1=%s status=%d size=%d",
+            sha1.lower(),
+            response.status_code,
+            len(response.content),
+        )
         if response.status_code != 200:
             logger.warning(
                 "screenscraper unexpected status: status=%s", response.status_code
@@ -186,4 +201,11 @@ def lookup_game(
         except ValueError:
             logger.warning("screenscraper returned non-JSON body")
             return None
-        return parse_screenscraper_response(payload)
+        parsed = parse_screenscraper_response(payload)
+        logger.debug(
+            "screenscraper match: sha1=%s found=%s title=%s",
+            sha1.lower(),
+            parsed is not None,
+            parsed.get("title") if isinstance(parsed, dict) else None,
+        )
+        return parsed

@@ -198,9 +198,15 @@ def _build_image_bucket(
         system_root = system_dir
 
     if not system_root.is_dir():
+        logger.debug("bucket: system_dir is not a directory dir=%s", system_root)
         return bucket
 
+    logger.debug("bucket: walking system_dir=%s max_depth=%d", system_root, _BUCKET_WALK_DEPTH)
+    dirs_walked = 0
+    images_inspected = 0
+    images_bucketed = 0
     for dirpath, dirnames, filenames in os.walk(system_root, followlinks=False):
+        dirs_walked += 1
         current = Path(dirpath)
         try:
             depth = len(current.relative_to(system_root).parts)
@@ -220,10 +226,16 @@ def _build_image_bucket(
             img_path = current / fname
             if img_path.suffix.lower() not in IMAGE_EXTENSIONS:
                 continue
+            images_inspected += 1
             parsed = parse_filename(fname)
             # Loose key: drop release_type so generic images still match VC ROMs.
             fkey = generate_fuzzy_key(parsed.clean_name)
             if not fkey:
+                logger.debug(
+                    "bucket: skipped no fuzzy key file=%s clean_name=%s",
+                    img_path,
+                    parsed.clean_name,
+                )
                 continue
             try:
                 resolved = str(img_path.resolve())
@@ -231,7 +243,17 @@ def _build_image_bucket(
                 resolved = str(img_path)
             cover_type = _infer_cover_type(img_path)
             bucket.setdefault(fkey, []).append((resolved, cover_type))
+            images_bucketed += 1
 
+    logger.debug(
+        "bucket: built system_dir=%s dirs_walked=%d images_inspected=%d "
+        "images_bucketed=%d unique_keys=%d",
+        system_root,
+        dirs_walked,
+        images_inspected,
+        images_bucketed,
+        len(bucket),
+    )
     return bucket
 
 
@@ -303,21 +325,49 @@ def find_local_covers_for_rom(
             candidate_keys.append(k)
             seen.add(k)
 
+    logger.debug(
+        "find_local_covers: rom_id=%d rom=%s candidate_keys=%s",
+        rom_id,
+        Path(rom_path).name,
+        candidate_keys,
+    )
     seen_paths: set[str] = set()
     matches: list[LocalCoverMatch] = []
     for key in candidate_keys:
-        for img_path, cover_type in image_bucket.get(key, []):
-            if img_path not in seen_paths:
-                seen_paths.add(img_path)
-                matches.append(
-                    LocalCoverMatch(
-                        rom_id=rom_id,
-                        game_id=game_id,
-                        image_path=img_path,
-                        cover_type=cover_type,
-                    )
+        hits = image_bucket.get(key, [])
+        if not hits:
+            logger.debug(
+                "find_local_covers: rom_id=%d key=%s -> no candidates", rom_id, key
+            )
+            continue
+        for img_path, cover_type in hits:
+            if img_path in seen_paths:
+                logger.debug(
+                    "find_local_covers: rom_id=%d skipped duplicate path=%s",
+                    rom_id,
+                    img_path,
                 )
+                continue
+            seen_paths.add(img_path)
+            logger.debug(
+                "find_local_covers: rom_id=%d matched key=%s path=%s cover_type=%s",
+                rom_id,
+                key,
+                img_path,
+                cover_type,
+            )
+            matches.append(
+                LocalCoverMatch(
+                    rom_id=rom_id,
+                    game_id=game_id,
+                    image_path=img_path,
+                    cover_type=cover_type,
+                )
+            )
 
+    logger.debug(
+        "find_local_covers: rom_id=%d total_matches=%d", rom_id, len(matches)
+    )
     return matches
 
 
@@ -409,6 +459,12 @@ def discover_local_covers(
         allowed = frozenset(scope_rom_ids)
         rows = [r for r in rows if int(r["rom_id"]) in allowed]
     total = len(rows)
+    logger.debug(
+        "discover_local_covers: start library=%s roms=%d scoped=%s",
+        library_path,
+        total,
+        scope_rom_ids is not None,
+    )
     roms_scanned = 0
     covers_found = 0
     covers_skipped = 0
@@ -494,6 +550,14 @@ def discover_local_covers(
 
     conn.commit()
 
+    logger.debug(
+        "discover_local_covers: complete roms_scanned=%d covers_found=%d "
+        "skipped_existing=%d errors=%d",
+        roms_scanned,
+        covers_found,
+        covers_skipped,
+        errors,
+    )
     return DiscoveryResult(
         roms_scanned=roms_scanned,
         covers_found=covers_found,

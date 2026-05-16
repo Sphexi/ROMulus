@@ -90,7 +90,14 @@ def fetch_cover(
     url = build_thumbnail_url(libretro_name, game_name, cover_type)
     dest = cover_cache_path(cache_dir, system_id, cover_type, game_name)
     if dest.exists() and dest.stat().st_size > 0:
+        logger.debug(
+            "libretro fetch: cache hit url=%s dest=%s size=%d",
+            url,
+            dest,
+            dest.stat().st_size,
+        )
         return dest, url
+    logger.debug("libretro fetch: cache miss url=%s dest=%s", url, dest)
 
     with http_client(client, DEFAULT_TIMEOUT) as http:
         try:
@@ -99,6 +106,12 @@ def fetch_cover(
             logger.warning("libretro cover fetch failed: url=%s err=%s", url, exc)
             return None
 
+    logger.debug(
+        "libretro fetch: response url=%s status=%d size=%d",
+        url,
+        response.status_code,
+        len(response.content),
+    )
     if response.status_code == 404:
         return None
     if response.status_code != 200:
@@ -137,4 +150,10 @@ def fetch_cover(
         with contextlib.suppress(OSError):
             tmp_path.unlink()
         return None
+    logger.debug(
+        "libretro fetch: wrote dest=%s bytes=%d url=%s",
+        dest,
+        len(response.content),
+        url,
+    )
     return dest, url

@@ -7,6 +7,7 @@ Layer 3 (hasher.py). Read errors and malformed dumps return None.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from romulus.core._n64 import (
     byteswap_n64_to_z64,
     byteswap_v64_to_z64,
 )
+
+logger = logging.getLogger(__name__)
 
 # N64 magic bytes — re-exported under the local underscore name so any in-file
 # references keep working. Single source of truth lives in ``core/_n64.py``.
@@ -166,30 +169,55 @@ def extract_header_title(
     file is too small or corrupt, or no printable title was found.
     """
     path = Path(file_path)
+    logger.debug(
+        "extract_header_title: start path=%s system_id=%s header_rule=%s",
+        path,
+        system_id,
+        header_rule,
+    )
     try:
         with path.open("rb") as f:
             data = f.read(_HEADER_READ_BYTES)
-    except OSError:
+    except OSError as exc:
+        logger.debug(
+            "extract_header_title: read failed path=%s err=%s",
+            path,
+            exc,
+        )
         return None
 
     if not data:
+        logger.debug("extract_header_title: empty file path=%s", path)
         return None
 
+    title: str | None
     match system_id:
         case "snes":
-            return _extract_snes_title(data)
+            title = _extract_snes_title(data)
         case "n64":
-            return _extract_n64_title(data)
+            title = _extract_n64_title(data)
         case "megadrive":
-            return _extract_md_title(data)
+            title = _extract_md_title(data)
         case "gb" | "gbc":
-            return _extract_gb_title(data)
+            title = _extract_gb_title(data)
         case "gba":
-            return _extract_gba_title(data)
+            title = _extract_gba_title(data)
         case "nds":
-            return _extract_ds_title(data)
+            title = _extract_ds_title(data)
         case _:
             # Systems without an internal title slot (NES, PCE, etc.) — see
             # ROM-DEDUP §4.3. Caller falls back to filename.
             _ = header_rule
+            logger.debug(
+                "extract_header_title: no header slot path=%s system_id=%s",
+                path,
+                system_id,
+            )
             return None
+    logger.debug(
+        "extract_header_title: done path=%s system_id=%s title=%s",
+        path,
+        system_id,
+        title,
+    )
+    return title

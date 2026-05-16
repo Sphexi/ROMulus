@@ -261,7 +261,10 @@ def ensure_user_editable_files() -> None:
     DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def setup_logging(log_path: Path | str | None = None) -> Path:
+def setup_logging(
+    log_path: Path | str | None = None,
+    level_name: str | None = None,
+) -> Path:
     """Configure root-logger handlers for the desktop app.
 
     Routes every ``logging.getLogger(...)`` call in the codebase to:
@@ -270,17 +273,22 @@ def setup_logging(log_path: Path | str | None = None) -> Path:
        backups), and
     2. ``stderr`` so a developer running ``python -m romulus`` sees output too.
 
-    Level defaults to ``INFO``; override with the ``ROMULUS_LOG_LEVEL`` env var
-    (one of ``DEBUG`` / ``INFO`` / ``WARNING`` / ``ERROR``). Idempotent — safe
-    to call more than once (existing handlers are removed first).
+    ``level_name`` is resolved in this order:
 
-    Returns the resolved log path so callers can surface it in error dialogs.
+    1. Explicit argument passed in by the caller (highest precedence).
+    2. ``ROMULUS_LOG_LEVEL`` env var.
+    3. ``"INFO"`` default.
+
+    Idempotent — safe to call more than once (existing handlers are removed
+    first). Returns the resolved log path so callers can surface it in error
+    dialogs.
     """
     resolved = Path(log_path) if log_path is not None else DEFAULT_LOG_PATH
     resolved.parent.mkdir(parents=True, exist_ok=True)
 
-    level_name = os.environ.get("ROMULUS_LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
+    chosen = level_name or os.environ.get("ROMULUS_LOG_LEVEL") or "INFO"
+    chosen = chosen.upper()
+    level = getattr(logging, chosen, logging.INFO)
 
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
 
@@ -381,6 +389,10 @@ def _app_icon_path() -> Path:
 
 def run() -> int:
     """Bootstrap QApplication, init the DB, and show the main window."""
+    # Bootstrap with env-var or INFO so any errors before the DB is up still
+    # get logged. The user's stored Settings level is applied below, BUT only
+    # if the env var hasn't pinned a level — otherwise users couldn't override
+    # via ``ROMULUS_LOG_LEVEL=DEBUG`` for diagnostics.
     log_path = setup_logging()
     logger = logging.getLogger("romulus")
     logger.info("ROMulus starting up (log file: %s)", log_path)
@@ -394,9 +406,14 @@ def run() -> int:
 
         app.setWindowIcon(QIcon(str(icon_path)))
     conn = initialize_database(resolve_db_path())
-    # Re-apply the user's configured log level now that the DB is up.
-    configured = get_config(conn, "log_level") or "INFO"
-    set_log_level(configured)
+    # Resolve final log level: env var wins if set, otherwise SQLite config,
+    # otherwise the INFO default already applied by setup_logging.
+    env_level = os.environ.get("ROMULUS_LOG_LEVEL")
+    if env_level:
+        logger.info("log level pinned by ROMULUS_LOG_LEVEL=%s", env_level)
+    else:
+        configured = get_config(conn, "log_level") or "INFO"
+        set_log_level(configured)
     # Late import is INTENTIONAL: ``MainWindow`` (and the chain of Qt widget
     # classes it pulls in) requires a live QApplication to exist before any
     # QWidget subclass is even imported on some Qt builds. Moving this back to

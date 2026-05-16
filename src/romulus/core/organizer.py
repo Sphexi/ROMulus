@@ -271,15 +271,32 @@ def find_renameable_roms(conn: sqlite3.Connection) -> list[OrganizeAction]:
         dat_match = str(row["dat_match"])
         target_name = _sanitize_canonical_filename(dat_match)
         if not target_name:
+            logger.debug(
+                "organize.rename: skip empty sanitized name rom_id=%d dat_match=%s",
+                rom_id,
+                dat_match,
+            )
             continue
         if extension and not target_name.lower().endswith(extension.lower()):
             target_name = f"{target_name}{extension}"
         if target_name == current_name:
+            logger.debug(
+                "organize.rename: skip already-canonical rom_id=%d filename=%s",
+                rom_id,
+                current_name,
+            )
             continue
         folder = _normalize_folder(path)
         target_path = _join(folder, target_name)
         if target_path == path:
             continue
+        logger.debug(
+            "organize.rename: planned rom_id=%d from=%s to=%s dat_match=%s",
+            rom_id,
+            current_name,
+            target_name,
+            dat_match,
+        )
         actions.append(
             OrganizeAction(
                 kind=ACTION_RENAME,
@@ -339,7 +356,19 @@ def find_duplicates(conn: sqlite3.Connection) -> list[OrganizeAction]:
         if len(group_rows) < 2:
             continue
         keeper, dupes = _pick_duplicate_keeper(group_rows)
+        logger.debug(
+            "organize.dedup: group sha1=%s keeper=%s dupes=%d",
+            keeper["sha1"],
+            keeper["filename"],
+            len(dupes),
+        )
         for dup in dupes:
+            logger.debug(
+                "organize.dedup: planned delete rom_id=%s path=%s keeper=%s",
+                dup["rom_id"],
+                dup["path"],
+                keeper["filename"],
+            )
             actions.append(
                 OrganizeAction(
                     kind=ACTION_DELETE_DUPLICATE,
@@ -397,10 +426,25 @@ def find_cross_extension_dupes(conn: sqlite3.Connection) -> list[OrganizeAction]
         ranked.sort(key=lambda pair: (pair[0], int(pair[1]["rom_id"])))
         keeper_rank, keeper = ranked[0]
         if keeper_rank >= _UNRANKED_SORT_KEY:
+            logger.debug(
+                "organize.cross_ext: skip group (no ranked extensions) "
+                "game_id=%s exts=%s",
+                keeper["game_id"],
+                sorted(exts),
+            )
             continue
         for rank, dup in ranked[1:]:
             if rank >= _UNRANKED_SORT_KEY:
                 continue
+            logger.debug(
+                "organize.cross_ext: planned delete game_id=%s "
+                "dup_filename=%s dup_ext=%s keeper_filename=%s keeper_ext=%s",
+                dup["game_id"],
+                dup["filename"],
+                dup["extension"],
+                keeper["filename"],
+                keeper["extension"],
+            )
             actions.append(
                 OrganizeAction(
                     kind=ACTION_DELETE_DUPLICATE,
@@ -474,12 +518,25 @@ def analyze_library(conn: sqlite3.Connection) -> OrganizePlan:
     approve/reject individual actions before ``execute_plan`` is invoked.
     """
     actions: list[OrganizeAction] = []
-    actions.extend(find_alias_merges(conn))
-    actions.extend(find_renameable_roms(conn))
-    actions.extend(find_duplicates(conn))
-    actions.extend(find_cross_extension_dupes(conn))
+    merges = find_alias_merges(conn)
+    renames = find_renameable_roms(conn)
+    dupes = find_duplicates(conn)
+    cross_ext = find_cross_extension_dupes(conn)
+    actions.extend(merges)
+    actions.extend(renames)
+    actions.extend(dupes)
+    actions.extend(cross_ext)
     actions = detect_collisions(actions)
-    return OrganizePlan(actions=actions)
+    plan = OrganizePlan(actions=actions)
+    logger.debug(
+        "analyze_library: merges=%d renames=%d dupes=%d cross_ext=%d final=%d",
+        len(merges),
+        len(renames),
+        len(dupes),
+        len(cross_ext),
+        len(plan.actions),
+    )
+    return plan
 
 
 # ---------------------------------------------------------------------------
