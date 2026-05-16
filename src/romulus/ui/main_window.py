@@ -207,6 +207,15 @@ class MainWindow(QMainWindow):
         )
         export_action.triggered.connect(self._on_export)
         tools_menu.addAction(export_action)
+        tools_menu.addSeparator()
+        clean_missing_action = QAction("Clean &Missing Entries...", self)
+        clean_missing_action.setToolTip(
+            "Permanently remove database rows for ROM files that no longer "
+            "exist on disk. Quick Scan flags missing files automatically; this "
+            "action deletes them."
+        )
+        clean_missing_action.triggered.connect(self._on_clean_missing)
+        tools_menu.addAction(clean_missing_action)
 
         help_menu = menu.addMenu("&Help")
         about_action = QAction("&About ROMulus", self)
@@ -282,7 +291,13 @@ class MainWindow(QMainWindow):
         ]
         self.game_table.set_available_collections(user_collections)
         total = self._conn.execute("SELECT COUNT(*) FROM roms").fetchone()[0]
-        self.status_label.setText(f"{total} ROMs")
+        missing = q.count_missing_roms(self._conn)
+        if missing:
+            self.status_label.setText(
+                f"{total} ROMs ({missing} missing — Tools > Clean Missing Entries)"
+            )
+        else:
+            self.status_label.setText(f"{total} ROMs")
         # Reset the detail panel whenever the row set changes.
         self.detail_panel.update_game(None)
 
@@ -358,12 +373,78 @@ class MainWindow(QMainWindow):
         self.refresh_sidebar()
 
     def _on_open_library(self) -> None:
+        from pathlib import Path as _Path
+
         from romulus.app import prompt_for_library_path
 
         chosen = prompt_for_library_path(self)
-        if chosen:
-            set_config(self._conn, "library_path", chosen)
-            self.status_label.setText(f"Library: {chosen}")
+        if not chosen:
+            return
+        # Canonicalize the same way the scanner does so the value we compare
+        # against ``roms.library_root`` matches exactly.
+        try:
+            chosen_canonical = str(_Path(chosen).resolve())
+        except OSError:
+            chosen_canonical = chosen
+
+        stale_count = q.count_roms_with_other_library_root(
+            self._conn, chosen_canonical
+        )
+        if stale_count > 0:
+            choice = QMessageBox.question(
+                self,
+                "Switch library?",
+                f"This will replace your current library with the one at:\n\n"
+                f"{chosen}\n\n"
+                f"{stale_count} ROM entries from previous libraries will be "
+                f"removed from the database. (Files on disk are not touched.)\n\n"
+                f"Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+            q.delete_roms_with_other_library_root(self._conn, chosen_canonical)
+            q.prune_orphan_games(self._conn)
+            self._conn.commit()
+
+        set_config(self._conn, "library_path", chosen)
+        self.status_label.setText(f"Library: {chosen}")
+        # Existing rows for this library may include entries the user hasn't
+        # rescanned recently — leave them in place; the next Quick Scan will
+        # tombstone any that are gone.
+        self.refresh_all()
+
+    def _on_clean_missing(self) -> None:
+        """Permanently delete every row currently flagged ``missing = 1``."""
+        count = q.count_missing_roms(self._conn)
+        if count == 0:
+            QMessageBox.information(
+                self,
+                "No missing entries",
+                "Nothing to clean — every ROM in the database is present on "
+                "disk under the current library root.",
+            )
+            return
+        choice = QMessageBox.question(
+            self,
+            "Clean missing entries?",
+            f"Permanently remove {count} ROM entries that no longer exist on "
+            f"disk?\n\n"
+            f"This drops their enrichment, metadata, and hash cache from the "
+            f"database. Files on disk are not touched. This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if choice != QMessageBox.StandardButton.Yes:
+            return
+        deleted = q.delete_missing_roms(self._conn)
+        pruned = q.prune_orphan_games(self._conn)
+        self._conn.commit()
+        self.status_label.setText(
+            f"Removed {deleted} missing entries ({pruned} games pruned)"
+        )
+        self.refresh_all()
 
     def _on_open_settings(self) -> None:
         dialog = SettingsDialog(self._conn, self)

@@ -76,12 +76,16 @@ SCHEMA_STATEMENTS: list[str] = [
         fuzzy_key        TEXT,
         header_title     TEXT,
         dat_match        TEXT,
-        match_confidence TEXT DEFAULT 'unmatched'
+        match_confidence TEXT DEFAULT 'unmatched',
+        library_root     TEXT,
+        missing          INTEGER NOT NULL DEFAULT 0
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_roms_system ON roms(system_id)",
     "CREATE INDEX IF NOT EXISTS idx_roms_fuzzy ON roms(system_id, fuzzy_key)",
     "CREATE INDEX IF NOT EXISTS idx_roms_game ON roms(game_id)",
+    "CREATE INDEX IF NOT EXISTS idx_roms_library_root ON roms(library_root)",
+    "CREATE INDEX IF NOT EXISTS idx_roms_missing ON roms(missing) WHERE missing = 1",
     # Hash cache (expensive to compute, reused if mtime unchanged)
     """
     CREATE TABLE IF NOT EXISTS hashes (
@@ -316,6 +320,44 @@ def _migrate_covers_add_is_preferred(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
+def _migrate_roms_add_library_root_and_missing(conn: sqlite3.Connection) -> None:
+    """Add ``library_root`` + ``missing`` to roms if absent (backward-compat).
+
+    Both columns ship in :data:`SCHEMA_STATEMENTS` so fresh databases get them
+    via ``CREATE TABLE IF NOT EXISTS``; this helper handles existing v0.1.0 /
+    v0.2.0 databases where the ``roms`` table was created without them.
+
+    Backfill policy: leave existing rows with ``library_root = NULL`` and
+    ``missing = 0``. The next Quick Scan will tag each row it visits with the
+    current library_root and sweep the rest to ``missing = 1``. Rows that
+    aren't under the current library root at all (e.g. legacy entries from an
+    earlier library that the user has since switched away from) stay
+    library_root=NULL, missing=0 until the user explicitly wipes them via the
+    library-change prompt or "Clean missing entries" action.
+    """
+    rows = conn.execute("PRAGMA table_info(roms)").fetchall()
+    existing_columns = {row["name"] for row in rows}
+    changed = False
+    if "library_root" not in existing_columns:
+        conn.execute("ALTER TABLE roms ADD COLUMN library_root TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_roms_library_root "
+            "ON roms(library_root)"
+        )
+        changed = True
+    if "missing" not in existing_columns:
+        conn.execute(
+            "ALTER TABLE roms ADD COLUMN missing INTEGER NOT NULL DEFAULT 0"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_roms_missing "
+            "ON roms(missing) WHERE missing = 1"
+        )
+        changed = True
+    if changed:
+        conn.commit()
+
+
 def create_tables(conn: sqlite3.Connection) -> None:
     """Execute every CREATE TABLE / CREATE INDEX statement in order.
 
@@ -331,3 +373,4 @@ def create_tables(conn: sqlite3.Connection) -> None:
     _migrate_sync_destinations(conn)
     _migrate_dest_inventory(conn)
     _migrate_sync_plans(conn)
+    _migrate_roms_add_library_root_and_missing(conn)

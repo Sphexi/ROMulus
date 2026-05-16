@@ -591,6 +591,7 @@ class ScanResult:
     files_skipped: int
     errors: int
     systems_seen: set[str]
+    files_newly_missing: int = 0
 
 
 def scan_library(
@@ -611,8 +612,29 @@ def scan_library(
     `files_skipped` but NOT as errors.
     """
     library_root = Path(library_path)
+    # Canonicalize once so the value stamped on every row matches the value
+    # the sweep step queries with. ``resolve()`` falls back to the unresolved
+    # path on missing-link errors — Windows drives that aren't currently
+    # mounted will fail to resolve, which is fine; we still want to scan the
+    # path the user gave us.
+    try:
+        library_root_canonical = library_root.resolve()
+    except OSError:
+        library_root_canonical = library_root
+    library_root_str = str(library_root_canonical)
+    logger.debug(
+        "quick scan starting: library_root=%s canonical=%s",
+        library_path,
+        library_root_str,
+    )
+
     alias_map = get_systems_by_alias(conn)
     extensions_by_system = get_extensions_by_system(conn)
+    logger.debug(
+        "quick scan registry: aliases=%d systems=%d",
+        len(alias_map),
+        len(extensions_by_system),
+    )
 
     started_at = datetime.now(UTC).isoformat()
     scan_id = queries.insert_scan_history(
@@ -620,7 +642,7 @@ def scan_library(
         {
             "scan_type": "quick",
             "started_at": started_at,
-            "root_path": str(library_root),
+            "root_path": library_root_str,
         },
     )
 
@@ -629,6 +651,7 @@ def scan_library(
     files_skipped = 0
     errors = 0
     systems_seen: set[str] = set()
+    visited_rom_ids: set[int] = set()
 
     # os.walk defaults to followlinks=False — we deliberately do NOT follow
     # symlinks. This prevents a symlinked subdirectory inside the library
@@ -637,6 +660,12 @@ def scan_library(
         root_path = Path(root)
         # Resolve the system context from the directory tree once per directory.
         system_id = _resolve_system_for_directory(root_path, library_root, alias_map)
+        logger.debug(
+            "scan dir: path=%s system=%s files=%d",
+            root_path,
+            system_id,
+            len(files),
+        )
 
         for filename in files:
             if is_side_file(filename):
@@ -670,8 +699,15 @@ def scan_library(
 
             parsed = parse_filename(filename)
             fuzzy = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
+            logger.debug(
+                "scan enroll: path=%s system=%s fuzzy=%s size=%d",
+                file_path,
+                system_id,
+                fuzzy or "<empty>",
+                stat.st_size,
+            )
 
-            queries.upsert_rom(
+            rom_id = queries.upsert_rom(
                 conn,
                 {
                     "path": str(file_path),
@@ -683,14 +719,33 @@ def scan_library(
                     "scan_id": scan_id,
                     "fuzzy_key": fuzzy,
                     "match_confidence": "fuzzy" if fuzzy else "unmatched",
+                    "library_root": library_root_str,
                 },
             )
+            visited_rom_ids.add(rom_id)
             files_found += 1
             files_with_system += 1
             systems_seen.add(system_id)
             if progress_callback is not None:
                 progress_callback(files_found, filename)
 
+    conn.commit()
+
+    # Tombstone sweep: any row under THIS library_root that we didn't visit is
+    # a file that's gone missing since the last scan (deleted, moved, drive
+    # unmounted). Mark them missing=1 so the UI can show a "N missing entries"
+    # badge and the user can choose to clean them up. Re-scanning after a
+    # reconnect will flip missing back to 0 via upsert_rom's path-keyed UPSERT,
+    # so this is non-destructive.
+    files_newly_missing = queries.mark_missing_under_root(
+        conn, library_root_str, visited_rom_ids
+    )
+    if files_newly_missing:
+        logger.info(
+            "scan flagged %d previously-known files as missing under %s",
+            files_newly_missing,
+            library_root_str,
+        )
     conn.commit()
 
     for system_id in systems_seen:
@@ -709,6 +764,14 @@ def scan_library(
         },
     )
     conn.commit()
+    logger.debug(
+        "quick scan finished: scan_id=%d found=%d skipped=%d errors=%d missing=%d",
+        scan_id,
+        files_found,
+        files_skipped,
+        errors,
+        files_newly_missing,
+    )
 
     return ScanResult(
         scan_id=scan_id,
@@ -717,4 +780,5 @@ def scan_library(
         files_skipped=files_skipped,
         errors=errors,
         systems_seen=systems_seen,
+        files_newly_missing=files_newly_missing,
     )

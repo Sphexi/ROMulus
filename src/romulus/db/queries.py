@@ -64,6 +64,7 @@ class RomUpsertData(TypedDict):
     header_title: NotRequired[str | None]
     dat_match: NotRequired[str | None]
     match_confidence: NotRequired[str]
+    library_root: NotRequired[str | None]
 
 
 class GameUpsertData(TypedDict):
@@ -116,18 +117,32 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
     `match_confidence` is monotonic — a rescan never downgrades a previously
     stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
 
+    Every successful upsert resets ``missing = 0`` — re-scanning a file that
+    was previously marked missing (USB drive reconnected, network share
+    remounted, file moved back) un-tombstones it without losing any prior
+    enrichment work. ``library_root`` is stamped on each upsert so the scan
+    sweep can find rows belonging to the current root.
+
     Required keys: path, filename, extension, size_bytes, mtime, system_id.
-    Optional keys: fuzzy_key, header_title, scan_id, dat_match, match_confidence.
+    Optional keys: fuzzy_key, header_title, scan_id, dat_match,
+    match_confidence, library_root.
     """
     incoming_confidence = rom_data.get("match_confidence", "unmatched")
     incoming_rank = CONFIDENCE_RANK.get(incoming_confidence, 0)
-    cursor = conn.execute(
+    # ``RETURNING id`` makes this work whether the UPSERT takes the INSERT or
+    # UPDATE branch — ``cursor.lastrowid`` can't be trusted for the UPDATE
+    # branch because SQLite's connection-level ``last_insert_rowid`` doesn't
+    # change on UPDATE, so it returns whatever the most recent INSERT id was
+    # in the connection (often the wrong row). Hit it in a multi-row rescan
+    # and ``visited_rom_ids`` collects wrong ids → the scanner's missing
+    # sweep flags healthy files as missing.
+    row = conn.execute(
         f"""
         INSERT INTO roms (
             path, filename, extension, size_bytes, mtime,
             system_id, scan_id, fuzzy_key, header_title,
-            dat_match, match_confidence
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            dat_match, match_confidence, library_root, missing
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(path) DO UPDATE SET
             filename = excluded.filename,
             extension = excluded.extension,
@@ -142,7 +157,10 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
                 WHEN ? >= {_UPSERT_ROM_CONFIDENCE_CASE}
                 THEN excluded.match_confidence
                 ELSE roms.match_confidence
-            END
+            END,
+            library_root = COALESCE(excluded.library_root, roms.library_root),
+            missing = 0
+        RETURNING id
         """,
         (
             rom_data["path"],
@@ -156,14 +174,9 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
             rom_data.get("header_title"),
             rom_data.get("dat_match"),
             incoming_confidence,
+            rom_data.get("library_root"),
             incoming_rank,
         ),
-    )
-    if cursor.lastrowid:
-        return cursor.lastrowid
-    # ON CONFLICT UPDATE: lastrowid is 0; look up by path.
-    row = conn.execute(
-        "SELECT id FROM roms WHERE path = ?", (rom_data["path"],)
     ).fetchone()
     return row["id"]
 
@@ -174,6 +187,121 @@ def get_roms_by_system(conn: sqlite3.Connection, system_id: str) -> list[sqlite3
         "SELECT * FROM roms WHERE system_id = ? ORDER BY filename",
         (system_id,),
     ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Library cleanup — stale entries + library-root change handling
+# ---------------------------------------------------------------------------
+
+
+def mark_missing_under_root(
+    conn: sqlite3.Connection,
+    library_root: str,
+    excluded_rom_ids: set[int] | None = None,
+) -> int:
+    """Flag rows under ``library_root`` not in ``excluded_rom_ids`` as missing.
+
+    Called by the scanner at the end of a Quick Scan: every row visited during
+    the walk is in ``excluded_rom_ids``; everything else under that root is a
+    file that disappeared since the last scan (deleted, moved, drive
+    unmounted) and gets ``missing = 1``. Returns the number of rows newly
+    flagged as missing.
+
+    Tombstoning rather than deleting preserves any enrichment, hash cache, or
+    metadata work attached to the row — a later reconnect / rescan flips
+    ``missing`` back to 0 via :func:`upsert_rom` and the user keeps their
+    data. Use :func:`delete_missing_roms` to actually drop the rows when the
+    user opts into a "Clean missing entries" action.
+    """
+    ids = excluded_rom_ids or set()
+    if ids:
+        placeholders = ",".join("?" for _ in ids)
+        sql = (
+            f"UPDATE roms SET missing = 1 "
+            f"WHERE library_root = ? AND missing = 0 AND id NOT IN ({placeholders})"
+        )
+        params: tuple = (library_root, *ids)
+    else:
+        sql = (
+            "UPDATE roms SET missing = 1 "
+            "WHERE library_root = ? AND missing = 0"
+        )
+        params = (library_root,)
+    cursor = conn.execute(sql, params)
+    return cursor.rowcount
+
+
+def count_missing_roms(conn: sqlite3.Connection) -> int:
+    """Return the total number of roms currently flagged ``missing = 1``."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM roms WHERE missing = 1"
+    ).fetchone()
+    return row["n"] if row else 0
+
+
+def delete_missing_roms(conn: sqlite3.Connection) -> int:
+    """Permanently remove every row flagged ``missing = 1``. Returns count.
+
+    Caller owns the surrounding transaction commit. Cascading cleanup of
+    orphaned ``games`` rows (games whose only roms were just deleted) is
+    handled by :func:`prune_orphan_games`.
+    """
+    cursor = conn.execute("DELETE FROM roms WHERE missing = 1")
+    return cursor.rowcount
+
+
+def count_roms_with_other_library_root(
+    conn: sqlite3.Connection, current_root: str
+) -> int:
+    """Count rows whose ``library_root`` is set but doesn't equal ``current_root``.
+
+    Used by the settings dialog to decide whether to prompt the user to wipe
+    old-library entries when they pick a new library path. NULL roots are
+    ignored — those are legacy rows from before the migration ran, and the
+    user hasn't necessarily switched libraries; they just hadn't scanned yet.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM roms "
+        "WHERE library_root IS NOT NULL AND library_root != ?",
+        (current_root,),
+    ).fetchone()
+    return row["n"] if row else 0
+
+
+def delete_roms_with_other_library_root(
+    conn: sqlite3.Connection, keep_root: str
+) -> int:
+    """Delete every row whose ``library_root`` is set and not equal to ``keep_root``.
+
+    Used when the user confirms a library-root switch with "wipe old entries".
+    NULL roots are NOT touched — those are legacy / pre-migration rows that
+    the user can clean up via a regular scan + missing sweep. Returns the
+    number of rows deleted.
+    """
+    cursor = conn.execute(
+        "DELETE FROM roms "
+        "WHERE library_root IS NOT NULL AND library_root != ?",
+        (keep_root,),
+    )
+    return cursor.rowcount
+
+
+def prune_orphan_games(conn: sqlite3.Connection) -> int:
+    """Delete games that no longer have any roms pointing at them.
+
+    Called after :func:`delete_missing_roms` or
+    :func:`delete_roms_with_other_library_root` so the games table doesn't
+    accumulate dangling rows. Returns the number of games dropped. Metadata
+    and covers are FK-orphaned (no CASCADE in the schema) — that's OK because
+    the next enrichment cycle will recreate them if the game ever comes back,
+    and a stale metadata row without a corresponding game is invisible to
+    the UI.
+    """
+    cursor = conn.execute(
+        "DELETE FROM games "
+        "WHERE id NOT IN (SELECT DISTINCT game_id FROM roms WHERE game_id IS NOT NULL)"
+    )
+    return cursor.rowcount
 
 
 # ---------------------------------------------------------------------------
