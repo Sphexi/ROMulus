@@ -492,11 +492,45 @@ class SyncPreviewDialog(QDialog):
         self._summary_label.setText(
             f"{icon} Done. Applied {applied}, skipped {skipped}, failed {failed}."
         )
+        self._enter_done_state()
 
     def on_failed(self, message: str) -> None:
         self._progress.setRange(0, 1)
         self._progress.setValue(0)
         self._summary_label.setText(f"✗ {message}")
+        self._enter_done_state()
+
+    def _enter_done_state(self) -> None:
+        """Once apply finishes (success or failure), swap the Apply/Cancel
+        button row for a single Close button.
+
+        Without this the user saw "Apply (disabled) / Cancel" after the work
+        had already finished — clicking Cancel after a completed sync read as
+        "cancel what?" and felt buggy. Now the dialog has exactly one
+        action after completion: dismiss.
+        """
+        if getattr(self, "_done_state", False):
+            return
+        self._done_state = True
+        # Hide the Apply button — the work is done, applying again would
+        # double-write. Reconfigure Cancel as Close (accepts the dialog
+        # rather than rejecting, so callers wrapping in exec() see a
+        # successful exit code).
+        if self._apply_btn is not None:
+            self._apply_btn.setVisible(False)
+        if self._cancel_btn is not None:
+            self._cancel_btn.setText("Close")
+            self._cancel_btn.setToolTip("Close this dialog.")
+            # Disconnect the old rejected-path connection (the parent
+            # QDialogButtonBox routes ``rejected`` to ``self.reject``);
+            # wire the button directly to ``accept`` so the post-apply
+            # close exits with a successful status. Qt raises
+            # ``RuntimeError`` when there are no connections — harmless.
+            import contextlib
+
+            with contextlib.suppress(RuntimeError, TypeError):
+                self._cancel_btn.clicked.disconnect()
+            self._cancel_btn.clicked.connect(self.accept)
 
 
 def _format_bytes(value: int | None) -> str:

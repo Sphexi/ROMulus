@@ -459,3 +459,55 @@ class TestPreviewApplyRoundtrip:
         assert len(emitted) == 3
         rel_paths = {a.rel_path for a in emitted}
         assert rel_paths == {"snes/A.sfc", "snes/B.sfc", "snes/C.sfc"}
+
+
+class TestSyncPreviewDoneState:
+    """After apply finishes (success or failure), the dialog must show a
+    single 'Close' button rather than 'Apply (disabled) / Cancel'. The user
+    was clicking Cancel after a completed sync and reading it as 'cancel
+    what?'.
+    """
+
+    def test_on_finished_hides_apply_and_renames_cancel_to_close(
+        self, qapp
+    ) -> None:
+        plan = _plan_with([_add_action()])
+        dialog = SyncPreviewDialog(plan, destination_label="/mnt/x")
+        assert dialog._apply_btn.isVisible() or not dialog.isVisible()
+        dialog.on_finished(applied=1, skipped=0, failed=0)
+        # Apply hidden; Cancel renamed to Close and re-wired to accept().
+        assert not dialog._apply_btn.isVisible()
+        assert dialog._cancel_btn is not None
+        assert dialog._cancel_btn.text() == "Close"
+
+    def test_on_failed_hides_apply_and_renames_cancel_to_close(
+        self, qapp
+    ) -> None:
+        plan = _plan_with([_add_action()])
+        dialog = SyncPreviewDialog(plan, destination_label="/mnt/x")
+        dialog.on_failed("simulated failure")
+        assert not dialog._apply_btn.isVisible()
+        assert dialog._cancel_btn is not None
+        assert dialog._cancel_btn.text() == "Close"
+
+    def test_done_state_is_idempotent(self, qapp) -> None:
+        """Multiple finished/failed callbacks (defensive) don't break the UI."""
+        plan = _plan_with([_add_action()])
+        dialog = SyncPreviewDialog(plan, destination_label="/mnt/x")
+        dialog.on_finished(applied=1, skipped=0, failed=0)
+        dialog.on_finished(applied=1, skipped=0, failed=0)  # double-call
+        dialog.on_failed("late failure")  # mixed-call after finished
+        assert dialog._cancel_btn.text() == "Close"
+
+    def test_close_button_triggers_accept_not_reject(self, qapp) -> None:
+        """In done-state the Close button maps to accept() so callers wrapping
+        exec() see ``QDialog.Accepted``, not ``Rejected`` (which would mean
+        'plan was cancelled')."""
+        plan = _plan_with([_add_action()])
+        dialog = SyncPreviewDialog(plan, destination_label="/mnt/x")
+        dialog.on_finished(applied=1, skipped=0, failed=0)
+        results: list[int] = []
+        dialog.accepted.connect(lambda: results.append(1))
+        dialog.rejected.connect(lambda: results.append(0))
+        dialog._cancel_btn.click()
+        assert results == [1]
