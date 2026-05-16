@@ -964,8 +964,20 @@ def _execute_copy_to_dest(
     target: Path,
     index: _MatchIndex,
     summary: SyncSummary,
+    *,
+    dest_id: int,
 ) -> None:
-    """Copy a local ROM to the destination using ``atomic.atomic_copy``."""
+    """Copy a local ROM to the destination using ``atomic.atomic_copy``.
+
+    ``dest_id`` MUST be the ``sync_destinations.id`` from the plan being
+    applied. Looking it up from ``target`` via ``_dest_id_from_target`` is
+    unsafe because Path stringification can diverge from the value stored
+    when the destination was created (separator normalization, trailing
+    slashes on UNC paths, case folding on Windows). A mismatch returns
+    ``-1`` and the dest_inventory upsert below raises FOREIGN KEY
+    constraint failed on every action. Thread the plan's dest_id through
+    instead.
+    """
     source = Path(action.local_path)
     if not source.exists():
         raise FileNotFoundError(f"source vanished: {source}")
@@ -976,7 +988,11 @@ def _execute_copy_to_dest(
     if action.system_id:
         summary.systems_touched.add(action.system_id)
     # Update the destination inventory cache so re-running the sync without
-    # a re-scan doesn't propose copying the same file again.
+    # a re-scan doesn't propose copying the same file again. Skip the
+    # inventory write entirely for one-shot syncs that never created a
+    # saved destination row — there's nothing to cache against.
+    if dest_id < 0:
+        return
     try:
         stat_result = dest.stat()
     except OSError:
@@ -984,7 +1000,7 @@ def _execute_copy_to_dest(
     q.upsert_dest_inventory(
         conn,
         {
-            "dest_id": _dest_id_from_target(conn, target),
+            "dest_id": dest_id,
             "rel_path": action.rel_path,
             "size_bytes": stat_result.st_size,
             "mtime": stat_result.st_mtime,
@@ -1009,16 +1025,21 @@ def _execute_delete_dest(
     profile: DestinationProfile,
     target: Path,
     summary: SyncSummary,
+    *,
+    dest_id: int,
 ) -> None:
-    """Tombstone-rename then unlink a dest file."""
+    """Tombstone-rename then unlink a dest file.
+
+    ``dest_id`` is the plan's destination id. See :func:`_execute_copy_to_dest`
+    for why we don't recompute it from ``target``.
+    """
     dest = Path(action.dest_path)
     _atomic_delete(dest)
     summary.files_removed_from_dest += 1
     if action.system_id:
         summary.systems_touched.add(action.system_id)
-    q.delete_dest_inventory_row(
-        conn, _dest_id_from_target(conn, target), action.rel_path
-    )
+    if dest_id >= 0:
+        q.delete_dest_inventory_row(conn, dest_id, action.rel_path)
     # Drop the cover that followed this ROM in (best-effort).
     filename = action.rel_path.rsplit("/", 1)[-1]
     if action.system_id:
@@ -1077,6 +1098,8 @@ def _execute_conflict(
     index: _MatchIndex,
     library_path: Path | None,
     summary: SyncSummary,
+    *,
+    dest_id: int,
 ) -> None:
     """Apply a conflict resolution by delegating to the right copy/delete."""
     resolution = action.conflict_resolution
@@ -1100,7 +1123,9 @@ def _execute_conflict(
         # Tombstone the existing dest file first so a crash mid-copy leaves
         # a recoverable state.
         _atomic_delete(Path(action.dest_path))
-        _execute_copy_to_dest(conn, copy_action, profile, target, index, summary)
+        _execute_copy_to_dest(
+            conn, copy_action, profile, target, index, summary, dest_id=dest_id
+        )
         return
     if resolution == CONFLICT_RESOLUTION_DEST:
         # Pull the dest into the local library.
@@ -1182,6 +1207,8 @@ def _rebuild_gamelists(
     profile: DestinationProfile,
     target: Path,
     systems_touched: Iterable[str],
+    *,
+    dest_id: int,
 ) -> int:
     """Regenerate gamelist.xml on the destination per affected system (§2.2).
 
@@ -1202,7 +1229,9 @@ def _rebuild_gamelists(
         # inventory + the local DB. We use the inventory's ``rel_path`` to
         # find files that are actually on dest right now, and join through
         # ``upsert_dest_inventory`` cache hits when available.
-        rows = _gamelist_rows_for_system(conn, profile, target, system_id)
+        rows = _gamelist_rows_for_system(
+            conn, profile, target, system_id, dest_id=dest_id
+        )
         if not rows:
             continue
         try:
@@ -1222,6 +1251,8 @@ def _gamelist_rows_for_system(
     profile: DestinationProfile,
     target: Path,
     system_id: str,
+    *,
+    dest_id: int,
 ) -> list[sqlite3.Row]:
     """Build sqlite3.Row-shaped rows for ``generate_gamelist_xml``."""
     mapping = profile.systems.get(system_id)
@@ -1235,7 +1266,6 @@ def _gamelist_rows_for_system(
     # gamelist gets canonical names + metadata; orphan files get an entry
     # too with name=filename-without-extension as a graceful fallback.
     rows: list[sqlite3.Row] = []
-    dest_id = _dest_id_from_target(conn, target)
     # Re-query each file individually so callers don't need to plumb the
     # inventory in. This is one query per system folder, not per ROM, so the
     # overhead is bounded.
@@ -1344,6 +1374,19 @@ def apply_plan(
     library = Path(library_path) if library_path is not None else None
     summary = SyncSummary()
 
+    # Resolve dest_id ONCE from the plan. The plan was built against a
+    # specific ``sync_destinations`` row and its id is authoritative — do
+    # NOT re-derive it from ``target_path`` mid-apply because Path
+    # stringification can diverge from the value stored at creation time
+    # (UNC trailing slash, separator normalization, case folding) and the
+    # mismatch returns -1, which then trips a FOREIGN KEY constraint on
+    # every dest_inventory upsert. We do still fall back to the path
+    # lookup if the plan has no saved dest_id (legacy plans or one-shot
+    # syncs that bypassed the destination picker).
+    dest_id = plan.dest_id
+    if dest_id < 0:
+        dest_id = _dest_id_from_target(conn, target)
+
     if plan.mode == "push_wipe":
         # Wipe BEFORE the copy phase so push_mirror semantics apply on top
         # of an empty destination. Per spec §2, push_wipe is "fresh wipe +
@@ -1364,14 +1407,20 @@ def apply_plan(
         try:
             conn.execute(f"SAVEPOINT {savepoint}")
             if action.kind == ACTION_COPY_TO_DEST:
-                _execute_copy_to_dest(conn, action, profile, target, index, summary)
+                _execute_copy_to_dest(
+                    conn, action, profile, target, index, summary,
+                    dest_id=dest_id,
+                )
             elif action.kind == ACTION_DELETE_DEST:
-                _execute_delete_dest(conn, action, profile, target, summary)
+                _execute_delete_dest(
+                    conn, action, profile, target, summary, dest_id=dest_id
+                )
             elif action.kind == ACTION_COPY_TO_LOCAL:
                 _execute_copy_to_local(conn, action, library, summary)
             elif action.kind == ACTION_CONFLICT:
                 _execute_conflict(
-                    conn, action, profile, target, index, library, summary
+                    conn, action, profile, target, index, library, summary,
+                    dest_id=dest_id,
                 )
             elif action.kind == ACTION_IDENTICAL:
                 # Identical actions never mutate anything — record + skip.
@@ -1411,7 +1460,9 @@ def apply_plan(
             )
 
     # gamelist.xml gets rebuilt regardless of mode or direction (§2.2).
-    _rebuild_gamelists(conn, profile, target, summary.systems_touched)
+    _rebuild_gamelists(
+        conn, profile, target, summary.systems_touched, dest_id=dest_id
+    )
 
     # Stamp last_synced_at on the saved destination row.
     dest_id = plan.dest_id

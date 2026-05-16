@@ -381,6 +381,117 @@ class TestTier2CrossPlatformGuard:
 
 
 # ---------------------------------------------------------------------------
+# dest_id threading — apply must use plan.dest_id, not a target_path lookup
+# ---------------------------------------------------------------------------
+
+
+class TestApplyUsesPlanDestId:
+    """Regression: dest_inventory upserts must not depend on Path-string equality.
+
+    User report (2026-05-16 14:08): ~2000 ``WARNING sync action failed:
+    kind=copy_to_dest err=FOREIGN KEY constraint failed`` entries in
+    logs/romulus.log during a real push_merge sync. Root cause was the
+    apply step re-deriving ``dest_id`` from ``str(target_path)`` via
+    ``sync_destinations.target_path`` lookup. When the stored path and
+    the apply-time string don't match exactly (trailing slash, separator
+    canonicalization, UNC normalization), the lookup returned -1 and
+    every subsequent ``upsert_dest_inventory`` failed the dest_id FK.
+
+    The fix threads ``plan.dest_id`` (authoritative — set when the plan
+    was built) through to ``_execute_copy_to_dest`` /
+    ``_execute_delete_dest`` / ``_rebuild_gamelists``.
+    """
+
+    def test_apply_succeeds_when_stored_target_path_differs_from_apply_path(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        target.mkdir()
+        profile = _minimal_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="snes", filename="Game.sfc"
+        )
+        # Insert the sync_destinations row with a target_path that won't
+        # equal ``str(target)`` byte-for-byte. Adding a trailing separator
+        # is the easiest way to simulate the user's UNC mismatch.
+        stored_target_str = str(target) + "/"
+        dest_id = q.insert_sync_destination(
+            seeded_db,
+            {
+                "name": "Mismatched",
+                "target_path": stored_target_str,
+                "profile_id": "test",
+            },
+        )
+        # Sanity: the path-string lookup should NOT find the row.
+        from romulus.core.sync import _dest_id_from_target
+
+        assert _dest_id_from_target(seeded_db, target) == -1, (
+            "test setup must ensure str(target) != stored target_path"
+        )
+
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_merge"
+        )
+        # Pre-fix: every copy_to_dest action raised FK constraint failed
+        # during apply because _dest_id_from_target returned -1.
+        summary = apply_plan(seeded_db, plan, profile, target)
+        assert summary.failed == 0, (
+            f"apply must not fail on path-mismatch — got errors: "
+            f"{summary.errors}"
+        )
+        assert summary.applied >= 1
+        # The dest_inventory row should have been written under the
+        # correct dest_id, not -1.
+        inv_row = seeded_db.execute(
+            "SELECT * FROM dest_inventory WHERE dest_id = ? AND rel_path = ?",
+            (dest_id, "roms/snes/Game.sfc"),
+        ).fetchone()
+        assert inv_row is not None
+
+    def test_apply_skips_inventory_when_plan_has_no_saved_dest(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """One-shot syncs (dest_id=-1) skip the inventory upsert silently.
+
+        File copy succeeds, no FK error raised — there's just no cache row
+        because there's no destination to anchor against.
+        """
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        target.mkdir()
+        profile = _minimal_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="snes", filename="Game.sfc"
+        )
+        # NO sync_destinations row — simulate a one-shot.
+        from romulus.core.sync import SyncPlan
+        from romulus.core.sync import build_plan as build
+
+        inv = scan_destination(seeded_db, -1, target)
+        plan = build(seeded_db, -1, profile, target, inv, "push_merge")
+        assert isinstance(plan, SyncPlan)
+        assert plan.dest_id == -1
+
+        summary = apply_plan(seeded_db, plan, profile, target)
+        assert summary.failed == 0
+        assert summary.applied >= 1
+        # File was actually copied.
+        assert (target / "roms" / "snes" / "Game.sfc").exists()
+        # No inventory row was written (because there's no destination).
+        rows = seeded_db.execute(
+            "SELECT COUNT(*) AS n FROM dest_inventory"
+        ).fetchone()
+        assert rows["n"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Push wipe — wipe then push
 # ---------------------------------------------------------------------------
 
