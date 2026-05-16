@@ -303,6 +303,126 @@ class TestCleanMissing:
         pruned = q.prune_orphan_games(seeded_db)
         assert pruned == 0
 
+    def test_delete_missing_drops_dependent_hashes(
+        self, seeded_db, tmp_path
+    ):
+        """Regression: deleting a missing rom with a hashes row must NOT crash
+        on the FK constraint. ``hashes.rom_id REFERENCES roms(id)`` is enforced
+        connection-wide via ``PRAGMA foreign_keys = ON``.
+        """
+        rom = _make_rom(tmp_path, "snes", "Hashed.sfc")
+        scan_library(seeded_db, tmp_path)
+        rom_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Hashed.sfc'"
+        ).fetchone()["id"]
+        # Simulate a Heavy Scan having hashed this file.
+        seeded_db.execute(
+            "INSERT INTO hashes (rom_id, sha1, crc32, hashed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (rom_id, "0" * 40, "deadbeef", 0.0),
+        )
+        seeded_db.commit()
+
+        rom.unlink()
+        scan_library(seeded_db, tmp_path)
+        deleted = q.delete_missing_roms(seeded_db)
+        seeded_db.commit()
+
+        assert deleted == 1
+        remaining_hash = seeded_db.execute(
+            "SELECT COUNT(*) AS n FROM hashes WHERE rom_id = ?", (rom_id,)
+        ).fetchone()
+        assert remaining_hash["n"] == 0
+
+    def test_delete_missing_drops_dependent_dest_inventory(
+        self, seeded_db, tmp_path
+    ):
+        """Same FK guard, but for ``dest_inventory.rom_id``.
+
+        Triggered when a user has synced a library to a destination, deleted
+        ROM files from disk, scanned (tombstoning the rows), and then runs
+        Clean Missing — the dest_inventory rows reference the missing roms
+        and would block the delete without the dependent-cleanup step.
+        """
+        rom = _make_rom(tmp_path, "snes", "Synced.sfc")
+        scan_library(seeded_db, tmp_path)
+        rom_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Synced.sfc'"
+        ).fetchone()["id"]
+        # Create a sync destination and an inventory entry pointing at this rom.
+        seeded_db.execute(
+            "INSERT INTO sync_destinations "
+            "(name, target_path, profile_id, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("test-dest", "/some/dest", "batocera", "2026-01-01"),
+        )
+        dest_id = seeded_db.execute(
+            "SELECT id FROM sync_destinations WHERE name = 'test-dest'"
+        ).fetchone()["id"]
+        seeded_db.execute(
+            "INSERT INTO dest_inventory "
+            "(dest_id, rel_path, size_bytes, mtime, rom_id, last_seen_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (dest_id, "snes/Synced.sfc", 1024, 0.0, rom_id, "2026-01-01"),
+        )
+        seeded_db.commit()
+
+        rom.unlink()
+        scan_library(seeded_db, tmp_path)
+        # Pre-fix this would raise sqlite3.IntegrityError: FOREIGN KEY
+        # constraint failed.
+        deleted = q.delete_missing_roms(seeded_db)
+        seeded_db.commit()
+
+        assert deleted == 1
+        remaining_inv = seeded_db.execute(
+            "SELECT COUNT(*) AS n FROM dest_inventory WHERE rom_id = ?",
+            (rom_id,),
+        ).fetchone()
+        assert remaining_inv["n"] == 0
+
+    def test_delete_roms_with_other_root_drops_dependents(
+        self, seeded_db, tmp_path
+    ):
+        """The library-switch wipe must also clear FK-dependent rows."""
+        lib_a = tmp_path / "library_a"
+        lib_b = tmp_path / "library_b"
+        _make_rom(lib_a, "snes", "Keeper.sfc")
+        _make_rom(lib_b, "snes", "Dropped.sfc")
+        scan_library(seeded_db, lib_a)
+        scan_library(seeded_db, lib_b)
+        dropped_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Dropped.sfc'"
+        ).fetchone()["id"]
+        seeded_db.execute(
+            "INSERT INTO hashes (rom_id, sha1, crc32, hashed_at) "
+            "VALUES (?, ?, ?, ?)",
+            (dropped_id, "1" * 40, "cafef00d", 0.0),
+        )
+        seeded_db.commit()
+
+        # Re-scan A so the active library_root is A's path.
+        scan_library(seeded_db, lib_a)
+        q.delete_roms_with_other_library_root(
+            seeded_db, str(lib_a.resolve())
+        )
+        seeded_db.commit()
+
+        # Dropped row and its hash both gone.
+        assert (
+            seeded_db.execute(
+                "SELECT COUNT(*) AS n FROM roms WHERE filename = 'Dropped.sfc'"
+            ).fetchone()["n"]
+            == 0
+        )
+        assert (
+            seeded_db.execute(
+                "SELECT COUNT(*) AS n FROM hashes WHERE rom_id = ?",
+                (dropped_id,),
+            ).fetchone()["n"]
+            == 0
+        )
+
 
 # ---------------------------------------------------------------------------
 # Schema migration

@@ -252,9 +252,50 @@ def delete_missing_roms(conn: sqlite3.Connection) -> int:
     Caller owns the surrounding transaction commit. Cascading cleanup of
     orphaned ``games`` rows (games whose only roms were just deleted) is
     handled by :func:`prune_orphan_games`.
+
+    FK-dependent rows in ``hashes`` and ``dest_inventory`` are deleted
+    BEFORE the rom rows themselves — neither table declares
+    ``ON DELETE CASCADE`` (would require a table-recreate migration to
+    add) and ``PRAGMA foreign_keys = ON`` is enabled connection-wide, so
+    a plain DELETE on roms with dependent hashes/inventory entries would
+    raise ``IntegrityError: FOREIGN KEY constraint failed``.
     """
+    rom_ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM roms WHERE missing = 1"
+        ).fetchall()
+    ]
+    if not rom_ids:
+        return 0
+    _delete_rom_dependents(conn, rom_ids)
     cursor = conn.execute("DELETE FROM roms WHERE missing = 1")
     return cursor.rowcount
+
+
+def _delete_rom_dependents(
+    conn: sqlite3.Connection, rom_ids: list[int]
+) -> None:
+    """Drop ``hashes`` and ``dest_inventory`` rows referencing ``rom_ids``.
+
+    Internal helper used by every ``delete_*`` query that removes rom
+    rows. Splits the work into chunks of 500 ids so a very large clean
+    (e.g. the user switching libraries with tens of thousands of stale
+    entries) doesn't hit SQLite's parameter-count limit (default 999).
+    """
+    if not rom_ids:
+        return
+    chunk_size = 500
+    for start in range(0, len(rom_ids), chunk_size):
+        chunk = rom_ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        conn.execute(
+            f"DELETE FROM hashes WHERE rom_id IN ({placeholders})", chunk
+        )
+        conn.execute(
+            f"DELETE FROM dest_inventory WHERE rom_id IN ({placeholders})",
+            chunk,
+        )
 
 
 def count_roms_with_other_library_root(
@@ -299,6 +340,16 @@ def delete_roms_with_other_library_root(
     """
     if not keep_root:
         raise ValueError("keep_root must be a non-empty path")
+    rom_ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM roms WHERE library_root IS NULL OR library_root != ?",
+            (keep_root,),
+        ).fetchall()
+    ]
+    if not rom_ids:
+        return 0
+    _delete_rom_dependents(conn, rom_ids)
     cursor = conn.execute(
         "DELETE FROM roms WHERE library_root IS NULL OR library_root != ?",
         (keep_root,),
