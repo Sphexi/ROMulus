@@ -28,6 +28,7 @@ from PySide6.QtCore import QThread, Signal
 
 from romulus.core import scan_library
 from romulus.core.dat_parser import load_all_dats, match_hashes
+from romulus.core.dest_inventory import DestInventory, scan_destination
 from romulus.core.exporter import (
     ExportFilters,
     ExportOptions,
@@ -37,6 +38,13 @@ from romulus.core.exporter import (
 from romulus.core.hasher import hash_library
 from romulus.core.local_cover_finder import DiscoveryResult, discover_local_covers
 from romulus.core.organizer import OrganizeAction, OrganizeSummary, execute_plan
+from romulus.core.sync import (
+    SyncAction,
+    SyncPlan,
+    SyncSummary,
+    apply_plan,
+    persist_plan,
+)
 from romulus.db import get_connection
 from romulus.metadata import enrich_library
 from romulus.models.profile import DestinationProfile
@@ -367,6 +375,115 @@ class LocalCoverFinderWorker(_DbWorker):
             result.covers_found,
             result.covers_skipped_existing,
             result.errors,
+        )
+
+
+class DestInventoryWorker(_DbWorker):
+    """Walk a destination, refresh ``dest_inventory``, return a :class:`DestInventory`.
+
+    Mirrors the existing worker contract: thread-local sqlite3 connection,
+    ``progress(current, total, label)`` ticks, ``finished_ok(...)`` on
+    success, ``failed(msg)`` on exception or cancel. The signature drift
+    detection in :func:`romulus.core.dest_inventory.scan_destination` runs
+    automatically — the worker doesn't need to wire it explicitly.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(object)
+
+    _operation_name = "Destination scan"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        dest_id: int,
+        target_path: Path | str,
+        *,
+        deep_verify: bool = False,
+    ) -> None:
+        super().__init__(db_path)
+        self._dest_id = dest_id
+        self._target_path = str(target_path)
+        self._deep_verify = deep_verify
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, label: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, label)
+
+        inventory: DestInventory = scan_destination(
+            conn,
+            self._dest_id,
+            self._target_path,
+            deep_verify=self._deep_verify,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(inventory)
+
+
+class SyncWorker(_DbWorker):
+    """Build a plan, persist it, apply it, emit per-action progress.
+
+    The worker takes the same parameters the diff engine needs (mode,
+    profile, target, inventory) plus the user-approved action list — the
+    preview dialog filters out unchecked actions before signalling.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int, int, list)
+
+    _operation_name = "Sync"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        dest_id: int,
+        profile: DestinationProfile,
+        target_path: Path | str,
+        plan: SyncPlan,
+        approved_actions: list[SyncAction],
+        *,
+        library_path: Path | str | None = None,
+    ) -> None:
+        super().__init__(db_path)
+        self._dest_id = dest_id
+        self._profile = profile
+        self._target_path = str(target_path)
+        self._plan = plan
+        self._approved_actions = list(approved_actions)
+        self._library_path = (
+            str(library_path) if library_path is not None else None
+        )
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        # Persist the plan up-front so a crash mid-sync leaves an audit trail.
+        # Build a plan-shaped copy that contains only the approved actions —
+        # the preview dropped anything the user unchecked.
+        filtered = SyncPlan(
+            dest_id=self._plan.dest_id,
+            mode=self._plan.mode,
+            actions=list(self._approved_actions),
+            conflict_policy=self._plan.conflict_policy,
+        )
+        persist_plan(conn, filtered, status="pending")
+
+        def _progress(current: int, total: int, label: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, label)
+
+        summary: SyncSummary = apply_plan(
+            conn,
+            filtered,
+            self._profile,
+            self._target_path,
+            library_path=self._library_path,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(
+            summary.applied,
+            summary.skipped,
+            summary.failed,
+            list(summary.errors),
         )
 
 

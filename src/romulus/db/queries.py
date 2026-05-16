@@ -990,6 +990,352 @@ def datetime_now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Sync destinations
+# ---------------------------------------------------------------------------
+
+
+class SyncDestinationData(TypedDict):
+    """Shape accepted by :func:`insert_sync_destination`."""
+
+    name: str
+    target_path: str
+    profile_id: str
+
+
+def insert_sync_destination(
+    conn: sqlite3.Connection, data: SyncDestinationData
+) -> int:
+    """Create a saved sync destination row and return its id.
+
+    Caller is responsible for committing the surrounding transaction. Raises
+    ``sqlite3.IntegrityError`` if a destination with the same ``name`` already
+    exists (the name has a UNIQUE constraint per spec §4.1).
+    """
+    cursor = conn.execute(
+        """
+        INSERT INTO sync_destinations (
+            name, target_path, profile_id, created_at
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (
+            data["name"],
+            data["target_path"],
+            data["profile_id"],
+            datetime_now_iso(),
+        ),
+    )
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into sync_destinations did not produce a lastrowid"
+    return new_id
+
+
+def update_sync_destination(
+    conn: sqlite3.Connection,
+    dest_id: int,
+    *,
+    name: str | None = None,
+    target_path: str | None = None,
+    profile_id: str | None = None,
+) -> None:
+    """Edit a saved destination — used by the "Edit destination" UI flow.
+
+    Any field left as ``None`` is preserved. ``last_inventory_signature`` is
+    NOT settable here — that flows through :func:`set_sync_dest_signature`.
+    """
+    fields: list[str] = []
+    values: list[object] = []
+    if name is not None:
+        fields.append("name = ?")
+        values.append(name)
+    if target_path is not None:
+        fields.append("target_path = ?")
+        values.append(target_path)
+    if profile_id is not None:
+        fields.append("profile_id = ?")
+        values.append(profile_id)
+    if not fields:
+        return
+    values.append(dest_id)
+    conn.execute(
+        f"UPDATE sync_destinations SET {', '.join(fields)} WHERE id = ?",
+        values,
+    )
+
+
+def delete_sync_destination(conn: sqlite3.Connection, dest_id: int) -> None:
+    """Remove a saved destination AND its cached inventory rows."""
+    conn.execute("DELETE FROM dest_inventory WHERE dest_id = ?", (dest_id,))
+    conn.execute("DELETE FROM sync_destinations WHERE id = ?", (dest_id,))
+
+
+def get_sync_destinations(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return every saved destination, ordered by name (case-insensitive)."""
+    return conn.execute(
+        "SELECT * FROM sync_destinations ORDER BY LOWER(name)"
+    ).fetchall()
+
+
+def get_sync_destination(
+    conn: sqlite3.Connection, dest_id: int
+) -> sqlite3.Row | None:
+    """Return a single sync_destinations row, or None if it does not exist."""
+    return conn.execute(
+        "SELECT * FROM sync_destinations WHERE id = ?", (dest_id,)
+    ).fetchone()
+
+
+def get_sync_destination_by_name(
+    conn: sqlite3.Connection, name: str
+) -> sqlite3.Row | None:
+    """Return a destination by name, or None."""
+    return conn.execute(
+        "SELECT * FROM sync_destinations WHERE name = ?", (name,)
+    ).fetchone()
+
+
+def set_sync_dest_signature(
+    conn: sqlite3.Connection, dest_id: int, signature: str | None
+) -> None:
+    """Stamp / clear the inventory signature for swap-the-SD detection (§4.5)."""
+    conn.execute(
+        "UPDATE sync_destinations SET last_inventory_signature = ? WHERE id = ?",
+        (signature, dest_id),
+    )
+
+
+def set_sync_dest_last_synced(
+    conn: sqlite3.Connection, dest_id: int, timestamp: str | None = None
+) -> None:
+    """Stamp ``last_synced_at`` after a successful sync apply."""
+    conn.execute(
+        "UPDATE sync_destinations SET last_synced_at = ? WHERE id = ?",
+        (timestamp if timestamp is not None else datetime_now_iso(), dest_id),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Destination inventory cache
+# ---------------------------------------------------------------------------
+
+
+class DestInventoryUpsert(TypedDict):
+    """Shape accepted by :func:`upsert_dest_inventory`."""
+
+    dest_id: int
+    rel_path: str
+    size_bytes: int
+    mtime: float
+    sha1: NotRequired[str | None]
+    rom_id: NotRequired[int | None]
+    game_id: NotRequired[int | None]
+
+
+def upsert_dest_inventory(
+    conn: sqlite3.Connection, row: DestInventoryUpsert
+) -> None:
+    """Insert or update a cached destination-inventory row.
+
+    Caller commits the surrounding transaction. Existing SHA-1 / rom_id / game_id
+    values are preserved when the new payload supplies ``None``, so a Quick
+    Sync pass doesn't clobber a previous Deep Verify's cached hash.
+    """
+    conn.execute(
+        """
+        INSERT INTO dest_inventory (
+            dest_id, rel_path, size_bytes, mtime, sha1, rom_id, game_id, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(dest_id, rel_path) DO UPDATE SET
+            size_bytes   = excluded.size_bytes,
+            mtime        = excluded.mtime,
+            sha1         = COALESCE(excluded.sha1, dest_inventory.sha1),
+            rom_id       = COALESCE(excluded.rom_id, dest_inventory.rom_id),
+            game_id      = COALESCE(excluded.game_id, dest_inventory.game_id),
+            last_seen_at = excluded.last_seen_at
+        """,
+        (
+            row["dest_id"],
+            row["rel_path"],
+            row["size_bytes"],
+            row["mtime"],
+            row.get("sha1"),
+            row.get("rom_id"),
+            row.get("game_id"),
+            datetime_now_iso(),
+        ),
+    )
+
+
+def get_dest_inventory(
+    conn: sqlite3.Connection, dest_id: int
+) -> list[sqlite3.Row]:
+    """Return every cached inventory row for a destination."""
+    return conn.execute(
+        "SELECT * FROM dest_inventory WHERE dest_id = ? ORDER BY rel_path",
+        (dest_id,),
+    ).fetchall()
+
+
+def get_dest_inventory_row(
+    conn: sqlite3.Connection, dest_id: int, rel_path: str
+) -> sqlite3.Row | None:
+    """Look up a single cached inventory row by (dest_id, rel_path)."""
+    return conn.execute(
+        "SELECT * FROM dest_inventory WHERE dest_id = ? AND rel_path = ?",
+        (dest_id, rel_path),
+    ).fetchone()
+
+
+def clear_dest_inventory(conn: sqlite3.Connection, dest_id: int) -> None:
+    """Forget every cached inventory row for a destination ("Forget cache")."""
+    conn.execute("DELETE FROM dest_inventory WHERE dest_id = ?", (dest_id,))
+    conn.execute(
+        "UPDATE sync_destinations SET last_inventory_signature = NULL WHERE id = ?",
+        (dest_id,),
+    )
+
+
+def delete_dest_inventory_row(
+    conn: sqlite3.Connection, dest_id: int, rel_path: str
+) -> None:
+    """Remove a single cached inventory row (file is gone from destination)."""
+    conn.execute(
+        "DELETE FROM dest_inventory WHERE dest_id = ? AND rel_path = ?",
+        (dest_id, rel_path),
+    )
+
+
+def prune_dest_inventory_missing(
+    conn: sqlite3.Connection, dest_id: int, present_rel_paths: list[str]
+) -> int:
+    """Remove cached rows whose files are no longer present on disk.
+
+    ``present_rel_paths`` is the post-scan list of every file the walker
+    observed. Anything in the cache but not in this list is deleted. Returns
+    the row-count of pruned entries.
+    """
+    if not present_rel_paths:
+        cursor = conn.execute(
+            "DELETE FROM dest_inventory WHERE dest_id = ?", (dest_id,)
+        )
+        return cursor.rowcount
+    # ``DELETE … WHERE rel_path NOT IN (…)`` with many placeholders can blow
+    # past SQLite's compile-time limit. Stage the present set in a temporary
+    # table so the DELETE stays compact regardless of inventory size.
+    conn.execute("DROP TABLE IF EXISTS _sync_present_paths")
+    conn.execute("CREATE TEMP TABLE _sync_present_paths (rel_path TEXT PRIMARY KEY)")
+    conn.executemany(
+        "INSERT OR IGNORE INTO _sync_present_paths (rel_path) VALUES (?)",
+        [(p,) for p in present_rel_paths],
+    )
+    cursor = conn.execute(
+        """
+        DELETE FROM dest_inventory
+        WHERE dest_id = ?
+          AND rel_path NOT IN (SELECT rel_path FROM _sync_present_paths)
+        """,
+        (dest_id,),
+    )
+    pruned = cursor.rowcount
+    conn.execute("DROP TABLE IF EXISTS _sync_present_paths")
+    return pruned
+
+
+# ---------------------------------------------------------------------------
+# Sync plans
+# ---------------------------------------------------------------------------
+
+
+def insert_sync_plan(
+    conn: sqlite3.Connection,
+    dest_id: int,
+    mode: str,
+    summary_json: str,
+    plan_json: str,
+    status: str = "pending",
+) -> int:
+    """Persist a sync plan and return its id. Mirrors ``insert_organize_plan``."""
+    cursor = conn.execute(
+        """
+        INSERT INTO sync_plans (dest_id, mode, created_at, status, summary, plan_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            dest_id,
+            mode,
+            datetime_now_iso(),
+            status,
+            summary_json,
+            plan_json,
+        ),
+    )
+    conn.commit()
+    new_id = cursor.lastrowid
+    assert new_id is not None, "INSERT into sync_plans did not produce a lastrowid"
+    return new_id
+
+
+def update_sync_plan_status(
+    conn: sqlite3.Connection, plan_id: int, status: str
+) -> None:
+    """Stamp a sync plan with its terminal status (applied/cancelled/partial)."""
+    conn.execute(
+        "UPDATE sync_plans SET status = ? WHERE id = ?", (status, plan_id)
+    )
+    conn.commit()
+
+
+def get_sync_plan(
+    conn: sqlite3.Connection, plan_id: int
+) -> sqlite3.Row | None:
+    """Return a sync plan row by id, or None."""
+    return conn.execute(
+        "SELECT * FROM sync_plans WHERE id = ?", (plan_id,)
+    ).fetchone()
+
+
+def get_sync_plans_for_dest(
+    conn: sqlite3.Connection, dest_id: int
+) -> list[sqlite3.Row]:
+    """Return every persisted sync plan for a destination, newest first."""
+    return conn.execute(
+        "SELECT * FROM sync_plans WHERE dest_id = ? ORDER BY id DESC",
+        (dest_id,),
+    ).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Identity-match lookups used by core.sync
+# ---------------------------------------------------------------------------
+
+
+def get_local_roms_for_match(
+    conn: sqlite3.Connection,
+) -> list[sqlite3.Row]:
+    """Return every local ROM with the columns sync's identity matcher needs.
+
+    Joins ``roms`` against ``games`` and ``hashes`` so a single pass over the
+    DB hydrates all four tiers of identity matching (§3): path equivalence,
+    fuzzy_key + region, hash-by-name, and deep-verify by SHA-1.
+    """
+    return conn.execute(
+        """
+        SELECT r.id          AS rom_id,
+               r.path        AS path,
+               r.filename    AS filename,
+               r.system_id   AS system_id,
+               r.size_bytes  AS size_bytes,
+               r.fuzzy_key   AS fuzzy_key,
+               r.game_id     AS game_id,
+               COALESCE(g.region, '') AS region,
+               h.sha1        AS sha1
+        FROM roms r
+        LEFT JOIN games  g ON g.id = r.game_id
+        LEFT JOIN hashes h ON h.rom_id = r.id
+        """
+    ).fetchall()
+
+
+# ---------------------------------------------------------------------------
 # Enrichment-status query (used by the game table's enrichment filter)
 # ---------------------------------------------------------------------------
 

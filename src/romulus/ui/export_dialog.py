@@ -43,6 +43,7 @@ from romulus.core.exporter import (
     ExportOptions,
     preview_export,
 )
+from romulus.core.sync import ConflictPolicy, SyncMode
 from romulus.db import queries as q
 from romulus.models.profile import DestinationProfile
 from romulus.models.system import SYSTEM_REGISTRY
@@ -51,6 +52,17 @@ from romulus.models.system import SYSTEM_REGISTRY
 #: is a catch-all that matches games whose region is NULL or anything not
 #: explicitly listed.
 _REGION_OPTIONS: tuple[str, ...] = ("USA", "Europe", "Japan", "World", "Other")
+
+#: Mode dropdown entries — ordered to match the spec's mock-up. Each tuple
+#: is ``(label, mode_id)``; the mode_id values match :data:`romulus.core.
+#: sync.SyncMode`.
+_SYNC_MODE_CHOICES: tuple[tuple[str, str], ...] = (
+    ("Push — merge", "push_merge"),
+    ("Push — mirror", "push_mirror"),
+    ("Push — fresh wipe", "push_wipe"),
+    ("Pull — merge", "pull"),
+    ("Two-way", "two_way"),
+)
 
 
 # ``_format_bytes`` used to be a near-duplicate of ``_format_size`` in
@@ -67,6 +79,12 @@ class ExportDialog(QDialog):
     #: ``(profile, target_path, filters, options)``.
     export_requested = Signal(object, str, object, object)
 
+    #: Emitted when the user clicks "Scan destination" — MainWindow spawns
+    #: the :class:`DestInventoryWorker`. Carries ``(profile, target_path,
+    #: mode, deep_verify)`` plus the selected destination id (or ``-1`` for
+    #: a one-shot pick that hasn't been saved yet).
+    sync_scan_requested = Signal(object, str, str, bool, int)
+
     def __init__(
         self,
         conn: sqlite3.Connection,
@@ -74,16 +92,33 @@ class ExportDialog(QDialog):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Export Collection")
+        self.setWindowTitle("Export / Sync Collection")
         self.setModal(True)
-        self.resize(720, 720)
+        self.resize(720, 760)
         self._conn = conn
         self._profiles = profiles
 
         layout = QVBoxLayout(self)
 
-        # ---- Profile + target path ------------------------------------
+        # ---- Mode selector + saved destinations ----------------------
         form = QFormLayout()
+        self._mode_combo = QComboBox(self)
+        for label, value in _SYNC_MODE_CHOICES:
+            self._mode_combo.addItem(label, value)
+        form.addRow("Mode:", self._mode_combo)
+
+        self._destination_combo = QComboBox(self)
+        self._destination_combo.addItem("(one-shot export — not saved)", -1)
+        for row in q.get_sync_destinations(conn):
+            self._destination_combo.addItem(
+                f"{row['name']} → {row['target_path']}", int(row["id"])
+            )
+        self._destination_combo.currentIndexChanged.connect(
+            self._on_destination_changed
+        )
+        form.addRow("Destination:", self._destination_combo)
+
+        # ---- Profile + target path ------------------------------------
         self._profile_combo = QComboBox(self)
         for profile_id, profile in sorted(profiles.items()):
             self._profile_combo.addItem(profile.name, profile_id)
@@ -151,6 +186,12 @@ class ExportDialog(QDialog):
         )
         self._generate_m3u_cb.setChecked(True)
         options_layout.addWidget(self._generate_m3u_cb)
+        self._deep_verify_cb = QCheckBox(
+            "Deep verify (slow — recomputes SHA-1 for every dest file)",
+            options_group,
+        )
+        self._deep_verify_cb.setChecked(False)
+        options_layout.addWidget(self._deep_verify_cb)
         layout.addWidget(options_group)
 
         # ---- Preview output -------------------------------------------
@@ -176,6 +217,10 @@ class ExportDialog(QDialog):
             "Preview", QDialogButtonBox.ButtonRole.ActionRole
         )
         self._preview_btn.clicked.connect(self._on_preview)
+        self._scan_dest_btn = button_box.addButton(
+            "Scan destination", QDialogButtonBox.ButtonRole.ActionRole
+        )
+        self._scan_dest_btn.clicked.connect(self._on_scan_destination)
         self._export_btn = button_box.addButton(
             "Export", QDialogButtonBox.ButtonRole.AcceptRole
         )
@@ -236,6 +281,23 @@ class ExportDialog(QDialog):
             generate_m3u=self._generate_m3u_cb.isChecked(),
         )
 
+    def selected_sync_mode(self) -> SyncMode:
+        """The currently-selected sync mode from the Mode dropdown."""
+        value = self._mode_combo.currentData()
+        return str(value) if value else "push_merge"  # type: ignore[return-value]
+
+    def selected_destination_id(self) -> int:
+        """Saved-destination id (or ``-1`` for the one-shot entry)."""
+        data = self._destination_combo.currentData()
+        return int(data) if isinstance(data, int) else -1
+
+    def deep_verify_enabled(self) -> bool:
+        return self._deep_verify_cb.isChecked()
+
+    def selected_conflict_policy(self) -> ConflictPolicy:
+        """Two-way's policy lives on the preview dialog. Default to skip."""
+        return "skip"
+
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
@@ -246,6 +308,39 @@ class ExportDialog(QDialog):
         )
         if chosen:
             self._target_edit.setText(chosen)
+
+    def _on_destination_changed(self, _index: int) -> None:
+        """When the user picks a saved destination, pre-fill the path + profile."""
+        dest_id = self.selected_destination_id()
+        if dest_id <= 0:
+            return
+        row = q.get_sync_destination(self._conn, dest_id)
+        if row is None:
+            return
+        self._target_edit.setText(str(row["target_path"]))
+        # Select the destination's saved profile if it exists in the dropdown.
+        profile_id = str(row["profile_id"])
+        for idx in range(self._profile_combo.count()):
+            if self._profile_combo.itemData(idx) == profile_id:
+                self._profile_combo.setCurrentIndex(idx)
+                break
+
+    def _on_scan_destination(self) -> None:
+        """Emit :pyattr:`sync_scan_requested` for MainWindow to spawn the worker."""
+        profile = self.selected_profile()
+        target = self.selected_target_path()
+        if profile is None or not target:
+            self._status_label.setText(
+                "Select a destination profile and target path first."
+            )
+            return
+        self.sync_scan_requested.emit(
+            profile,
+            target,
+            self.selected_sync_mode(),
+            self.deep_verify_enabled(),
+            self.selected_destination_id(),
+        )
 
     def _on_preview(self) -> None:
         profile = self.selected_profile()

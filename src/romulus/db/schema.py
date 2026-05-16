@@ -165,7 +165,124 @@ SCHEMA_STATEMENTS: list[str] = [
         plan_json  TEXT NOT NULL
     )
     """,
+    # Destination sync — saved targets the user can re-pick (§4.1).
+    """
+    CREATE TABLE IF NOT EXISTS sync_destinations (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        name                     TEXT NOT NULL UNIQUE,
+        target_path              TEXT NOT NULL,
+        profile_id               TEXT NOT NULL,
+        last_synced_at           TEXT,
+        created_at               TEXT NOT NULL,
+        last_inventory_signature TEXT
+    )
+    """,
+    # Destination sync — cached file state per destination (§4.2).
+    """
+    CREATE TABLE IF NOT EXISTS dest_inventory (
+        dest_id      INTEGER NOT NULL REFERENCES sync_destinations(id) ON DELETE CASCADE,
+        rel_path     TEXT NOT NULL,
+        size_bytes   INTEGER NOT NULL,
+        mtime        REAL NOT NULL,
+        sha1         TEXT,
+        rom_id       INTEGER REFERENCES roms(id),
+        game_id      INTEGER REFERENCES games(id),
+        last_seen_at TEXT NOT NULL,
+        PRIMARY KEY (dest_id, rel_path)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_dest_inventory_sha1 ON dest_inventory(sha1)",
+    "CREATE INDEX IF NOT EXISTS idx_dest_inventory_rom ON dest_inventory(rom_id)",
+    # Destination sync — persisted plans for history + resume (§4.3).
+    """
+    CREATE TABLE IF NOT EXISTS sync_plans (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        dest_id    INTEGER NOT NULL REFERENCES sync_destinations(id),
+        mode       TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        status     TEXT DEFAULT 'pending',
+        summary    TEXT NOT NULL,
+        plan_json  TEXT NOT NULL
+    )
+    """,
 ]
+
+
+def _migrate_sync_destinations(conn: sqlite3.Connection) -> None:
+    """Create the sync_destinations table on legacy DBs that predate v0.2.0.
+
+    Mirrors :func:`_migrate_covers_add_is_preferred`'s ``PRAGMA table_info``
+    detection. The ``CREATE TABLE IF NOT EXISTS`` statement above already runs
+    during normal create_tables flow; this helper is the explicit migration
+    hook called from :func:`create_tables` per the sync-design spec §4.
+    """
+    rows = conn.execute("PRAGMA table_info(sync_destinations)").fetchall()
+    if rows:
+        return
+    conn.execute(
+        """
+        CREATE TABLE sync_destinations (
+            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+            name                     TEXT NOT NULL UNIQUE,
+            target_path              TEXT NOT NULL,
+            profile_id               TEXT NOT NULL,
+            last_synced_at           TEXT,
+            created_at               TEXT NOT NULL,
+            last_inventory_signature TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def _migrate_dest_inventory(conn: sqlite3.Connection) -> None:
+    """Create the dest_inventory table on legacy DBs that predate v0.2.0."""
+    rows = conn.execute("PRAGMA table_info(dest_inventory)").fetchall()
+    if rows:
+        return
+    conn.execute(
+        """
+        CREATE TABLE dest_inventory (
+            dest_id      INTEGER NOT NULL REFERENCES sync_destinations(id) ON DELETE CASCADE,
+            rel_path     TEXT NOT NULL,
+            size_bytes   INTEGER NOT NULL,
+            mtime        REAL NOT NULL,
+            sha1         TEXT,
+            rom_id       INTEGER REFERENCES roms(id),
+            game_id      INTEGER REFERENCES games(id),
+            last_seen_at TEXT NOT NULL,
+            PRIMARY KEY (dest_id, rel_path)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dest_inventory_sha1 ON dest_inventory(sha1)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_dest_inventory_rom ON dest_inventory(rom_id)"
+    )
+    conn.commit()
+
+
+def _migrate_sync_plans(conn: sqlite3.Connection) -> None:
+    """Create the sync_plans table on legacy DBs that predate v0.2.0."""
+    rows = conn.execute("PRAGMA table_info(sync_plans)").fetchall()
+    if rows:
+        return
+    conn.execute(
+        """
+        CREATE TABLE sync_plans (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            dest_id    INTEGER NOT NULL REFERENCES sync_destinations(id),
+            mode       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status     TEXT DEFAULT 'pending',
+            summary    TEXT NOT NULL,
+            plan_json  TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
 
 
 def _migrate_covers_add_is_preferred(conn: sqlite3.Connection) -> None:
@@ -211,3 +328,6 @@ def create_tables(conn: sqlite3.Connection) -> None:
         cursor.execute(statement)
     conn.commit()
     _migrate_covers_add_is_preferred(conn)
+    _migrate_sync_destinations(conn)
+    _migrate_dest_inventory(conn)
+    _migrate_sync_plans(conn)

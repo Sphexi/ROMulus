@@ -30,12 +30,14 @@ from romulus.ui.scan_progress import ScanProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
 from romulus.ui.system_sidebar import SystemSidebar
 from romulus.ui.workers import (
+    DestInventoryWorker,
     EnrichWorker,
     ExportWorker,
     HeavyScanWorker,
     LocalCoverFinderWorker,
     OrganizeWorker,
     ScanWorker,
+    SyncWorker,
 )
 
 # Bundled DATs directory — resolved at import time relative to this file so the
@@ -67,6 +69,9 @@ class MainWindow(QMainWindow):
         self._export_dialog: ExportDialog | None = None
         self._local_cover_worker: LocalCoverFinderWorker | None = None
         self._local_cover_dialog: LocalCoverProgressDialog | None = None
+        self._dest_inventory_worker: DestInventoryWorker | None = None
+        self._sync_worker: SyncWorker | None = None
+        self._sync_preview_dialog: object | None = None
 
         q.ensure_favorites_collection(conn)
 
@@ -194,8 +199,10 @@ class MainWindow(QMainWindow):
         organize_action.setToolTip("Preview and apply library reorganization.")
         organize_action.triggered.connect(self._on_organize)
         tools_menu.addAction(organize_action)
-        export_action = QAction("E&xport", self)
-        export_action.setToolTip("Export the library to a destination profile.")
+        export_action = QAction("E&xport / Sync", self)
+        export_action.setToolTip(
+            "Export or sync the library to a destination profile."
+        )
         export_action.triggered.connect(self._on_export)
         tools_menu.addAction(export_action)
 
@@ -234,7 +241,7 @@ class MainWindow(QMainWindow):
         )
         find_covers.triggered.connect(self._on_find_local_covers)
         toolbar.addAction(find_covers)
-        export = QAction("Export", self)
+        export = QAction("Export / Sync", self)
         export.triggered.connect(self._on_export)
         toolbar.addAction(export)
 
@@ -392,6 +399,12 @@ class MainWindow(QMainWindow):
 
     def _clear_local_cover_worker(self) -> None:
         self._local_cover_worker = None
+
+    def _clear_dest_inventory_worker(self) -> None:
+        self._dest_inventory_worker = None
+
+    def _clear_sync_worker(self) -> None:
+        self._sync_worker = None
 
     def _on_quick_scan(self) -> None:
         if self._scan_worker is not None and self._scan_worker.isRunning():
@@ -860,7 +873,178 @@ class MainWindow(QMainWindow):
 
         self._export_dialog = ExportDialog(self._conn, profiles, self)
         self._export_dialog.export_requested.connect(self._on_export_requested)
+        self._export_dialog.sync_scan_requested.connect(
+            self._on_sync_scan_requested
+        )
         self._export_dialog.exec()
+
+    def _on_sync_scan_requested(
+        self,
+        profile: object,
+        target_path: str,
+        mode: str,
+        deep_verify: bool,
+        dest_id: int,
+    ) -> None:
+        """Spawn a :class:`DestInventoryWorker` to scan the destination.
+
+        On completion the :class:`SyncPreviewDialog` is shown with the diff
+        the worker produced; the user then either Applies (which spawns the
+        :class:`SyncWorker`) or cancels.
+        """
+        from romulus.core.sync import build_plan
+        from romulus.models.profile import DestinationProfile
+        from romulus.ui.sync_preview import SyncPreviewDialog
+
+        if not isinstance(profile, DestinationProfile):
+            return
+        if (
+            self._dest_inventory_worker is not None
+            and self._dest_inventory_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Destination scan already running",
+                "A destination scan is already in progress.",
+            )
+            return
+
+        # If the user didn't pick a saved destination, create a transient row
+        # so dest_inventory has somewhere to attach. We delete it later if
+        # the user cancels (deferred — keeps the inventory cached for next
+        # time).
+        if dest_id <= 0:
+            try:
+                dest_id = q.insert_sync_destination(
+                    self._conn,
+                    {
+                        "name": f"Ad-hoc — {Path(target_path).name or target_path}",
+                        "target_path": target_path,
+                        "profile_id": profile.id,
+                    },
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                existing = q.get_sync_destination_by_name(
+                    self._conn,
+                    f"Ad-hoc — {Path(target_path).name or target_path}",
+                )
+                if existing is None:
+                    return
+                dest_id = int(existing["id"])
+
+        self._dest_inventory_worker = DestInventoryWorker(
+            DEFAULT_DB_PATH,
+            dest_id,
+            target_path,
+            deep_verify=deep_verify,
+        )
+
+        def _on_inventory_done(inventory: object) -> None:
+            from romulus.core.dest_inventory import DestInventory
+
+            if not isinstance(inventory, DestInventory):
+                return
+            library_path = get_config(self._conn, "library_path") or None
+            plan = build_plan(
+                self._conn,
+                dest_id,
+                profile,
+                target_path,
+                inventory,
+                mode,  # type: ignore[arg-type]
+                library_path=library_path,
+            )
+            dialog = SyncPreviewDialog(
+                plan,
+                destination_label=target_path,
+                parent=self,
+            )
+            dialog.actions_approved.connect(
+                lambda approved: self._on_sync_actions_approved(
+                    approved, profile, target_path, plan, dest_id
+                )
+            )
+            self._sync_preview_dialog = dialog
+            dialog.exec()
+
+        self._dest_inventory_worker.finished_ok.connect(_on_inventory_done)
+        self._dest_inventory_worker.failed.connect(self._on_sync_scan_failed)
+        self._dest_inventory_worker.finished.connect(
+            self._dest_inventory_worker.deleteLater
+        )
+        self._dest_inventory_worker.finished.connect(
+            self._clear_dest_inventory_worker
+        )
+        self._dest_inventory_worker.start()
+
+    def _on_sync_scan_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    def _on_sync_actions_approved(
+        self,
+        approved_actions: list[object],
+        profile: object,
+        target_path: str,
+        plan: object,
+        dest_id: int,
+    ) -> None:
+        """Spawn a :class:`SyncWorker` once the user clicks Apply on the preview."""
+        from romulus.core.sync import SyncAction, SyncPlan
+        from romulus.models.profile import DestinationProfile
+
+        if not isinstance(profile, DestinationProfile):
+            return
+        if not isinstance(plan, SyncPlan):
+            return
+        actions = [a for a in approved_actions if isinstance(a, SyncAction)]
+        if not actions:
+            return
+        if self._sync_worker is not None and self._sync_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Sync already running",
+                "A sync is already in progress.",
+            )
+            return
+        library_path = get_config(self._conn, "library_path") or None
+        self._sync_worker = SyncWorker(
+            DEFAULT_DB_PATH,
+            dest_id,
+            profile,
+            target_path,
+            plan,
+            actions,
+            library_path=library_path,
+        )
+        if self._sync_preview_dialog is not None and hasattr(
+            self._sync_preview_dialog, "on_progress"
+        ):
+            preview_dialog = self._sync_preview_dialog
+            self._sync_worker.progress.connect(preview_dialog.on_progress)  # type: ignore[attr-defined]
+            self._sync_worker.finished_ok.connect(
+                lambda applied, skipped, failed, _errors: preview_dialog.on_finished(  # type: ignore[attr-defined]
+                    applied, skipped, failed
+                )
+            )
+            self._sync_worker.failed.connect(preview_dialog.on_failed)  # type: ignore[attr-defined]
+        self._sync_worker.finished_ok.connect(self._on_sync_finished_ok)
+        self._sync_worker.failed.connect(self._on_sync_failed)
+        self._sync_worker.finished.connect(self._sync_worker.deleteLater)
+        self._sync_worker.finished.connect(self._clear_sync_worker)
+        self._sync_worker.start()
+
+    def _on_sync_finished_ok(
+        self,
+        _applied: int,
+        _skipped: int,
+        _failed: int,
+        _errors: list[str],
+    ) -> None:
+        self.refresh_all()
+
+    def _on_sync_failed(self, message: str) -> None:
+        self.status_label.setText(message)
 
     def _on_export_requested(
         self,
@@ -936,6 +1120,8 @@ class MainWindow(QMainWindow):
             self._local_cover_worker,
             self._organize_worker,
             self._export_worker,
+            self._dest_inventory_worker,
+            self._sync_worker,
         ):
             if worker is None:
                 continue

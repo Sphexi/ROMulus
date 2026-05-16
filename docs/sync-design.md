@@ -397,6 +397,22 @@ Deferred to v0.3.0+ (and explicitly NOT in this work):
 - `.romulus-ignore` per-folder ignore files
 - Sync history / audit-trail viewer UI
 
+### Implementation clarifications (v0.2.0 implementation pass)
+
+- **Delete actions are scoped to `profile.base_path`.** Push-mirror / push-
+  wipe / two-way modes only propose delete actions for dest files that live
+  under the profile's `base_path`. Sibling files outside the managed sub-
+  tree (e.g. a `BIOS/` directory next to `roms/`) are never deleted, even
+  if they have no local-library counterpart. This is consistent with the
+  spec's intent — sync manages what the profile claims, nothing else —
+  and matches the path-traversal defense baked into the exporter's
+  `_system_dest_dir`.
+- **Stale `dest_inventory` rows are rewritten, not preserved.** When the
+  walker detects size/mtime drift for a cached row, it deletes the row
+  before the upsert so the stale SHA-1 / rom_id / game_id columns are
+  cleared. Without this the upsert's `COALESCE` would preserve identity
+  columns that no longer describe the file.
+
 ---
 
 ## 11. Open questions for the implementer
