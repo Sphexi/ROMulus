@@ -146,6 +146,13 @@ class DestinationProfile(BaseModel):
     base_path: str
     gamelist_format: str | None = None
     artwork_subdir: str | None = None
+    #: Filename template for the copied artwork file. ``{stem}`` is the ROM's
+    #: filename without extension; ``{ext}`` is the source image's extension
+    #: (including the leading dot). EmulationStation-classic targets
+    #: (Batocera, RetroPie) want ``"{stem}-image{ext}"``; modern launchers
+    #: (Daijisho, Onion, muOS, ES-DE) want ``"{stem}{ext}"`` — the cleaner
+    #: default.
+    artwork_filename_template: str = "{stem}{ext}"
     multi_disc: str | None = None
     systems: dict[str, SystemMapping] = Field(default_factory=dict)
 

@@ -123,6 +123,7 @@ def _build_minimal_profile(
         base_path="roms",
         gamelist_format=gamelist,
         artwork_subdir="downloaded_media",
+        artwork_filename_template="{stem}-image{ext}",
         multi_disc="m3u",
         systems=systems,
     )
@@ -842,6 +843,173 @@ class TestArtworkCopy:
         )
         assert expected_art.exists()
         assert expected_art.read_bytes() == b"\x89PNG"
+
+    def test_artwork_filename_template_default_no_suffix(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """A profile with the default template gets ``{stem}{ext}`` — the
+        modern Daijisho/Onion/muOS/Anbernic convention, no ``-image`` suffix."""
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        cover_path = tmp_path / "covers" / "snes" / "Mario.png"
+        _make_rom_file(rom_path)
+        _make_rom_file(cover_path, content=b"\x89PNG")
+        _rom_id, game_id = _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Mario",
+        )
+        q.insert_cover(
+            seeded_db, game_id, "Named_Boxarts", None,
+            str(cover_path).replace("\\", "/"),
+        )
+        seeded_db.commit()
+
+        # Build a profile using the default artwork_filename_template.
+        profile = DestinationProfile(
+            id="modern",
+            name="Modern Launcher",
+            base_path="Roms",
+            artwork_subdir="Imgs",
+            systems={
+                "snes": SystemMapping(folder="snes", extensions=[".sfc"]),
+            },
+        )
+        export_collection(
+            seeded_db, profile, tmp_path / "out", ExportFilters(),
+            ExportOptions(generate_gamelist=False, include_artwork=True),
+        )
+        expected = tmp_path / "out" / "Roms" / "snes" / "Imgs" / "Mario.png"
+        assert expected.exists(), (
+            f"expected default template '{{stem}}{{ext}}' to produce "
+            f"{expected}; not found"
+        )
+        # And the legacy ``-image.png`` variant must NOT exist.
+        legacy = tmp_path / "out" / "Roms" / "snes" / "Imgs" / "Mario-image.png"
+        assert not legacy.exists()
+
+
+# ---------------------------------------------------------------------------
+# Gamelist <image> emission
+# ---------------------------------------------------------------------------
+
+
+class TestGamelistImageEmission:
+    """``generate_gamelist_xml`` must emit an ``<image>`` element pointing at
+    the artwork that ``copy_artwork`` will write, so EmulationStation can
+    actually find the cover. Honors the profile's filename template.
+    """
+
+    def test_image_element_points_at_legacy_path(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        from xml.etree import ElementTree as PlainET
+
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        cover_path = tmp_path / "covers" / "snes" / "Mario.png"
+        _make_rom_file(rom_path)
+        _make_rom_file(cover_path, content=b"\x89PNG")
+        _rom_id, game_id = _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Mario",
+        )
+        q.insert_cover(
+            seeded_db, game_id, "Named_Boxarts", None,
+            str(cover_path).replace("\\", "/"),
+        )
+        seeded_db.commit()
+        profile = _build_minimal_profile(gamelist="emulationstation_xml")
+        export_collection(
+            seeded_db, profile, tmp_path / "out", ExportFilters(),
+            ExportOptions(generate_gamelist=True, include_artwork=True),
+        )
+        gamelist = tmp_path / "out" / "roms" / "snes" / "gamelist.xml"
+        assert gamelist.exists()
+        tree = PlainET.parse(gamelist)
+        images = [el.text for el in tree.getroot().iter("image")]
+        assert images == ["./downloaded_media/Mario-image.png"]
+
+    def test_image_element_points_at_default_path(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        from xml.etree import ElementTree as PlainET
+
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        cover_path = tmp_path / "covers" / "snes" / "Mario.png"
+        _make_rom_file(rom_path)
+        _make_rom_file(cover_path, content=b"\x89PNG")
+        _rom_id, game_id = _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Mario",
+        )
+        q.insert_cover(
+            seeded_db, game_id, "Named_Boxarts", None,
+            str(cover_path).replace("\\", "/"),
+        )
+        seeded_db.commit()
+        profile = DestinationProfile(
+            id="modern",
+            name="Modern",
+            base_path="Roms",
+            gamelist_format="emulationstation_xml",
+            artwork_subdir="Imgs",
+            systems={"snes": SystemMapping(folder="snes", extensions=[".sfc"])},
+        )
+        export_collection(
+            seeded_db, profile, tmp_path / "out", ExportFilters(),
+            ExportOptions(generate_gamelist=True, include_artwork=True),
+        )
+        gamelist = tmp_path / "out" / "Roms" / "snes" / "gamelist.xml"
+        tree = PlainET.parse(gamelist)
+        images = [el.text for el in tree.getroot().iter("image")]
+        assert images == ["./Imgs/Mario.png"]
+
+    def test_no_image_element_when_profile_has_no_artwork(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """If artwork_subdir is None, gamelist should not include <image>."""
+        from xml.etree import ElementTree as PlainET
+
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        _make_rom_file(rom_path)
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Mario",
+        )
+        seeded_db.commit()
+        profile = DestinationProfile(
+            id="noart",
+            name="No Artwork",
+            base_path="roms",
+            gamelist_format="emulationstation_xml",
+            artwork_subdir=None,
+            systems={"snes": SystemMapping(folder="snes", extensions=[".sfc"])},
+        )
+        export_collection(
+            seeded_db, profile, tmp_path / "out", ExportFilters(),
+            ExportOptions(generate_gamelist=True, include_artwork=True),
+        )
+        gamelist = tmp_path / "out" / "roms" / "snes" / "gamelist.xml"
+        tree = PlainET.parse(gamelist)
+        assert list(tree.getroot().iter("image")) == []
 
 
 # ---------------------------------------------------------------------------

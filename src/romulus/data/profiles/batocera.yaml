@@ -2,15 +2,18 @@
 #
 # Batocera (and the RetroBat fork on Windows) ships with EmulationStation
 # folder names matching the Igir batocera token output. ROMs go under
-# {target}/roms/{system}/, gamelist.xml lives alongside, and downloaded
-# artwork sits in roms/{system}/downloaded_media/.
+# {target}/roms/{system}/, gamelist.xml lives alongside, artwork sits in
+# roms/{system}/images/<rom-stem>-image.png (EmulationStation classic
+# convention — ``downloaded_media/`` is Batocera's internal scraper
+# staging dir, not the format ROM packs ship in).
 id: batocera
 name: "Batocera Linux"
 description: "EmulationStation-based Linux distro for retro gaming"
 case_sensitive: true
 base_path: "roms"
 gamelist_format: "emulationstation_xml"
-artwork_subdir: "downloaded_media"
+artwork_subdir: "images"
+artwork_filename_template: "{stem}-image{ext}"
 multi_disc: "m3u"
 
 systems:

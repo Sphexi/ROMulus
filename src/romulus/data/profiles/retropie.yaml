@@ -11,6 +11,10 @@ case_sensitive: true
 base_path: "roms"
 gamelist_format: "emulationstation_xml"
 artwork_subdir: "images"
+# EmulationStation classic suffixes each artwork file with ``-image``
+# so the launcher can distinguish covers from marquees/screenshots
+# stored in the same folder.
+artwork_filename_template: "{stem}-image{ext}"
 multi_disc: "m3u"
 
 systems:

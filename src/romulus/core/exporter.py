@@ -425,7 +425,9 @@ def export_collection(
         dest_dir = _system_dest_dir(target, profile, mapping)
         if options.generate_gamelist and profile.gamelist_format == "emulationstation_xml":
             try:
-                generate_gamelist_xml(conn, system_id, dest_dir, by_system[system_id])
+                generate_gamelist_xml(
+                    conn, system_id, dest_dir, by_system[system_id], profile=profile
+                )
                 summary.gamelists_written += 1
             except OSError as exc:
                 summary.errors.append(
@@ -462,6 +464,7 @@ def generate_gamelist_xml(
     system_id: str,
     system_dir: Path,
     rows: Iterable[sqlite3.Row],
+    profile: DestinationProfile | None = None,
 ) -> Path:
     """Write an EmulationStation gamelist.xml into ``system_dir``.
 
@@ -474,9 +477,9 @@ def generate_gamelist_xml(
     root = ET.Element("gameList")
     seen_game_ids: set[int] = set()
     for row in rows:
-        path_element_text = f"./{row['filename']}"
+        filename = str(row["filename"])
         game_node = ET.SubElement(root, "game")
-        ET.SubElement(game_node, "path").text = path_element_text
+        ET.SubElement(game_node, "path").text = f"./{filename}"
         # Prefer canonical name; otherwise the parsed title; otherwise the
         # filename without its extension as a last resort. ``sqlite3.Row``'s
         # ``in`` operator iterates values rather than keys, so we materialize
@@ -484,12 +487,31 @@ def generate_gamelist_xml(
         row_columns = set(row.keys())
         canonical = row["canonical_name"] if "canonical_name" in row_columns else None
         title = row["title"] if "title" in row_columns else None
-        display = canonical or title or Path(str(row["filename"])).stem
+        display = canonical or title or Path(filename).stem
         ET.SubElement(game_node, "name").text = str(display)
-        # Pull metadata if we have it (joined per row to avoid an N+1 join in
-        # the candidate query — this stays simple and is dwarfed by the file
-        # copy in any case).
+
+        # Reference the artwork that ``copy_artwork`` will write. EmulationStation
+        # uses this relative path to find the image; without it the launcher
+        # shows no cover even when the file is on disk.
         game_id = row["game_id"]
+        image_ext: str | None = None
+        if profile is not None and profile.artwork_subdir and game_id is not None:
+            cover_row = conn.execute(
+                "SELECT local_path FROM covers WHERE game_id = ? "
+                "AND local_path IS NOT NULL "
+                "ORDER BY is_preferred DESC, id ASC LIMIT 1",
+                (int(game_id),),
+            ).fetchone()
+            if cover_row is not None:
+                local_path = Path(str(cover_row["local_path"]))
+                if local_path.suffix:
+                    image_ext = local_path.suffix
+        if image_ext:
+            assert profile is not None  # narrowed by image_ext check above
+            image_ref = _artwork_relative_ref(profile, filename, image_ext)
+            if image_ref:
+                ET.SubElement(game_node, "image").text = image_ref
+
         if game_id is None or game_id in seen_game_ids:
             continue
         seen_game_ids.add(int(game_id))
@@ -512,10 +534,14 @@ def generate_gamelist_xml(
             if value:
                 ET.SubElement(game_node, tag).text = str(value)
 
-    # Render with an XML declaration so EmulationStation accepts it cleanly.
+    # Pretty-print the XML so it's human-readable when the user opens it
+    # in a text editor. ``ET.indent`` rewrites the tree in place with 2-space
+    # nesting; ``\n`` line endings are fine on Android/Linux (where gamelist
+    # files actually live) and modern Windows editors handle them too.
+    ET.indent(root, space="  ")
     payload = b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(
         root, encoding="utf-8"
-    )
+    ) + b"\n"
     dest = _gamelist_path(system_dir)
     atomic.atomic_write_bytes(payload, dest)
     return dest
@@ -603,11 +629,14 @@ def copy_artwork(
         local_path = Path(str(cover_row["local_path"]))
         if not local_path.exists():
             continue
-        # EmulationStation expects {rom-stem}-image.ext alongside its sibling
-        # gamelist.xml entry. Use the rom filename's stem so the link is
-        # stable even if the canonical name changes later.
+        # Filename template is per-profile so each launcher's convention is
+        # honored: EmulationStation classic wants ``{stem}-image{ext}``,
+        # modern launchers (Daijisho/Onion/muOS/ES-DE) want ``{stem}{ext}``.
         stem = Path(str(row["filename"])).stem
-        dest = artwork_dir / f"{stem}-image{local_path.suffix}"
+        filename = profile.artwork_filename_template.format(
+            stem=stem, ext=local_path.suffix
+        )
+        dest = artwork_dir / filename
         try:
             atomic.atomic_copy(local_path, dest)
         except OSError as exc:
@@ -615,3 +644,20 @@ def copy_artwork(
             continue
         copied += 1
     return copied
+
+
+def _artwork_relative_ref(
+    profile: DestinationProfile, rom_filename: str, image_ext: str
+) -> str | None:
+    """Return a gamelist.xml-style relative path (``./Imgs/foo.png``) to the
+    artwork for ``rom_filename``, or None if the profile doesn't ship artwork.
+
+    The path is relative to the system folder (where gamelist.xml lives), so
+    EmulationStation finds the image whether the ROM pack is mounted at
+    ``/storage/emulated/0/Roms/`` or ``/userdata/roms/``.
+    """
+    if not profile.artwork_subdir:
+        return None
+    stem = Path(rom_filename).stem
+    filename = profile.artwork_filename_template.format(stem=stem, ext=image_ext)
+    return f"./{profile.artwork_subdir}/{filename}"
