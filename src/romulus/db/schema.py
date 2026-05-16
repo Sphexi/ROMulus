@@ -364,6 +364,31 @@ def _migrate_roms_add_library_root_and_missing(conn: sqlite3.Connection) -> None
         "CREATE INDEX IF NOT EXISTS idx_roms_missing "
         "ON roms(missing) WHERE missing = 1"
     )
+    # Backfill library_root from scan_history.root_path for any row that's
+    # still NULL after the column was added. This catches legacy v0.1.0 /
+    # v0.2.x rows that were enrolled before the column existed — without
+    # it, those rows stay NULL forever and the library-change-detection
+    # and missing-sweep logic can't see them, so users with pre-existing
+    # libraries upgrade into a state where stale entries pile up and
+    # "Clean Missing Entries" says there's nothing to do. Idempotent: the
+    # WHERE clause makes it a no-op on rows that already have a value.
+    # Guarded against ``scan_history`` not existing yet so the migration
+    # helper is safe to call standalone in tests (in production
+    # ``create_tables`` runs SCHEMA_STATEMENTS first and the table always
+    # exists by the time we reach this point).
+    scan_history_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='scan_history'"
+    ).fetchone()
+    if scan_history_exists:
+        conn.execute(
+            """
+            UPDATE roms
+            SET library_root = (
+                SELECT root_path FROM scan_history WHERE id = roms.scan_id
+            )
+            WHERE library_root IS NULL AND scan_id IS NOT NULL
+            """
+        )
     conn.commit()
 
 

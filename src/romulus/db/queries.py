@@ -196,37 +196,44 @@ def get_roms_by_system(conn: sqlite3.Connection, system_id: str) -> list[sqlite3
 
 def mark_missing_under_root(
     conn: sqlite3.Connection,
-    library_root: str,
+    library_root: str,  # noqa: ARG001 — kept for backward compat
     excluded_rom_ids: set[int] | None = None,
 ) -> int:
-    """Flag rows under ``library_root`` not in ``excluded_rom_ids`` as missing.
+    """Flag every row NOT in ``excluded_rom_ids`` as missing. Returns count.
 
-    Called by the scanner at the end of a Quick Scan: every row visited during
-    the walk is in ``excluded_rom_ids``; everything else under that root is a
-    file that disappeared since the last scan (deleted, moved, drive
-    unmounted) and gets ``missing = 1``. Returns the number of rows newly
-    flagged as missing.
+    Called by the scanner at the end of a Quick Scan: every row visited
+    during the walk is in ``excluded_rom_ids``; everything else is either
+    (a) a file that disappeared from under the current library since the
+    last scan, or (b) a stale row from a previous library the user has
+    since switched away from. Either way, it gets ``missing = 1``.
 
-    Tombstoning rather than deleting preserves any enrichment, hash cache, or
-    metadata work attached to the row — a later reconnect / rescan flips
-    ``missing`` back to 0 via :func:`upsert_rom` and the user keeps their
-    data. Use :func:`delete_missing_roms` to actually drop the rows when the
-    user opts into a "Clean missing entries" action.
+    Design note — single-library assumption: the sweep deliberately does
+    NOT filter by ``library_root``. ROMulus treats one library folder at
+    a time as the source of truth (see the CLAUDE.md design rule and the
+    library-change prompt in :class:`MainWindow`). A user who has just
+    pointed at a new library expects stale entries from previous roots to
+    show up as missing on the next scan — not to silently accumulate.
+    The ``library_root`` parameter is retained for signature stability
+    but ignored.
+
+    Tombstoning rather than deleting preserves any enrichment, hash
+    cache, or metadata work attached to the row. A later reconnect /
+    rescan flips ``missing`` back to 0 via :func:`upsert_rom`'s path-keyed
+    UPSERT and the user keeps their data. Use :func:`delete_missing_roms`
+    to actually drop the rows when the user opts into a "Clean Missing
+    Entries" action.
     """
     ids = excluded_rom_ids or set()
     if ids:
         placeholders = ",".join("?" for _ in ids)
         sql = (
             f"UPDATE roms SET missing = 1 "
-            f"WHERE library_root = ? AND missing = 0 AND id NOT IN ({placeholders})"
+            f"WHERE missing = 0 AND id NOT IN ({placeholders})"
         )
-        params: tuple = (library_root, *ids)
+        params: tuple = tuple(ids)
     else:
-        sql = (
-            "UPDATE roms SET missing = 1 "
-            "WHERE library_root = ? AND missing = 0"
-        )
-        params = (library_root,)
+        sql = "UPDATE roms SET missing = 1 WHERE missing = 0"
+        params = ()
     cursor = conn.execute(sql, params)
     return cursor.rowcount
 
@@ -253,16 +260,22 @@ def delete_missing_roms(conn: sqlite3.Connection) -> int:
 def count_roms_with_other_library_root(
     conn: sqlite3.Connection, current_root: str
 ) -> int:
-    """Count rows whose ``library_root`` is set but doesn't equal ``current_root``.
+    """Count rows that DON'T belong to ``current_root``.
 
-    Used by the settings dialog to decide whether to prompt the user to wipe
-    old-library entries when they pick a new library path. NULL roots are
-    ignored — those are legacy rows from before the migration ran, and the
-    user hasn't necessarily switched libraries; they just hadn't scanned yet.
+    Used by the settings dialog to decide whether to prompt the user to
+    wipe old-library entries when they pick a new library path. Includes
+    NULL-root rows: those are typically legacy entries from a v0.1.0 /
+    v0.2.x upgrade and should also be treated as "from a previous
+    library" if the user is now switching to a different folder. The
+    migration in :func:`_migrate_roms_add_library_root_and_missing`
+    backfills NULL roots from ``scan_history.root_path`` so this query
+    catches them by name when scan history is available; rows that
+    remain NULL (no scan_id, deleted scan history) are also counted as
+    "other" to ensure the user gets a chance to clear them.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM roms "
-        "WHERE library_root IS NOT NULL AND library_root != ?",
+        "WHERE library_root IS NULL OR library_root != ?",
         (current_root,),
     ).fetchone()
     return row["n"] if row else 0
@@ -271,16 +284,23 @@ def count_roms_with_other_library_root(
 def delete_roms_with_other_library_root(
     conn: sqlite3.Connection, keep_root: str
 ) -> int:
-    """Delete every row whose ``library_root`` is set and not equal to ``keep_root``.
+    """Delete every row that doesn't belong to ``keep_root``. Returns count.
 
-    Used when the user confirms a library-root switch with "wipe old entries".
-    NULL roots are NOT touched — those are legacy / pre-migration rows that
-    the user can clean up via a regular scan + missing sweep. Returns the
-    number of rows deleted.
+    Used when the user confirms a library-root switch with "wipe old
+    entries". Includes NULL-root rows (legacy / unknown-origin entries)
+    so an upgrade-then-switch user gets the same clean state as a
+    fresh-install switch user.
+
+    Safety: ``keep_root`` must be a non-empty string. Passing ``""`` or
+    ``None`` would wipe every row including the ones the user is about
+    to scan into, which is never what we want here. Callers are
+    responsible for filtering empty values before invoking this — see
+    the guard in :meth:`MainWindow._on_open_library`.
     """
+    if not keep_root:
+        raise ValueError("keep_root must be a non-empty path")
     cursor = conn.execute(
-        "DELETE FROM roms "
-        "WHERE library_root IS NOT NULL AND library_root != ?",
+        "DELETE FROM roms WHERE library_root IS NULL OR library_root != ?",
         (keep_root,),
     )
     return cursor.rowcount
