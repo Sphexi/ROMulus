@@ -19,6 +19,7 @@ from romulus.core.exporter import load_all_profiles
 from romulus.core.organizer import analyze_library
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
 from romulus.db import queries as q
+from romulus.ui.dest_scan_progress import DestScanProgressDialog
 from romulus.ui.detail_panel import DetailPanel
 from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.export_dialog import ExportDialog
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         self._local_cover_worker: LocalCoverFinderWorker | None = None
         self._local_cover_dialog: LocalCoverProgressDialog | None = None
         self._dest_inventory_worker: DestInventoryWorker | None = None
+        self._dest_scan_dialog: DestScanProgressDialog | None = None
         self._sync_worker: SyncWorker | None = None
         self._sync_preview_dialog: object | None = None
 
@@ -909,29 +911,37 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # If the user didn't pick a saved destination, create a transient row
-        # so dest_inventory has somewhere to attach. We delete it later if
-        # the user cancels (deferred — keeps the inventory cached for next
-        # time).
+        # If the user didn't pick a saved destination (legacy ``-1``
+        # sentinel — the dropdown no longer exposes that option but the
+        # signal contract is preserved) upgrade to a real row before the
+        # worker starts. Both ``upsert_dest_inventory`` and
+        # ``insert_sync_plan`` have a FOREIGN KEY ref on
+        # ``sync_destinations(id)`` — passing ``-1`` previously caused
+        # every per-action DB write to fail with
+        # ``FOREIGN KEY constraint failed`` even though the file copy on
+        # disk had already succeeded.
         if dest_id <= 0:
-            try:
-                dest_id = q.insert_sync_destination(
-                    self._conn,
-                    {
-                        "name": f"Ad-hoc — {Path(target_path).name or target_path}",
-                        "target_path": target_path,
-                        "profile_id": profile.id,
-                    },
+            dest_id = q.ensure_sync_destination_by_path(
+                self._conn,
+                target_path,
+                profile.id,
+            )
+            self._conn.commit()
+            # Refresh the dropdown so the auto-saved destination shows up
+            # on next launch / next time the user opens this dialog.
+            if self._export_dialog is not None and hasattr(
+                self._export_dialog, "_populate_destination_combo"
+            ):
+                self._export_dialog._populate_destination_combo(  # type: ignore[attr-defined]
+                    select_dest_id=dest_id
                 )
-                self._conn.commit()
-            except sqlite3.IntegrityError:
-                existing = q.get_sync_destination_by_name(
-                    self._conn,
-                    f"Ad-hoc — {Path(target_path).name or target_path}",
-                )
-                if existing is None:
-                    return
-                dest_id = int(existing["id"])
+
+        # Spin up the progress dialog BEFORE the worker so the user gets
+        # immediate visual feedback. Previously this slot ran the walk
+        # without any UI cue at all — the user reported a ~30 s "frozen
+        # window" because :class:`DestInventoryWorker` itself runs on its
+        # own QThread but no dialog was displayed while it worked.
+        self._dest_scan_dialog = DestScanProgressDialog(self)
 
         self._dest_inventory_worker = DestInventoryWorker(
             DEFAULT_DB_PATH,
@@ -945,6 +955,11 @@ class MainWindow(QMainWindow):
 
             if not isinstance(inventory, DestInventory):
                 return
+            # Dismiss the scan progress dialog before the preview opens so
+            # we don't stack two modals on top of each other.
+            if self._dest_scan_dialog is not None:
+                self._dest_scan_dialog.close()
+                self._dest_scan_dialog = None
             library_path = get_config(self._conn, "library_path") or None
             plan = build_plan(
                 self._conn,
@@ -968,8 +983,20 @@ class MainWindow(QMainWindow):
             self._sync_preview_dialog = dialog
             dialog.exec()
 
+        self._dest_inventory_worker.progress.connect(
+            self._dest_scan_dialog.on_progress
+        )
+        self._dest_inventory_worker.finished_ok.connect(
+            self._dest_scan_dialog.on_finished
+        )
+        self._dest_inventory_worker.failed.connect(
+            self._dest_scan_dialog.on_failed
+        )
         self._dest_inventory_worker.finished_ok.connect(_on_inventory_done)
         self._dest_inventory_worker.failed.connect(self._on_sync_scan_failed)
+        self._dest_scan_dialog.canceled.connect(
+            self._dest_inventory_worker.cancel
+        )
         self._dest_inventory_worker.finished.connect(
             self._dest_inventory_worker.deleteLater
         )
@@ -977,6 +1004,7 @@ class MainWindow(QMainWindow):
             self._clear_dest_inventory_worker
         )
         self._dest_inventory_worker.start()
+        self._dest_scan_dialog.show()
 
     def _on_sync_scan_failed(self, message: str) -> None:
         self.status_label.setText(message)

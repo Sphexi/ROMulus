@@ -27,10 +27,12 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QTextEdit,
@@ -81,8 +83,11 @@ class ExportDialog(QDialog):
 
     #: Emitted when the user clicks "Scan destination" — MainWindow spawns
     #: the :class:`DestInventoryWorker`. Carries ``(profile, target_path,
-    #: mode, deep_verify)`` plus the selected destination id (or ``-1`` for
-    #: a one-shot pick that hasn't been saved yet).
+    #: mode, deep_verify)`` plus the selected destination id. The id is
+    #: ``-1`` only as a fallback when no destinations are saved yet; in that
+    #: case MainWindow upgrades it via
+    #: :func:`romulus.db.queries.ensure_sync_destination_by_path` before
+    #: spawning the worker so every ``dest_inventory`` row has a valid FK.
     sync_scan_requested = Signal(object, str, str, bool, int)
 
     def __init__(
@@ -107,16 +112,30 @@ class ExportDialog(QDialog):
             self._mode_combo.addItem(label, value)
         form.addRow("Mode:", self._mode_combo)
 
+        # Saved-destination dropdown + a "+" button to save a new one. The
+        # legacy "(one-shot — not saved)" sentinel was removed — it sent
+        # ``dest_id = -1`` through to the workers and tripped every
+        # ``dest_inventory`` / ``sync_plans`` insert with a FOREIGN KEY
+        # constraint failure (the FKs reference ``sync_destinations(id)``).
+        # When the dropdown is empty (no saved destinations yet) the user
+        # picks a path + profile, then clicks "+" to save it before scan.
+        dest_row = QHBoxLayout()
         self._destination_combo = QComboBox(self)
-        self._destination_combo.addItem("(one-shot export — not saved)", -1)
-        for row in q.get_sync_destinations(conn):
-            self._destination_combo.addItem(
-                f"{row['name']} → {row['target_path']}", int(row["id"])
-            )
+        self._populate_destination_combo()
         self._destination_combo.currentIndexChanged.connect(
             self._on_destination_changed
         )
-        form.addRow("Destination:", self._destination_combo)
+        dest_row.addWidget(self._destination_combo, stretch=1)
+        self._save_dest_btn = QPushButton("+", self)
+        self._save_dest_btn.setToolTip(
+            "Save the current target path + profile as a named destination."
+        )
+        self._save_dest_btn.setMaximumWidth(36)
+        self._save_dest_btn.clicked.connect(self._on_save_destination)
+        dest_row.addWidget(self._save_dest_btn)
+        dest_widget = QWidget(self)
+        dest_widget.setLayout(dest_row)
+        form.addRow("Destination:", dest_widget)
 
         # ---- Profile + target path ------------------------------------
         self._profile_combo = QComboBox(self)
@@ -287,7 +306,12 @@ class ExportDialog(QDialog):
         return str(value) if value else "push_merge"  # type: ignore[return-value]
 
     def selected_destination_id(self) -> int:
-        """Saved-destination id (or ``-1`` for the one-shot entry)."""
+        """Saved-destination id, or ``-1`` if no destinations are saved yet.
+
+        When ``-1`` is emitted MainWindow upgrades it via
+        :func:`romulus.db.queries.ensure_sync_destination_by_path` before
+        spawning the worker so every ``dest_inventory`` row has a valid FK.
+        """
         data = self._destination_combo.currentData()
         return int(data) if isinstance(data, int) else -1
 
@@ -324,6 +348,78 @@ class ExportDialog(QDialog):
             if self._profile_combo.itemData(idx) == profile_id:
                 self._profile_combo.setCurrentIndex(idx)
                 break
+
+    def _populate_destination_combo(
+        self, select_dest_id: int | None = None
+    ) -> None:
+        """Reload the destination dropdown from the DB.
+
+        When no destinations are saved we show a single greyed-out
+        placeholder so the user understands the UI state and reaches for the
+        "+" button. The placeholder carries ``-1`` so MainWindow's
+        ``ensure_sync_destination_by_path`` upgrade still fires if the user
+        somehow triggers a scan without saving first (defensive).
+        """
+        self._destination_combo.blockSignals(True)
+        self._destination_combo.clear()
+        rows = list(q.get_sync_destinations(self._conn))
+        if not rows:
+            self._destination_combo.addItem(
+                "(no destinations — click + to save one)", -1
+            )
+        else:
+            for row in rows:
+                self._destination_combo.addItem(
+                    f"{row['name']} → {row['target_path']}", int(row["id"])
+                )
+                if select_dest_id is not None and int(row["id"]) == select_dest_id:
+                    self._destination_combo.setCurrentIndex(
+                        self._destination_combo.count() - 1
+                    )
+        self._destination_combo.blockSignals(False)
+
+    def _on_save_destination(self) -> None:
+        """Save the current target + profile as a named destination."""
+        target = self.selected_target_path()
+        profile = self.selected_profile()
+        if profile is None or not target:
+            QMessageBox.information(
+                self,
+                "Cannot save destination",
+                "Select a target path and a destination profile first.",
+            )
+            return
+        default_name = f"Quick Sync — {Path(target).name or target}"
+        name, ok = QInputDialog.getText(
+            self,
+            "Save destination",
+            "Destination name:",
+            text=default_name,
+        )
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            return
+        try:
+            new_id = q.insert_sync_destination(
+                self._conn,
+                {
+                    "name": name,
+                    "target_path": target,
+                    "profile_id": profile.id,
+                },
+            )
+            self._conn.commit()
+        except sqlite3.IntegrityError:
+            QMessageBox.warning(
+                self,
+                "Name already in use",
+                f"A destination called '{name}' already exists. "
+                "Pick a different name.",
+            )
+            return
+        self._populate_destination_combo(select_dest_id=new_id)
 
     def _on_scan_destination(self) -> None:
         """Emit :pyattr:`sync_scan_requested` for MainWindow to spawn the worker."""

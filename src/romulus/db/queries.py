@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 if TYPE_CHECKING:
@@ -1091,6 +1092,70 @@ def get_sync_destination_by_name(
     return conn.execute(
         "SELECT * FROM sync_destinations WHERE name = ?", (name,)
     ).fetchone()
+
+
+def get_sync_destination_by_target_path(
+    conn: sqlite3.Connection, target_path: str
+) -> sqlite3.Row | None:
+    """Return the first destination matching ``target_path``, or None.
+
+    ``target_path`` is not UNIQUE in the schema (only ``name`` is), so this
+    helper returns the lowest-id row that matches — matching the row the user
+    would see in the dropdown.
+    """
+    return conn.execute(
+        "SELECT * FROM sync_destinations WHERE target_path = ? "
+        "ORDER BY id LIMIT 1",
+        (target_path,),
+    ).fetchone()
+
+
+def ensure_sync_destination_by_path(
+    conn: sqlite3.Connection,
+    target_path: str,
+    profile_id: str,
+    *,
+    name_hint: str | None = None,
+) -> int:
+    """Idempotently resolve ``target_path`` to a ``sync_destinations.id``.
+
+    Used by the MainWindow one-shot sync slot to avoid the previous ``dest_id
+    = -1`` sentinel that triggered FOREIGN KEY constraint failures on every
+    ``upsert_dest_inventory`` / ``insert_sync_plan`` write. Behaviour:
+
+    * If a saved destination already points at ``target_path`` return its id.
+    * Otherwise insert a new ``sync_destinations`` row with an auto-generated
+      ``"Quick Sync — <basename>"`` name. If that name collides with an
+      existing row's (unrelated) name, suffix with ``" (N)"`` until unique.
+
+    Caller is responsible for committing the surrounding transaction. The
+    helper does NOT commit on its own so it composes with the worker spawn
+    sequence's commit.
+    """
+    existing = get_sync_destination_by_target_path(conn, target_path)
+    if existing is not None:
+        return int(existing["id"])
+
+    basename = Path(target_path).name or target_path
+    base_name = name_hint or f"Quick Sync — {basename}"
+    candidate = base_name
+    counter = 2
+    # Guard against pathological name collisions; cap the loop so we never
+    # spin forever on a broken DB.
+    while counter < 1000:
+        if get_sync_destination_by_name(conn, candidate) is None:
+            break
+        candidate = f"{base_name} ({counter})"
+        counter += 1
+
+    return insert_sync_destination(
+        conn,
+        {
+            "name": candidate,
+            "target_path": target_path,
+            "profile_id": profile_id,
+        },
+    )
 
 
 def set_sync_dest_signature(

@@ -107,9 +107,35 @@ class SyncPreviewDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        # Summary header (bucketed counts + bytes).
+        # Intro paragraph — added after user testing reported that the
+        # original UI was unclear about what Apply actually does. Without
+        # this people thought the dialog "just identified the diff" and
+        # weren't sure whether files would actually move.
+        self._intro_label = QLabel(
+            "This preview shows the diff between your library and the "
+            "destination. Check the actions you want to perform, then "
+            'click "Apply changes to <target>" to copy/delete files. '
+            'Files marked "Already identical" require no work. '
+            "Nothing is written to disk until you click Apply.",
+            self,
+        )
+        self._intro_label.setWordWrap(True)
+        self._intro_label.setStyleSheet("color: #666; padding: 4px 0 8px 0;")
+        layout.addWidget(self._intro_label)
+
+        # Header row: bucketed counts (left) + size totals summary (right).
+        header_row = QHBoxLayout()
         self._summary_label = QLabel(self._build_summary_text(), self)
-        layout.addWidget(self._summary_label)
+        header_row.addWidget(self._summary_label, stretch=1)
+        self._totals_label = QLabel(self._build_totals_text(), self)
+        self._totals_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._totals_label.setStyleSheet(
+            "color: #0a5; font-weight: bold; padding: 0 4px;"
+        )
+        header_row.addWidget(self._totals_label)
+        layout.addLayout(header_row)
 
         # Tree view
         self._tree = QTreeView(self)
@@ -162,12 +188,40 @@ class SyncPreviewDialog(QDialog):
             self,
         )
         self._apply_btn = button_box.button(QDialogButtonBox.StandardButton.Apply)
+        # Bake the destination into the button text so it's obvious where
+        # the bytes are going — the generic "Apply" label was a major
+        # source of user confusion ("is this just identifying the diff or
+        # actually copying?").
+        self._apply_btn.setText(self._apply_button_text())
+        self._apply_btn.setToolTip(
+            "Copy / delete the checked files now. The destructive prompts "
+            "fire before any write."
+        )
         self._apply_btn.clicked.connect(self._on_apply_clicked)
+        self._cancel_btn = button_box.button(
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        if self._cancel_btn is not None:
+            self._cancel_btn.setToolTip(
+                "Discard the plan and close this dialog without writing "
+                "anything to disk."
+            )
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
         if not plan.actions:
             self._apply_btn.setEnabled(False)
+
+    def _apply_button_text(self) -> str:
+        """Apply-button label that names the destination, truncated to ~60 chars."""
+        target = self._destination_label or "destination"
+        # Truncate aggressively so the button doesn't blow out the dialog
+        # width on long network paths — keep the trailing path component
+        # visible since that's what disambiguates similar mounts.
+        max_inner = 60
+        if len(target) > max_inner:
+            target = "…" + target[-(max_inner - 1):]
+        return f"Apply changes to {target}"
 
     # ------------------------------------------------------------------
     # Header text
@@ -190,6 +244,33 @@ class SyncPreviewDialog(QDialog):
         if not parts:
             return "Destination is already in sync — nothing to do."
         return "  •  ".join(parts)
+
+    def _build_totals_text(self) -> str:
+        """Short top-right summary — copy / delete / unchanged counts."""
+        counts = self._plan.counts_by_kind()
+        bytes_by_kind = self._plan.bytes_by_kind()
+        copies = counts.get(ACTION_COPY_TO_DEST, 0) + counts.get(
+            ACTION_COPY_TO_LOCAL, 0
+        )
+        copy_bytes = bytes_by_kind.get(ACTION_COPY_TO_DEST, 0) + bytes_by_kind.get(
+            ACTION_COPY_TO_LOCAL, 0
+        )
+        deletes = counts.get(ACTION_DELETE_DEST, 0) + counts.get(
+            ACTION_DELETE_LOCAL, 0
+        )
+        unchanged = counts.get(ACTION_IDENTICAL, 0)
+        parts: list[str] = []
+        if copies:
+            parts.append(
+                f"{copies:,} file(s) ({_format_bytes(copy_bytes)}) to copy"
+            )
+        if deletes:
+            parts.append(f"{deletes:,} file(s) to delete")
+        if unchanged:
+            parts.append(f"{unchanged:,} unchanged")
+        if not parts:
+            return ""
+        return ", ".join(parts)
 
     # ------------------------------------------------------------------
     # Tree population
