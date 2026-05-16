@@ -1,8 +1,8 @@
-# CLAUDE.md — Romulus
+# CLAUDE.md — ROMulus
 
 ## What This Project Is
 
-Romulus is a local-first desktop ROM collection manager for retro game consoles. It scans, identifies, enriches with metadata/cover art, organizes, and exports ROM collections to device-specific folder structures (Anbernic, Batocera, MiSTer, etc.). Built with Python + PySide6 (Qt), SQLite, and no server infrastructure.
+ROMulus is a local-first desktop ROM collection manager for retro game consoles. It scans, identifies, enriches with metadata/cover art, organizes, and exports ROM collections to device-specific folder structures (Anbernic, Batocera, MiSTer, etc.). Built with Python + PySide6 (Qt), SQLite, and no server infrastructure.
 
 ## Project Tier
 

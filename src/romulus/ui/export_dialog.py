@@ -375,7 +375,7 @@ class ExportDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "No profiles loaded",
-                "Romulus couldn't find any destination profile YAML files. "
+                "ROMulus couldn't find any destination profile YAML files. "
                 "Check your install's ``profiles/`` folder.",
             )
             return

@@ -1,4 +1,4 @@
-"""Romulus — entry point."""
+"""ROMulus — entry point."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sys
 
 
 def main() -> None:
-    """Launch the Romulus desktop application."""
+    """Launch the ROMulus desktop application."""
     from romulus.app import run
 
     sys.exit(run())

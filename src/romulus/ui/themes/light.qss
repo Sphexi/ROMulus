@@ -1,4 +1,4 @@
-/* Romulus light theme — explicit light so Windows dark-mode users can force it */
+/* ROMulus light theme — explicit light so Windows dark-mode users can force it */
 QWidget {
     background-color: #fafafa;
     color: #1a1a1a;

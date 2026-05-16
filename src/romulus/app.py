@@ -49,7 +49,7 @@ _NOISY_THIRD_PARTY_LOGGERS: tuple[str, ...] = (
 
 
 def _resolve_install_dir() -> Path:
-    """Best-effort: find the directory where Romulus is installed.
+    """Best-effort: find the directory where ROMulus is installed.
 
     Three lookup strategies, tried in order:
 
@@ -356,13 +356,30 @@ def ensure_library_path(conn: sqlite3.Connection, parent=None) -> str:
     return chosen
 
 
+def _app_icon_path() -> Path:
+    """Absolute path to the bundled CD-ROM disc icon.
+
+    Lives inside the package (``src/romulus/ui/icons/cdrom.ico``) so the
+    PyInstaller spec includes it via the same ``collect_data_files`` sweep
+    as the QSS themes.
+    """
+    return Path(__file__).resolve().parent / "ui" / "icons" / "cdrom.ico"
+
+
 def run() -> int:
     """Bootstrap QApplication, init the DB, and show the main window."""
     log_path = setup_logging()
     logger = logging.getLogger("romulus")
-    logger.info("Romulus starting up (log file: %s)", log_path)
+    logger.info("ROMulus starting up (log file: %s)", log_path)
     ensure_user_editable_files()
     app = QApplication.instance() or QApplication(sys.argv)
+    # Apply the app icon BEFORE any window is constructed so MainWindow,
+    # dialogs, and the taskbar entry all inherit it.
+    icon_path = _app_icon_path()
+    if icon_path.is_file():
+        from PySide6.QtGui import QIcon
+
+        app.setWindowIcon(QIcon(str(icon_path)))
     conn = initialize_database(resolve_db_path())
     # Re-apply the user's configured log level now that the DB is up.
     configured = get_config(conn, "log_level") or "INFO"

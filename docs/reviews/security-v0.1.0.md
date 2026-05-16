@@ -1,4 +1,4 @@
-# Security Audit — Romulus v0.1.0 RC
+# Security Audit — ROMulus v0.1.0 RC
 
 **Auditor:** comprehensive-review:security-auditor agent
 **HEAD audited:** 8b903ff
@@ -11,7 +11,7 @@ Overall security posture is good for a local-first single-user desktop app at v0
 
 The biggest residual risks are concentrated in **two boundaries that accept untrusted external input**: (1) user-supplied destination profiles in `~/.romulus/profiles/`, which feed `profile.base_path` and `mapping.folder` straight into a `Path` join that can escape the target directory if the YAML contains absolute paths or `..` segments; and (2) ZIP archive handling in `core/hasher.py`, which reads the largest inner entry fully into memory with no decompression-bomb guard. Both are exploitable but require either a malicious profile to be dropped into a user-writable folder (low trust threshold for a desktop app) or a maliciously crafted ROM zip placed in the scan tree. A handful of medium/low items round out the report, mostly around defense-in-depth: stdlib XML parsers should use `defusedxml` for billion-laughs protection, the SQL queries for `get_alias_folder_pairs` mishandle Windows backslashes, and `pyproject.toml` does not pin minimum dependency versions.
 
-**Nothing in this audit blocks v0.1.0** for the intended audience (single-user desktop, scans their own library). Findings #1 (profile path traversal) and #2 (zip bomb) should ideally be addressed before public release, but the risk of "user installs Romulus, then drops attacker-supplied profile/ROM into their own home directory" is small. The credential-storage gap (plaintext in SQLite) is already documented as deferred to v0.2.0; this audit confirms the 0o600 mitigation is correct and does not see additional credential-leakage paths.
+**Nothing in this audit blocks v0.1.0** for the intended audience (single-user desktop, scans their own library). Findings #1 (profile path traversal) and #2 (zip bomb) should ideally be addressed before public release, but the risk of "user installs ROMulus, then drops attacker-supplied profile/ROM into their own home directory" is small. The credential-storage gap (plaintext in SQLite) is already documented as deferred to v0.2.0; this audit confirms the 0o600 mitigation is correct and does not see additional credential-leakage paths.
 
 ## Findings
 
@@ -118,7 +118,7 @@ The query computes `LENGTH(REPLACE(path, '\', '/'))` for the path-without-filena
 **#8 — Low — Cover downloads write any content-type to disk under `.png` name**
 *CWE-434 (Unrestricted File Upload — adapted to download). File:* `src/romulus/metadata/libretro.py:90-117`.
 
-`fetch_cover` checks `response.status_code == 200` and writes `response.content` to `{cache_dir}/{system_id}/{cover_type}/{game}.png` without verifying that the body is actually a PNG. If a future libretro-thumbnails compromise served HTML or a malicious file, it would be cached with a .png extension. Romulus itself only loads these via Qt's image loader (which would refuse to parse non-image data), so the immediate impact is bounded — but the file IS exposed by `copy_artwork` to the export target as `{stem}-image{suffix}` where `suffix` comes from `local_path.suffix` (always `.png` here). EmulationStation on the target device might do something different with mismatched content.
+`fetch_cover` checks `response.status_code == 200` and writes `response.content` to `{cache_dir}/{system_id}/{cover_type}/{game}.png` without verifying that the body is actually a PNG. If a future libretro-thumbnails compromise served HTML or a malicious file, it would be cached with a .png extension. ROMulus itself only loads these via Qt's image loader (which would refuse to parse non-image data), so the immediate impact is bounded — but the file IS exposed by `copy_artwork` to the export target as `{stem}-image{suffix}` where `suffix` comes from `local_path.suffix` (always `.png` here). EmulationStation on the target device might do something different with mismatched content.
 
 *Exploitation:* low — requires libretro-thumbnails CDN compromise or DNS hijack despite TLS pinning (TLS verify is on; no pin).
 
@@ -204,7 +204,7 @@ Every worker's `run()` has `except Exception as exc:` blocks that capture the ex
 
 ## Recommended pre-v0.1.0 fixes
 
-**Block release? No.** Romulus is a single-user local app and the realistic threat model is "user accidentally points it at the wrong folder" rather than "remote attacker." With that said:
+**Block release? No.** ROMulus is a single-user local app and the realistic threat model is "user accidentally points it at the wrong folder" rather than "remote attacker." With that said:
 
 **Highly recommended for v0.1.0 (small, surgical, high value):**
 1. **Finding #1** — add the `target_resolved in resolved.parents` check in `_system_dest_dir`. Six lines. Closes the profile-path-traversal vector entirely.

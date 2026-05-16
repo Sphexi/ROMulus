@@ -1,4 +1,4 @@
-# Romulus — Full Technical Specification
+# ROMulus — Full Technical Specification
 
 > **This file is a reference document.** The concise project rules live in `CLAUDE.md` at the project root. Session definitions live in `docs/sessions/*.md` (split from this file during Session 0). Read this file when you need specific implementation details not covered in the session file's Context section.
 
@@ -25,10 +25,10 @@
 
 ## Project Overview
 
-Romulus is a local-first desktop ROM collection manager for retro game consoles. It addresses a gap in the ecosystem: no modern cross-platform desktop app combines rich metadata browsing (covers, descriptions, genres) with file management, library organization, and device-specific export — without requiring Docker or a server.
+ROMulus is a local-first desktop ROM collection manager for retro game consoles. It addresses a gap in the ecosystem: no modern cross-platform desktop app combines rich metadata browsing (covers, descriptions, genres) with file management, library organization, and device-specific export — without requiring Docker or a server.
 
 **How it works at a high level:**
-1. User points Romulus at a folder containing ROMs
+1. User points ROMulus at a folder containing ROMs
 2. Quick Scan walks the filesystem, detects platforms from folder names, parses filenames for tags (region, revision, dump status), and extracts internal ROM headers
 3. Results populate a SQLite database and display in a browsable table UI with system sidebar
 4. Optional Heavy Scan computes SHA-1 hashes, matches against bundled No-Intro DATs for authoritative identification
@@ -716,7 +716,7 @@ pytest && ruff check src/ tests/
   - `pytest --version`
 - [ ] Project scaffolding:
   - Create `pyproject.toml` with all dependencies and project metadata
-  - Create `src/romulus/__init__.py`, `__main__.py` (minimal entry point that prints "Romulus v0.1.0")
+  - Create `src/romulus/__init__.py`, `__main__.py` (minimal entry point that prints "ROMulus v0.1.0")
   - Create directory structure per CLAUDE.md Project Structure
   - Create `data/dats/` directory (empty for now — DATs added in Session 3)
   - Create `data/profiles/` directory (empty for now — profiles added in Session 10)

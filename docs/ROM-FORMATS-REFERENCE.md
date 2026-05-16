@@ -656,7 +656,7 @@ A **DAT file** is an XML/Logiqx-format database describing every known good dump
 | clrmamepro | Universal, oldest, most flexible | Steep learning curve. Free but proprietary. |
 | RomVault | Fast, large collections, TOSEC-friendly | Commercial license for advanced features. |
 | RomCenter | Beginner-friendly, French project | Less actively developed. |
-| Romulus | Friendly UI for beginners | Development paused since 2022; slow with very large sets. |
+| ROMulus | Friendly UI for beginners | Development paused since 2022; slow with very large sets. |
 | Retool (and Retool-Redux) | Pre-processes DATs to produce a single "best" version per game (region preference, revision preference, language preference, exclude categories) | Output is a custom DAT consumed by clrmamepro/RomVault. |
 | igir | Cross-platform CLI, scriptable, modern | Good for automation pipelines. |
 | DATROMTool | Cross-platform, supports Retool metadata | CLI-friendly. |

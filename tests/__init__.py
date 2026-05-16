@@ -1,1 +1,1 @@
-"""Test suite for Romulus."""
+"""Test suite for ROMulus."""

@@ -1,6 +1,6 @@
 """Destination profile data model.
 
-Profiles describe how Romulus should lay out an exported ROM collection on a
+Profiles describe how ROMulus should lay out an exported ROM collection on a
 target device (Batocera, RetroPie, Onion OS, muOS, MiSTer, Analogue Pocket,
 etc.). The on-disk format is YAML; this module is the typed in-memory
 representation loaded by the exporter.

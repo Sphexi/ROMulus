@@ -14,7 +14,7 @@
   - `pytest --version`
 - [x] Project scaffolding:
   - Create `pyproject.toml` with all dependencies and project metadata
-  - Create `src/romulus/__init__.py`, `__main__.py` (minimal entry point that prints "Romulus v0.1.0")
+  - Create `src/romulus/__init__.py`, `__main__.py` (minimal entry point that prints "ROMulus v0.1.0")
   - Create directory structure per CLAUDE.md Project Structure
   - Create `data/dats/` directory (empty for now — DATs added in Session 3)
   - Create `data/profiles/` directory (empty for now — profiles added in Session 10)

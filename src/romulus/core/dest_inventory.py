@@ -4,7 +4,7 @@ This is the read side of the destination-sync engine (sync-design spec §4.2,
 §4.5). Given a saved :class:`sync_destinations` row, it:
 
 1. Walks the on-disk target (depth-capped to keep accidental
-   ``C:\\Users\\…\\Romulus\\`` scans from running away),
+   ``C:\\Users\\…\\ROMulus\\`` scans from running away),
 2. Reuses cached ``(size, mtime)`` rows from ``dest_inventory`` when the file
    hasn't changed since the previous sync — same staleness check the hash
    cache uses,

@@ -1,6 +1,6 @@
 """System (platform) data model and registry.
 
-The system registry is the source of truth for which platforms Romulus supports.
+The system registry is the source of truth for which platforms ROMulus supports.
 Each entry codifies the accepted file extensions, folder-name aliases (across
 RetroArch / Batocera / Anbernic / Onion / muOS / ArkOS / ROCKNIX), a header rule
 used for normalization prior to hashing, and the libretro thumbnail folder name.
@@ -720,7 +720,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
     ),
     # --- LeapFrog (educational) ---
     # LeapFrog's edutainment hardware. Cartridges aren't really games in the
-    # traditional sense, but No-Intro publishes DATs for them so Romulus
+    # traditional sense, but No-Intro publishes DATs for them so ROMulus
     # recognizes the platforms for users who collect them.
     SystemDef(
         id="leappad",
@@ -1007,7 +1007,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
     # DATs catalog digital installs (eShop, PSN, Xbox Live, WiiWare/VC) rather
     # than original-disc dumps, so the primary ``dat_name`` is set to the
     # canonical retail header and the digital storefront variants are listed
-    # as ``dat_name_aliases``. Romulus organizes the files for the user; the
+    # as ``dat_name_aliases``. ROMulus organizes the files for the user; the
     # user is responsible for any decryption keys required by the target
     # emulator (Dolphin, Cemu, Citra, RPCS3, vita3k, etc.).
     SystemDef(
@@ -1094,7 +1094,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sony - PlayStation Vita",
         folder_aliases=["psvita", "vita"],
         # ``(VPK)`` is the homebrew/packaged-install format used by vita3k.
-        # The PSN variants require keys; Romulus stores them either way.
+        # The PSN variants require keys; ROMulus stores them either way.
         dat_name="Sony - PlayStation Vita (VPK)",
         dat_name_aliases=[
             "Sony - PlayStation Vita (PSN) (Decrypted)",
@@ -1268,7 +1268,7 @@ def load_systems_from_yaml(yaml_paths: Iterable[Path | str]) -> list[SystemDef]:
 
 
 def _resolve_bundled_systems_dir() -> Path | None:
-    """Locate the ``systems/`` directory shipped with this Romulus install.
+    """Locate the ``systems/`` directory shipped with this ROMulus install.
 
     Three strategies, tried in order — mirroring ``app._resolve_install_dir``
     but without importing from ``romulus.app`` (this module is imported

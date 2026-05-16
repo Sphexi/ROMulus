@@ -257,7 +257,7 @@ Igir is the most architecturally relevant tool to this project. It solves many o
 
 | Source | Type | Account | Coverage | Notes |
 |---|---|---|---|---|
-| **libretro-thumbnails** | HTTP direct download | **None** | Excellent — all No-Intro systems | `https://thumbnails.libretro.com/{System}/{Named_Boxarts\|Named_Snaps\|Named_Titles}/{Game}.png`. Three image types: box art, in-game screenshot, title screen. Files use No-Intro canonical names with character replacements (`&*/:\<>?\|"` → `_`). **Primary cover source for Romulus.** |
+| **libretro-thumbnails** | HTTP direct download | **None** | Excellent — all No-Intro systems | `https://thumbnails.libretro.com/{System}/{Named_Boxarts\|Named_Snaps\|Named_Titles}/{Game}.png`. Three image types: box art, in-game screenshot, title screen. Files use No-Intro canonical names with character replacements (`&*/:\<>?\|"` → `_`). **Primary cover source for ROMulus.** |
 | **LaunchBox** | Downloadable XML + media packs | None | Very good | Bulk download. Covers, screenshots, manuals. |
 | **GameTDB** | Downloadable XML + images | None | Nintendo-only | Wii/GC/DS/3DS/Switch covers, discs, 3D box art. |
 

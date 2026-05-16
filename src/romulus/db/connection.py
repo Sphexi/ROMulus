@@ -1,6 +1,6 @@
 """SQLite connection management.
 
-Romulus stores everything in a single SQLite database. The on-disk location
+ROMulus stores everything in a single SQLite database. The on-disk location
 depends on how the app was launched — see :func:`romulus.app.resolve_data_dir`
 for the precedence rules (``ROMULUS_DATA_DIR`` env > ``<install_dir>/data/``
 > ``~/.romulus/``). To avoid importing the Qt-heavy ``romulus.app`` from this

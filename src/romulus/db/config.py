@@ -9,7 +9,7 @@ preserve whatever the user has set via the Settings dialog.
 
 Path defaults (``cover_cache_path``, ``dat_paths``) are computed lazily from
 the resolved data and install directories so portable-ZIP launches under
-``C:\\Tools\\Romulus\\`` and dev runs from the repo both pick sensible
+``C:\\Tools\\ROMulus\\`` and dev runs from the repo both pick sensible
 locations without the user having to edit settings on first launch.
 """
 

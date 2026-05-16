@@ -279,7 +279,7 @@ systems:
   # (Wii); Wii U / 3DS / PS Vita / PS3 / Xbox 360 / DSiWare are out of reach.
   wii:
     # Dolphin works on Pi 4 and especially Pi 5 — performance varies wildly
-    # per title, but Romulus's job is to organize, not benchmark.
+    # per title, but ROMulus's job is to organize, not benchmark.
     folder: "wii"
     extensions: [".iso", ".wbfs", ".rvz", ".wia", ".ciso", ".gcz", ".wad", ".nkit.iso"]
   wiiu:

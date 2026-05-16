@@ -1,4 +1,4 @@
-# Romulus
+# ROMulus
 
 A local-first desktop ROM collection manager for retro game consoles. Scan,
 identify, enrich with metadata and cover art, organize, and export your
@@ -17,11 +17,11 @@ scan → identify → enrich → organize → export pipeline works. See
 
 ---
 
-## Why Romulus?
+## Why ROMulus?
 
 If you keep a serious ROM library you've probably collected workflow scraps:
 filename cleanup scripts, a half-finished ScreenScraper run, a OneDrive folder
-that "almost matches" what your handheld expects. Romulus replaces that with
+that "almost matches" what your handheld expects. ROMulus replaces that with
 a single desktop app that:
 
 - **Stays local.** No phoning home, no upload, no required login. SQLite +
@@ -42,17 +42,17 @@ a single desktop app that:
 
 ## Installation (portable, Windows)
 
-The easiest way to run Romulus on Windows is the portable ZIP:
+The easiest way to run ROMulus on Windows is the portable ZIP:
 
 1. Download `romulus-windows-x64.zip` from the [Releases][releases] page.
-2. Extract it anywhere you like — `C:\Tools\Romulus\`, a USB stick,
+2. Extract it anywhere you like — `C:\Tools\ROMulus\`, a USB stick,
    wherever. There's no installer, no registry entry, nothing to uninstall.
 3. Double-click `romulus.exe`.
 
 After first launch the folder looks like this:
 
 ```
-Romulus\
+ROMulus\
   romulus.exe
   _internal\               (Python runtime + PySide6 — leave it alone)
   profiles\*.yaml          (destination profiles — edit freely)
@@ -119,11 +119,11 @@ read-only). Nothing else on your system is touched.
 
 ## Quick start
 
-The first time you run Romulus the window is empty. The recommended workflow
+The first time you run ROMulus the window is empty. The recommended workflow
 is:
 
 1. **File → Open Library...** Pick the root folder that contains your ROMs.
-   Romulus will save the path; you only need to do this once.
+   ROMulus will save the path; you only need to do this once.
 2. **Quick Scan** (toolbar). Walks the library, detects which console each
    ROM belongs to (via folder aliases and file extensions), and parses
    filenames for region/revision/disc/hack flags. Runs in seconds to a few
@@ -273,7 +273,7 @@ systems:
   megadrive:
     folder: "MEGADRIVE"
     extensions: [".md", ".gen", ".bin", ".smd", ".zip"]
-  # Mark systems your device does not support so Romulus skips them cleanly:
+  # Mark systems your device does not support so ROMulus skips them cleanly:
   gamecube:
     folder: ""
     supported: false
@@ -286,7 +286,7 @@ built-ins and show up in the Export dialog's profile dropdown.
 
 ## DAT files
 
-Romulus uses [No-Intro][nointro]-style Logiqx XML DAT files to (eventually)
+ROMulus uses [No-Intro][nointro]-style Logiqx XML DAT files to (eventually)
 match ROMs by SHA-1/CRC32 and replace messy filenames with canonical
 names. DAT parsing is implemented and unit-tested; what ships in
 `data/dats/` for v0.1.0 is **two synthetic placeholder files** (one for
@@ -295,17 +295,17 @@ exercised — they are not a usable matching dataset.
 
 **To get real DAT matching, you need to supply your own DATs.** No-Intro
 DAT files are redistributed under terms that don't permit bundling in
-third-party software, so you download them yourself and point Romulus
+third-party software, so you download them yourself and point ROMulus
 at the folder:
 
 1. Visit [DAT-o-MATIC][datomatic] (the official No-Intro distribution
    site).
 2. Download the `Standard` DAT for each system you care about.
 3. Unzip the `.dat` files into a folder anywhere on disk.
-4. In Romulus, open **Settings → DATs**, click **Add folder...**, and pick
+4. In ROMulus, open **Settings → DATs**, click **Add folder...**, and pick
    your DAT folder.
 
-Multiple DAT folders are supported — Romulus rescans them on startup and
+Multiple DAT folders are supported — ROMulus rescans them on startup and
 when you confirm changes in the Settings dialog. Heavy Scan match rates
 will be very low until you've added real DATs.
 
@@ -331,7 +331,7 @@ enrichment still works.
 To configure ScreenScraper:
 
 1. Create a free account at <https://www.screenscraper.fr/>.
-2. **Settings → Metadata** in Romulus, enter your username and password.
+2. **Settings → Metadata** in ROMulus, enter your username and password.
 3. Click **Test connection** to validate the credentials against
    ScreenScraper before saving (uses the values currently in the form,
    not the saved config).
@@ -424,7 +424,7 @@ pass with 415 tests collected, 1 skipped (the POSIX-only chmod test).
 ## Troubleshooting
 
 **"No library configured" when I click Quick Scan.** Use **File → Open
-Library...** first to point Romulus at the root of your ROM folder.
+Library...** first to point ROMulus at the root of your ROM folder.
 
 **Quick Scan finished but the game table is empty.** The scanner only
 shows files it could place in a known system folder. Check

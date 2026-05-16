@@ -9,7 +9,7 @@
 
 ## 1. Goals
 
-The local Romulus library is the source of truth for the user's collection. Sync
+The local ROMulus library is the source of truth for the user's collection. Sync
 mirrors that library (or a filtered subset) to a separate destination — a
 handheld over USB, an SD card, a network share, or a local folder — and lets
 the user reconcile changes in either direction. Three explicit objectives:

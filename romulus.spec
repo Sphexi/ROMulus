@@ -1,4 +1,4 @@
-# PyInstaller spec for Romulus — portable Windows ZIP distribution.
+# PyInstaller spec for ROMulus — portable Windows ZIP distribution.
 #
 # Produces a ``--onedir`` build under ``dist/romulus/`` containing:
 #
@@ -47,6 +47,19 @@ themes_dir = PROJECT_ROOT / "src" / "romulus" / "ui" / "themes"
 if themes_dir.is_dir():
     # ``*`` so any .qss / .css / palette file accompanies the package.
     datas.append((str(themes_dir / "*.qss"), "romulus/ui/themes"))
+icons_dir = PROJECT_ROOT / "src" / "romulus" / "ui" / "icons"
+if icons_dir.is_dir():
+    # CD-ROM disc icon used by ``app.run`` -> ``QApplication.setWindowIcon``
+    # AND the EXE icon below. Ship both PNG + ICO; Qt resolves whichever is
+    # appropriate at runtime.
+    datas.append((str(icons_dir / "*.png"), "romulus/ui/icons"))
+    datas.append((str(icons_dir / "*.ico"), "romulus/ui/icons"))
+
+# Path to the ICO used as the exe's Windows shell icon. Resolves to None
+# during dev if the icon hasn't been generated yet — PyInstaller treats
+# ``icon=None`` as "use the default" rather than erroring out.
+_ico_candidate = PROJECT_ROOT / "src" / "romulus" / "ui" / "icons" / "cdrom.ico"
+exe_icon: str | None = str(_ico_candidate) if _ico_candidate.is_file() else None
 
 # Hidden imports: PySide6 model/view and SQL drivers get pulled in
 # indirectly and PyInstaller's static analyzer doesn't always catch them.
@@ -100,7 +113,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=exe_icon,
 )
 
 coll = COLLECT(

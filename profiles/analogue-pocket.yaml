@@ -5,7 +5,7 @@
 # common-folder names used by the major cores at the time of writing. Disc-
 # based and console-generation systems are unsupported by the Pocket
 # hardware. Folder names should be audited against the latest core releases
-# before a public release of Romulus — these change as new cores ship.
+# before a public release of ROMulus — these change as new cores ship.
 id: analogue-pocket
 name: "Analogue Pocket"
 description: "openFPGA-powered handheld; one folder per core"

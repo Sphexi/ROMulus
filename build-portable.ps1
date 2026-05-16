@@ -1,4 +1,4 @@
-# Build the Windows portable ZIP distribution of Romulus.
+# Build the Windows portable ZIP distribution of ROMulus.
 #
 # Run from the repo root with the project's virtual env activated:
 #

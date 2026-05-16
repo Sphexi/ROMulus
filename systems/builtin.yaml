@@ -1,4 +1,4 @@
-# Bundled system registry for Romulus.
+# Bundled system registry for ROMulus.
 #
 # Generated from the v0.1.0 SYSTEM_REGISTRY. Drop additional yaml files
 # next to this one to extend the supported-platform list; the loader globs

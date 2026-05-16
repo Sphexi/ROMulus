@@ -1,4 +1,4 @@
-"""Theme system — QSS stylesheets bundled with Romulus.
+"""Theme system — QSS stylesheets bundled with ROMulus.
 
 ``AVAILABLE_THEMES`` maps theme id -> display name.
 ``apply_theme`` applies the stylesheet app-wide.

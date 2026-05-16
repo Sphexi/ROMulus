@@ -1,4 +1,4 @@
-# Code Quality Review — Romulus v0.1.0 RC
+# Code Quality Review — ROMulus v0.1.0 RC
 
 **Reviewer:** comprehensive-review:code-reviewer agent
 **HEAD reviewed:** 8b903ff
@@ -6,7 +6,7 @@
 
 ## Executive summary
 
-Romulus is in unusually good shape for a v0.1.0 release candidate built across 11 sessions. The architecture is coherent and the layering is respected: every SQL query lives in `db/queries.py`, every filesystem mutation routes through `core/atomic.py`, every long-running operation goes through a QThread worker with a uniform `progress` / `finished_ok` / `failed` signal contract, and Session 10's `core/atomic.py` extraction was a genuinely valuable factoring. Docstring coverage on public functions and classes is essentially complete and the style is consistently terse-but-informative. Ruff is clean, the test suite covers the load-bearing behaviours (atomic-write rollback, match-confidence monotonicity, hack-vs-original dedup safety, scan idempotency), and HTTP traffic is universally mocked.
+ROMulus is in unusually good shape for a v0.1.0 release candidate built across 11 sessions. The architecture is coherent and the layering is respected: every SQL query lives in `db/queries.py`, every filesystem mutation routes through `core/atomic.py`, every long-running operation goes through a QThread worker with a uniform `progress` / `finished_ok` / `failed` signal contract, and Session 10's `core/atomic.py` extraction was a genuinely valuable factoring. Docstring coverage on public functions and classes is essentially complete and the style is consistently terse-but-informative. Ruff is clean, the test suite covers the load-bearing behaviours (atomic-write rollback, match-confidence monotonicity, hack-vs-original dedup safety, scan idempotency), and HTTP traffic is universally mocked.
 
 The biggest risks are concentrated in three places: (1) the worker layer, which duplicates the same ~30-line cooperative-cancel scaffolding four times in `ui/workers.py`; (2) a small cluster of cross-module duplication around N64 byteswap helpers and No-Intro region/revision tokens between `core/scanner.py`, `core/identifier.py`, `core/hasher.py`, and `core/dat_parser.py`; and (3) the match-confidence rank table, which is encoded three times — once as a Python dict in `db/queries.py`, once as a SQL `CASE` expression a few lines below it, and once inline in `ui/detail_panel.py`. These are all maintenance hazards rather than correctness bugs; they will bite the moment the rank table grows a fifth level.
 
@@ -176,7 +176,7 @@ self.match_badge.setStyleSheet(
 )
 ```
 
-The colours come from `_MATCH_BADGES` (`detail_panel.py:31-36`) — they're constants and Romulus only ships them, so there's no injection vector. Still, mixing string interpolation with stylesheets is fragile (a future "themable" colour from a config field would have to scrub commas/braces). Worth a small wrapper that builds the stylesheet from a typed input rather than two arbitrary strings.
+The colours come from `_MATCH_BADGES` (`detail_panel.py:31-36`) — they're constants and ROMulus only ships them, so there's no injection vector. Still, mixing string interpolation with stylesheets is fragile (a future "themable" colour from a config field would have to scrub commas/braces). Worth a small wrapper that builds the stylesheet from a typed input rather than two arbitrary strings.
 
 ### Low / Nit
 

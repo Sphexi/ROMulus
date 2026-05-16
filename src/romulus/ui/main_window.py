@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         super().__init__()
-        self.setWindowTitle("Romulus")
+        self.setWindowTitle("ROMulus")
         self.resize(1280, 800)
         self._conn = conn
         self._selected_system: str | None = None
@@ -209,7 +209,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(export_action)
 
         help_menu = menu.addMenu("&Help")
-        about_action = QAction("&About Romulus", self)
+        about_action = QAction("&About ROMulus", self)
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
 
@@ -375,8 +375,8 @@ class MainWindow(QMainWindow):
 
         QMessageBox.about(
             self,
-            "About Romulus",
-            f"Romulus v{__version__}\nLocal-first ROM collection manager.",
+            "About ROMulus",
+            f"ROMulus v{__version__}\nLocal-first ROM collection manager.",
         )
 
     # ------------------------------------------------------------------
@@ -868,7 +868,7 @@ class MainWindow(QMainWindow):
                 self,
                 "No destination profiles",
                 "No destination profiles were found. The bundled profiles "
-                "ship inside the Romulus package; if you see this message "
+                "ship inside the ROMulus package; if you see this message "
                 "the install is incomplete.",
             )
             return

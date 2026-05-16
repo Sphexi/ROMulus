@@ -259,7 +259,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, conn: sqlite3.Connection, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Romulus Settings")
+        self.setWindowTitle("ROMulus Settings")
         self._conn = conn
 
         self.general = _GeneralTab(conn)
