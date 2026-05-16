@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -112,45 +111,31 @@ class ExportDialog(QDialog):
             self._mode_combo.addItem(label, value)
         form.addRow("Mode:", self._mode_combo)
 
-        # Saved-destination dropdown + a "+" button to save a new one. The
-        # legacy "(one-shot — not saved)" sentinel was removed — it sent
-        # ``dest_id = -1`` through to the workers and tripped every
-        # ``dest_inventory`` / ``sync_plans`` insert with a FOREIGN KEY
-        # constraint failure (the FKs reference ``sync_destinations(id)``).
-        # When the dropdown is empty (no saved destinations yet) the user
-        # picks a path + profile, then clicks "+" to save it before scan.
+        # Single Destination row replaces the previous trio of
+        # Destination + Destination profile + Target path. Picking a saved
+        # destination implies its path AND profile — there's no separate
+        # "target" the user has to fill in. The "+ Add..." button opens a
+        # short three-step wizard (folder picker → profile picker → name)
+        # to register a new destination.
         dest_row = QHBoxLayout()
         self._destination_combo = QComboBox(self)
+        self._destination_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
         self._populate_destination_combo()
         self._destination_combo.currentIndexChanged.connect(
             self._on_destination_changed
         )
         dest_row.addWidget(self._destination_combo, stretch=1)
-        self._save_dest_btn = QPushButton("+", self)
+        self._save_dest_btn = QPushButton("+ Add...", self)
         self._save_dest_btn.setToolTip(
-            "Save the current target path + profile as a named destination."
+            "Register a new named destination — folder, profile, and label."
         )
-        self._save_dest_btn.setMaximumWidth(36)
         self._save_dest_btn.clicked.connect(self._on_save_destination)
         dest_row.addWidget(self._save_dest_btn)
         dest_widget = QWidget(self)
         dest_widget.setLayout(dest_row)
         form.addRow("Destination:", dest_widget)
-
-        # ---- Profile + target path ------------------------------------
-        self._profile_combo = QComboBox(self)
-        for profile_id, profile in sorted(profiles.items()):
-            self._profile_combo.addItem(profile.name, profile_id)
-        form.addRow("Destination profile:", self._profile_combo)
-
-        path_row = QHBoxLayout()
-        self._target_edit = QLineEdit(self)
-        self._target_edit.setPlaceholderText("Select an export folder...")
-        path_row.addWidget(self._target_edit)
-        browse_btn = QPushButton("Browse...", self)
-        browse_btn.clicked.connect(self._on_browse_target)
-        path_row.addWidget(browse_btn)
-        form.addRow("Target path:", path_row)
         layout.addLayout(form)
 
         # ---- System filter --------------------------------------------
@@ -255,14 +240,23 @@ class ExportDialog(QDialog):
     # ------------------------------------------------------------------
 
     def selected_profile(self) -> DestinationProfile | None:
-        """The currently-selected destination profile, or None if none loaded."""
-        profile_id = self._profile_combo.currentData()
-        if profile_id is None:
+        """Profile attached to the selected destination, or None if no
+        destination is picked (or the profile YAML has been deleted)."""
+        dest_id = self.selected_destination_id()
+        if dest_id <= 0:
             return None
-        return self._profiles.get(str(profile_id))
+        row = q.get_sync_destination(self._conn, dest_id)
+        if row is None:
+            return None
+        return self._profiles.get(str(row["profile_id"]))
 
     def selected_target_path(self) -> str:
-        return self._target_edit.text().strip()
+        """Path of the selected destination, or '' if none picked."""
+        dest_id = self.selected_destination_id()
+        if dest_id <= 0:
+            return ""
+        row = q.get_sync_destination(self._conn, dest_id)
+        return str(row["target_path"]) if row is not None else ""
 
     def selected_systems(self) -> list[str]:
         """System ids of every checked entry in the systems list."""
@@ -326,88 +320,106 @@ class ExportDialog(QDialog):
     # Slots
     # ------------------------------------------------------------------
 
-    def _on_browse_target(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(
-            self, "Choose export folder", str(Path.home())
-        )
-        if chosen:
-            self._target_edit.setText(chosen)
-
     def _on_destination_changed(self, _index: int) -> None:
-        """When the user picks a saved destination, pre-fill the path + profile."""
-        dest_id = self.selected_destination_id()
-        if dest_id <= 0:
-            return
-        row = q.get_sync_destination(self._conn, dest_id)
-        if row is None:
-            return
-        self._target_edit.setText(str(row["target_path"]))
-        # Select the destination's saved profile if it exists in the dropdown.
-        profile_id = str(row["profile_id"])
-        for idx in range(self._profile_combo.count()):
-            if self._profile_combo.itemData(idx) == profile_id:
-                self._profile_combo.setCurrentIndex(idx)
-                break
+        """Hook for downstream UI that needs to react to destination changes.
+
+        Currently a no-op — path and profile are derived from the selected
+        row at action time via :meth:`selected_target_path` /
+        :meth:`selected_profile`. Kept as a hook for future per-destination
+        UI hints (last-synced timestamp, etc.).
+        """
+        return
 
     def _populate_destination_combo(
         self, select_dest_id: int | None = None
     ) -> None:
         """Reload the destination dropdown from the DB.
 
-        When no destinations are saved we show a single greyed-out
-        placeholder so the user understands the UI state and reaches for the
-        "+" button. The placeholder carries ``-1`` so MainWindow's
-        ``ensure_sync_destination_by_path`` upgrade still fires if the user
-        somehow triggers a scan without saving first (defensive).
+        Each entry's label includes the destination's profile name so the
+        user can tell at a glance which device a given target is for —
+        ``Anbernic USB → E:/Roms  (Anbernic RGLauncher)``. With zero saved
+        destinations we show a placeholder and the "+" button is the
+        only action.
         """
         self._destination_combo.blockSignals(True)
         self._destination_combo.clear()
         rows = list(q.get_sync_destinations(self._conn))
         if not rows:
             self._destination_combo.addItem(
-                "(no destinations — click + to save one)", -1
+                "(no destinations — click + Add to create one)", -1
             )
         else:
             for row in rows:
-                self._destination_combo.addItem(
-                    f"{row['name']} → {row['target_path']}", int(row["id"])
-                )
-                if select_dest_id is not None and int(row["id"]) == select_dest_id:
+                profile = self._profiles.get(str(row["profile_id"]))
+                pname = profile.name if profile else str(row["profile_id"])
+                label = f"{row['name']} → {row['target_path']}  ({pname})"
+                self._destination_combo.addItem(label, int(row["id"]))
+                if (
+                    select_dest_id is not None
+                    and int(row["id"]) == select_dest_id
+                ):
                     self._destination_combo.setCurrentIndex(
                         self._destination_combo.count() - 1
                     )
         self._destination_combo.blockSignals(False)
 
     def _on_save_destination(self) -> None:
-        """Save the current target + profile as a named destination."""
-        target = self.selected_target_path()
-        profile = self.selected_profile()
-        if profile is None or not target:
-            QMessageBox.information(
+        """Three-step wizard: folder picker → profile picker → name.
+
+        Replaces the previous workflow where the user had to fill in
+        Target path + Destination profile fields BEFORE clicking "+".
+        Now "+" is fully self-contained: pick what you want, name it,
+        done. New destination is auto-selected on return.
+        """
+        if not self._profiles:
+            QMessageBox.warning(
                 self,
-                "Cannot save destination",
-                "Select a target path and a destination profile first.",
+                "No profiles loaded",
+                "Romulus couldn't find any destination profile YAML files. "
+                "Check your install's ``profiles/`` folder.",
             )
             return
-        default_name = f"Quick Sync — {Path(target).name or target}"
-        name, ok = QInputDialog.getText(
+        target = QFileDialog.getExistingDirectory(
+            self, "Choose destination folder", str(Path.home())
+        )
+        if not target:
+            return
+        profile_items: list[tuple[str, str]] = [
+            (p.name, pid) for pid, p in sorted(self._profiles.items())
+        ]
+        profile_names = [name for name, _ in profile_items]
+        profile_name, ok = QInputDialog.getItem(
             self,
-            "Save destination",
-            "Destination name:",
-            text=default_name,
+            "Choose destination profile",
+            "Which device / launcher will read this folder?",
+            profile_names,
+            current=0,
+            editable=False,
         )
         if not ok:
             return
-        name = name.strip()
-        if not name:
+        profile_id = next(
+            (pid for name, pid in profile_items if name == profile_name),
+            None,
+        )
+        if profile_id is None:
+            return
+        default_name = Path(target).name or target
+        name, ok = QInputDialog.getText(
+            self,
+            "Name this destination",
+            "Label (shown in the dropdown):",
+            text=default_name,
+        )
+        if not ok or not name.strip():
             return
         try:
             new_id = q.insert_sync_destination(
                 self._conn,
                 {
-                    "name": name,
+                    "name": name.strip(),
                     "target_path": target,
-                    "profile_id": profile.id,
+                    "profile_id": profile_id,
                 },
             )
             self._conn.commit()
@@ -415,7 +427,7 @@ class ExportDialog(QDialog):
             QMessageBox.warning(
                 self,
                 "Name already in use",
-                f"A destination called '{name}' already exists. "
+                f"A destination called '{name.strip()}' already exists. "
                 "Pick a different name.",
             )
             return
@@ -427,7 +439,7 @@ class ExportDialog(QDialog):
         target = self.selected_target_path()
         if profile is None or not target:
             self._status_label.setText(
-                "Select a destination profile and target path first."
+                "Pick a destination first (or click + Add to create one)."
             )
             return
         self.sync_scan_requested.emit(

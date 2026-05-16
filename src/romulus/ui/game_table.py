@@ -338,22 +338,30 @@ class GameTable(QWidget):
         self.view.setSelectionMode(QTableView.SelectionMode.SingleSelection)
         self.view.setAlternatingRowColors(True)
         self.view.verticalHeader().setVisible(False)
-        # Name stretches to fill leftover space; everything else is
-        # Interactive (user can drag-resize). Path is auto-fit to its widest
-        # entry on every set_rows() so full Windows paths render without
-        # ellipsis. ``minimumSectionSize`` guarantees Name can't be squeezed
-        # below 200px when a long Path eats most of the viewport — the
-        # horizontal scrollbar picks up any further overflow.
+        # All columns are Interactive so the user can drag-resize every one
+        # including Name. Pure Qt Stretch mode disables manual resize on the
+        # stretched column, which the user kept noticing; pure Interactive
+        # leaves a gap when columns don't fill the viewport. We simulate the
+        # "fill remaining space" behavior ourselves: until the user manually
+        # drags the Name column, ``_adjust_name_column`` keeps it sized to
+        # the leftover viewport width. After a manual drag the user's choice
+        # sticks forever.
         header = self.view.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(_COL_NAME, QHeaderView.ResizeMode.Stretch)
-        header.setMinimumSectionSize(200)
+        header.setMinimumSectionSize(80)
+        self.view.setColumnWidth(_COL_NAME, 360)  # initial; auto-grown below
         self.view.setColumnWidth(_COL_SYSTEM, 110)
         self.view.setColumnWidth(_COL_REGION, 90)
         self.view.setColumnWidth(_COL_SIZE, 80)
         self.view.setColumnWidth(_COL_MATCH, 90)
         self.view.setColumnWidth(_COL_PATH, 280)
+        # Track whether the user has explicitly resized Name. While False,
+        # Name auto-grows to fill leftover space; once True, we never touch
+        # it again.
+        self._name_user_resized: bool = False
+        self._adjusting_name_width: bool = False
+        header.sectionResized.connect(self._on_section_resized)
         # Disable in-cell ellipsis on the Path column so wide cells render in
         # full when the column is dragged wider (or auto-fitted below).
         self.view.setTextElideMode(Qt.TextElideMode.ElideNone)
@@ -389,12 +397,63 @@ class GameTable(QWidget):
         """Hand the underlying model a fresh list of rows.
 
         Auto-fits the Path column to its widest entry so full Windows paths
-        render without ellipsis. Name keeps Stretch + a 200px minimum so it
-        can't be squeezed to nothing when a wide Path runs the table wider
-        than the viewport — the horizontal scrollbar picks up any overflow.
+        render without ellipsis, then re-expands Name to absorb leftover
+        viewport space (unless the user has manually resized Name).
         """
         self.model.set_rows(rows)
         self.view.resizeColumnToContents(_COL_PATH)
+        self._adjust_name_column()
+
+    def resizeEvent(self, event: object) -> None:  # type: ignore[override]
+        """Re-fill Name to leftover space whenever the widget resizes.
+
+        Stays a no-op once the user has manually dragged Name to a chosen
+        width — see ``_on_section_resized``.
+        """
+        super().resizeEvent(event)  # type: ignore[arg-type]
+        self._adjust_name_column()
+
+    def _on_section_resized(
+        self, logical_index: int, _old_size: int, _new_size: int
+    ) -> None:
+        """Detect user-initiated drag on the Name column header divider.
+
+        Programmatic resizes flip ``_adjusting_name_width`` to skip the flag
+        update; everything else (cursor drag, double-click-to-fit) flags the
+        column as user-owned and stops the auto-grow.
+        """
+        if self._adjusting_name_width:
+            return
+        if logical_index == _COL_NAME:
+            self._name_user_resized = True
+
+    def _adjust_name_column(self) -> None:
+        """Re-size Name to fill the leftover viewport width.
+
+        No-op once the user has manually dragged Name (we respect their
+        choice). Otherwise: viewport width minus the sum of every other
+        column, clamped to a floor of 80px so Name never disappears even
+        when a very long Path runs the table off-screen (horizontal
+        scrollbar picks up the overflow).
+        """
+        if self._name_user_resized:
+            return
+        viewport_width = self.view.viewport().width()
+        if viewport_width <= 0:
+            return  # not yet laid out
+        used = sum(
+            self.view.columnWidth(i)
+            for i in range(len(COLUMNS))
+            if i != _COL_NAME
+        )
+        target = max(viewport_width - used, 80)
+        if target == self.view.columnWidth(_COL_NAME):
+            return
+        self._adjusting_name_width = True
+        try:
+            self.view.setColumnWidth(_COL_NAME, target)
+        finally:
+            self._adjusting_name_width = False
 
     def set_collection_context(self, in_collection: bool) -> None:
         """Tell the table whether the current view is filtered to a collection."""
