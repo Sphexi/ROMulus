@@ -228,12 +228,25 @@ class _MatchIndex:
     a single time instead of per-dest-file. A 50 k library still fits in
     memory comfortably (rows are ~200 bytes each), and the win on a large
     inventory is enormous: O(N+M) vs O(N·M).
+
+    ``by_fuzzy_region`` is keyed on ``(fuzzy_key, region, system_id)`` —
+    the system_id segment is the cross-platform guard, without it titles
+    like ``Pac-Man`` collide between Game Boy (.gb) and Game Boy Color
+    (.gbc) since both produce identical fuzzy keys + regions. The dest
+    side derives its system_id from the rel_path via the profile's folder
+    map at match time.
+
+    ``profile`` is stored so :func:`_match_dest_entry` can do the dest →
+    system_id lookup without an additional argument.
     """
 
     by_rel_path: dict[str, LocalRom] = field(default_factory=dict)
-    by_fuzzy_region: dict[tuple[str, str], LocalRom] = field(default_factory=dict)
+    by_fuzzy_region: dict[tuple[str, str, str], LocalRom] = field(
+        default_factory=dict
+    )
     by_sha1: dict[str, LocalRom] = field(default_factory=dict)
     rows: list[LocalRom] = field(default_factory=list)
+    profile: DestinationProfile | None = None
 
 
 def _build_match_index(
@@ -248,7 +261,7 @@ def _build_match_index(
     previously-exported file regardless of how the local copy is laid out.
     Tier-2 ``by_fuzzy_region`` is keyed on the spec's match composite.
     """
-    index = _MatchIndex()
+    index = _MatchIndex(profile=profile)
     rows = [_row_to_local_rom(r) for r in q.get_local_roms_for_match(conn)]
     index.rows = rows
     for rom in rows:
@@ -266,7 +279,10 @@ def _build_match_index(
                 # paths. Skip — tier-2 will still pick this up.
                 pass
         if rom.fuzzy_key:
-            key = (rom.fuzzy_key, rom.region.lower())
+            # Three-part key: system_id pins the platform so a Game Boy
+            # "Pac-Man" doesn't match a Game Boy Color "Pac-Man" — the
+            # fuzzy_key + region segments are identical between platforms.
+            key = (rom.fuzzy_key, rom.region.lower(), rom.system_id)
             # First-write-wins so a re-release with a non-empty release_type
             # suffix (already folded into the fuzzy_key by scanner.generate_
             # fuzzy_key) doesn't overwrite the original.
@@ -277,7 +293,13 @@ def _build_match_index(
 
 
 def _fuzzy_region_key_for_entry(rel_path: str) -> tuple[str, str]:
-    """Compute the (fuzzy_key, region) tier-2 key for a dest filename."""
+    """Compute the (fuzzy_key, region) tier-2 key for a dest filename.
+
+    Returns only the filename-derived portion of the key. The third
+    component (system_id) comes from the dest folder via the profile —
+    callers needing the full match key resolve it through
+    :func:`_system_id_from_rel_path`.
+    """
     filename = rel_path.rsplit("/", 1)[-1]
     parsed = parse_filename(filename)
     fuzzy = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
@@ -302,10 +324,19 @@ def _match_dest_entry(
     # Tier 1: path equivalence.
     if entry.rel_path in index.by_rel_path:
         return index.by_rel_path[entry.rel_path]
-    # Tier 2: fuzzy_key + region (regions stay distinct).
+    # Tier 2: fuzzy_key + region + system_id. The system_id gate is what
+    # keeps a Game Boy file from matching a Game Boy Color destination
+    # entry (or any cross-platform collision where the title's fuzzy
+    # key collapses to the same value).
     fuzzy, region = _fuzzy_region_key_for_entry(entry.rel_path)
-    if fuzzy:
-        match = index.by_fuzzy_region.get((fuzzy, region))
+    if fuzzy and index.profile is not None:
+        dest_system_id = _system_id_from_rel_path(entry.rel_path, index.profile)
+        if dest_system_id is None:
+            # Dest file isn't in any system folder the profile knows about
+            # (e.g. a sidecar artifact or a folder the user moved manually).
+            # Without a system to anchor on, we can't safely tier-2 match.
+            return None
+        match = index.by_fuzzy_region.get((fuzzy, region, dest_system_id))
         if match is not None:
             # Tier 3: hash-lookup sanity gate. If the local ROM has a known
             # SHA-1 we still trust the tier-2 match (the spec says use the
@@ -587,20 +618,33 @@ def _build_push_actions(
 def _find_tier2_inventory_entry(
     rom: LocalRom,
     inv_by_path: dict[str, InventoryEntry],
-    index: _MatchIndex,  # noqa: ARG001 - kept for future SHA-1 tier-4 reverse lookup
+    index: _MatchIndex,
 ) -> InventoryEntry | None:
     """Find a dest entry that tier-2 matches ``rom`` at a different rel_path.
 
     Used when the canonical-profile path isn't on the destination but a
     fuzzy-key-equivalent file is sitting under a different folder (e.g. the
-    user moved it manually).
+    user moved it manually). The system_id of the candidate dest entry
+    must match ``rom.system_id`` — without that gate a Game Boy "Pac-Man"
+    would match the Game Boy Color folder's "Pac-Man.gbc" and we'd report
+    "already on dest" for a file that's actually a different game.
     """
     if not rom.fuzzy_key:
         return None
     target_key = (rom.fuzzy_key, rom.region.lower())
+    profile = index.profile
     for entry in inv_by_path.values():
         fuzzy, region = _fuzzy_region_key_for_entry(entry.rel_path)
-        if (fuzzy, region) == target_key:
+        if (fuzzy, region) != target_key:
+            continue
+        # System guard: only accept the dest entry if its folder maps to
+        # the same system as the local rom. Without a profile we can't
+        # resolve folder→system, so we skip tier-2 entirely rather than
+        # risk a cross-platform false positive.
+        if profile is None:
+            continue
+        dest_system_id = _system_id_from_rel_path(entry.rel_path, profile)
+        if dest_system_id == rom.system_id:
             return entry
     return None
 

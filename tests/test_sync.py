@@ -242,6 +242,145 @@ class TestPushMirror:
 
 
 # ---------------------------------------------------------------------------
+# Cross-platform tier-2 guard — gb vs gbc must not collide
+# ---------------------------------------------------------------------------
+
+
+def _gb_gbc_profile() -> DestinationProfile:
+    """A profile that supports Game Boy + Game Boy Color side by side.
+
+    Used to exercise the tier-2 system_id guard — both platforms produce
+    identical fuzzy keys for common titles like "Pac-Man" so without the
+    guard the matcher cross-pollinates them.
+    """
+    systems: dict[str, SystemMapping] = {}
+    for sys_def in SYSTEM_REGISTRY:
+        if sys_def.id == "gb":
+            systems["gb"] = SystemMapping(
+                folder="gb", extensions=[".gb"], supported=True
+            )
+        elif sys_def.id == "gbc":
+            systems["gbc"] = SystemMapping(
+                folder="gbc", extensions=[".gbc"], supported=True
+            )
+        else:
+            systems[sys_def.id] = SystemMapping(folder="", supported=False)
+    return DestinationProfile(
+        id="test-gb-gbc",
+        name="Test GB/GBC",
+        base_path="roms",
+        gamelist_format="emulationstation_xml",
+        artwork_subdir=None,
+        artwork_filename_template="{stem}{ext}",
+        multi_disc=None,
+        systems=systems,
+    )
+
+
+class TestTier2CrossPlatformGuard:
+    """Regression: tier-2 fuzzy match must NOT collapse across system_ids.
+
+    User report (2026-05-16): destination scan logged ~30 "tier-2 match
+    with size drift" entries pairing local ``.gb`` files to dest ``.gbc``
+    files (and vice versa) because both produced identical fuzzy_key +
+    region tuples for common titles. Tier-2 now requires the dest
+    folder's system_id to match the local rom's system_id.
+    """
+
+    def test_gb_local_does_not_match_gbc_dest_file(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        profile = _gb_gbc_profile()
+        # Local: Pac-Man on Game Boy.
+        _stage_local_rom(
+            seeded_db, library, system_id="gb", filename="Pac-Man.gb"
+        )
+        # Dest: Pac-Man on Game Boy Color (same fuzzy_key, different system).
+        _stage_dest_file(target, "roms/gbc/Pac-Man.gbc", b"diff-bytes")
+        dest_id = _make_dest(seeded_db, target, profile_id="test-gb-gbc")
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_merge"
+        )
+        # The local gb file must be copied (not skipped as "already on dest").
+        copies = [a for a in plan.actions if a.kind == ACTION_COPY_TO_DEST]
+        assert any(c.rel_path == "roms/gb/Pac-Man.gb" for c in copies), (
+            "local gb file should be queued for copy — the dest gbc is a "
+            "different platform, not the same game"
+        )
+        # The dest gbc file must surface as dest-only (orphan), NOT as
+        # an identical or already-present match for the gb local.
+        # In push_merge mode dest-only files are left alone — verify
+        # they're not emitted as ACTION_IDENTICAL with the gb local.
+        identicals = [a for a in plan.actions if a.kind == ACTION_IDENTICAL]
+        for a in identicals:
+            assert a.rel_path != "roms/gbc/Pac-Man.gbc", (
+                "dest gbc file must not be treated as identical to local gb"
+            )
+
+    def test_gbc_dest_only_emits_delete_in_mirror_mode(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """Same scenario, mirror mode — gbc must surface for deletion.
+
+        Without the system_id guard, mirror mode would (incorrectly) see
+        the gbc as "matched" to the gb local and skip the delete. With
+        the guard, the gbc is correctly recognised as dest-only.
+        """
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        profile = _gb_gbc_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="gb", filename="Pac-Man.gb"
+        )
+        _stage_dest_file(target, "roms/gbc/Pac-Man.gbc", b"diff-bytes")
+        # Also stage the gb file on dest so push_mirror has a stable peer
+        # and doesn't accidentally delete what we expect to keep.
+        _stage_dest_file(target, "roms/gb/Pac-Man.gb", b"local-rom-bytes")
+        dest_id = _make_dest(seeded_db, target, profile_id="test-gb-gbc")
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_mirror"
+        )
+        deletes = [a for a in plan.actions if a.kind == ACTION_DELETE_DEST]
+        assert any(d.rel_path == "roms/gbc/Pac-Man.gbc" for d in deletes), (
+            "mirror mode must surface the gbc dest as dest-only/delete"
+        )
+
+    def test_same_platform_still_matches(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """Sanity: the system_id guard doesn't break same-platform matches."""
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        profile = _gb_gbc_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="gb", filename="Pac-Man.gb"
+        )
+        # Same fuzzy_key, SAME platform — should still be recognised.
+        _stage_dest_file(target, "roms/gb/Pac-Man.gb", b"local-rom-bytes")
+        dest_id = _make_dest(seeded_db, target, profile_id="test-gb-gbc")
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_merge"
+        )
+        # Tier-1 should hit first (identical rel_path) — but the test
+        # passes regardless of which tier matches it.
+        assert any(
+            a.kind == ACTION_IDENTICAL and a.rel_path == "roms/gb/Pac-Man.gb"
+            for a in plan.actions
+        )
+
+
+# ---------------------------------------------------------------------------
 # Push wipe — wipe then push
 # ---------------------------------------------------------------------------
 
