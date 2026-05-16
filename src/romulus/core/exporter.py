@@ -95,7 +95,7 @@ class ExportFilters:
 class ExportOptions:
     """Toggles for the optional sidecar artifacts."""
 
-    include_artwork: bool = False
+    include_artwork: bool = True
     generate_gamelist: bool = True
     generate_m3u: bool = True
 
@@ -588,9 +588,14 @@ def copy_artwork(
         if game_id is None or int(game_id) in seen_game_ids:
             continue
         seen_game_ids.add(int(game_id))
+        # Honor the user's "Make preferred" choice from the detail panel:
+        # is_preferred=1 sorts first, then by id. Without this the exporter
+        # picked the lowest-id cover regardless of which one the user chose
+        # to display.
         cover_row = conn.execute(
             "SELECT local_path FROM covers WHERE game_id = ? "
-            "AND local_path IS NOT NULL ORDER BY id LIMIT 1",
+            "AND local_path IS NOT NULL "
+            "ORDER BY is_preferred DESC, id ASC LIMIT 1",
             (int(game_id),),
         ).fetchone()
         if cover_row is None:

@@ -139,7 +139,7 @@ class ExportDialog(QDialog):
         options_group = QGroupBox("Options", self)
         options_layout = QVBoxLayout(options_group)
         self._include_artwork_cb = QCheckBox("Include artwork", options_group)
-        self._include_artwork_cb.setChecked(False)
+        self._include_artwork_cb.setChecked(True)
         options_layout.addWidget(self._include_artwork_cb)
         self._generate_gamelist_cb = QCheckBox(
             "Generate gamelist.xml / .lpl", options_group

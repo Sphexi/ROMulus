@@ -382,7 +382,11 @@ class ExportWorker(_DbWorker):
     """
 
     progress = Signal(int, int, str)
-    finished_ok = Signal(int, int, int, list, list)
+    # ``bytes_copied`` declared as qint64 (Qt's signed 64-bit) so totals
+    # past 2 GiB don't wrap to negative in the summary. Python ints are
+    # unbounded but PySide6 marshals plain ``int`` through a C ``int``
+    # which is 32-bit signed; a 11 GB export reported as -783 MB.
+    finished_ok = Signal(int, int, "qint64", list, list)
 
     _operation_name = "Export"
 

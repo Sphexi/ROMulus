@@ -23,8 +23,13 @@ name: "Anbernic RGLauncher (stock Android)"
 description: "Stock Anbernic Android firmware (RG556, RG406, etc.) with the built-in launcher"
 case_sensitive: false
 base_path: "Roms"
-gamelist_format: null
-artwork_subdir: null
+# RGLauncher itself doesn't read gamelist.xml — but most Anbernic users
+# also install ES-DE Android or Daijisho as a secondary launcher, both
+# of which DO use it. Generating it is a small write that buys the user
+# metadata in either frontend. Same logic for the ``Imgs/`` artwork
+# subdir — ES-DE/Daijisho convention; RGLauncher will ignore it.
+gamelist_format: "emulationstation_xml"
+artwork_subdir: "Imgs"
 multi_disc: "m3u"
 
 systems:
