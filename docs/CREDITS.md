@@ -22,6 +22,7 @@ only one that requires an account, and it's opt-in.
 | **Hasheous** | Game metadata by SHA-1 / CRC32 | Free, no account; community-run | <https://hasheous.org/> |
 | **LaunchBox Games Database (offline XML)** | Genres, descriptions, players, release dates | Free download; consult [LaunchBox terms](https://forums.launchbox-app.com/terms/) for redistribution | <https://gamesdb.launchbox-app.com/> |
 | **ScreenScraper** | Extended metadata, region-specific descriptions, additional artwork (opt-in) | Free account required; rate-limited; see their [terms](https://www.screenscraper.fr/) | <https://www.screenscraper.fr/> |
+| **TheGamesDB (TGDB)** | Name+platform metadata fallback when hash-keyed sources miss | Free with user-supplied API key — public keys cap at ~1000 requests/month/IP, private lifetime keys cap at 6000 total. See [terms](https://thegamesdb.net/) | <https://thegamesdb.net/> |
 
 ROMulus uses `httpx` for every outbound HTTP request, never logs request
 or response bodies (URL + status only), and never sends user credentials

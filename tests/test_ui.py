@@ -1000,9 +1000,15 @@ class TestDetailPanel:
 
         assert panel.current_game_id == game_id
         assert panel.title_label.text() == "Chrono Trigger"
-        assert "RPG" in panel.genre_label.text()
-        assert "Square" in panel.developer_label.text()
-        assert "Time-traveling" in panel.description.toPlainText()
+        # Metadata fields are now individual rows in a key/value grid;
+        # each value lives in panel._meta_value_labels keyed by field id.
+        assert "RPG" in panel._meta_value_labels["genre"].text()
+        assert "Square" in panel._meta_value_labels["developer"].text()
+        assert "Time-traveling" in panel.description.text()
+        # ``isVisible`` is False for any widget whose parent isn't shown,
+        # so check the explicit hidden flag instead. The panel toggles
+        # show()/hide() based on whether description text is present.
+        assert not panel.description.isHidden()
         # DAT-verified ROM means the badge label says "DAT verified".
         assert "DAT verified" in panel.match_badge.text()
         assert panel.favorite_button.isEnabled()
@@ -1017,10 +1023,12 @@ class TestDetailPanel:
         panel = DetailPanel(seeded_db)
         panel.update_game(game_id)
         assert panel.title_label.text() == "Obscure Title"
-        # Metadata fields should be cleared but the panel itself is enabled.
-        assert panel.genre_label.text() == ""
-        assert panel.publisher_label.text() == ""
-        assert panel.description.toPlainText() == ""
+        # Metadata-bearing rows should be empty and the description label
+        # hidden entirely (the new "no box for empty text" behaviour).
+        assert panel._meta_value_labels["genre"].text() == ""
+        assert panel._meta_value_labels["publisher"].text() == ""
+        assert panel.description.text() == ""
+        assert panel.description.isHidden()
         assert panel.favorite_button.isEnabled()
 
     def test_missing_cover_renders_placeholder(self, qapp, seeded_db) -> None:

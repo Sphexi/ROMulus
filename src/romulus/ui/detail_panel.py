@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -50,6 +51,25 @@ _MATCH_BADGES: dict[str, tuple[str, str, str]] = {
 def _badge_text_for(confidence: str) -> tuple[str, str, str]:
     """Look up a badge label and colors for a match_confidence value."""
     return _MATCH_BADGES.get(confidence, _MATCH_BADGES["unmatched"])
+
+
+_BYTE_UNITS = ("B", "KB", "MB", "GB", "TB")
+
+
+def _format_bytes(n: int) -> str:
+    """Format a byte count for human consumption.
+
+    Decimal (1000-based) rather than binary — matches what most file
+    explorers show, and matches the size annotation in the ROM list block.
+    """
+    size = float(n)
+    for unit in _BYTE_UNITS:
+        if size < 1000.0:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1000.0
+    return f"{size:.1f} PB"
 
 
 # Recognized CSS color values for ``_match_badge_stylesheet``: hex (#rrggbb or
@@ -179,30 +199,67 @@ class DetailPanel(QWidget):
         badge_row.addStretch(1)
         outer.addLayout(badge_row)
 
-        # Metadata fields.
-        meta_layout = QVBoxLayout()
-        meta_layout.setSpacing(2)
-        self.region_label = QLabel("", self)
-        self.revision_label = QLabel("", self)
-        self.genre_label = QLabel("", self)
-        self.developer_label = QLabel("", self)
-        self.publisher_label = QLabel("", self)
-        for w in (
-            self.region_label,
-            self.revision_label,
-            self.genre_label,
-            self.developer_label,
-            self.publisher_label,
-        ):
-            w.setWordWrap(True)
-            meta_layout.addWidget(w)
-        outer.addLayout(meta_layout)
+        # Metadata grid — one QLabel per field, paired against a value
+        # label in a two-column QFormLayout. Rows whose value is empty
+        # are hidden in :meth:`_set_field` so the grid stays tight even
+        # for un-enriched games (which is the common case).
+        self._meta_grid = QFormLayout()
+        self._meta_grid.setSpacing(2)
+        self._meta_grid.setContentsMargins(0, 0, 0, 0)
+        self._meta_grid.setLabelAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self._meta_grid.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
 
-        # Description (scrollable read-only QTextEdit).
-        self.description = QTextEdit(self)
-        self.description.setReadOnly(True)
-        self.description.setPlaceholderText("No description.")
-        self.description.setMinimumHeight(80)
+        # (key, display label) — order is the on-screen render order.
+        # Keys map to: game.region/revision, computed rom size + sha1,
+        # and metadata.{genre,developer,publisher,release_date,players,rating}.
+        self._meta_field_specs: tuple[tuple[str, str], ...] = (
+            ("region", "Region"),
+            ("revision", "Revision"),
+            ("size", "ROM size"),
+            ("sha1", "SHA-1"),
+            ("dat_name", "DAT name"),
+            ("genre", "Genre"),
+            ("developer", "Developer"),
+            ("publisher", "Publisher"),
+            ("release_date", "Released"),
+            ("players", "Players"),
+            ("rating", "Rating"),
+        )
+        self._meta_value_labels: dict[str, QLabel] = {}
+        self._meta_key_labels: dict[str, QLabel] = {}
+        for key, display in self._meta_field_specs:
+            value = QLabel("", self)
+            value.setWordWrap(True)
+            value.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            label = QLabel(f"{display}:", self)
+            label.setStyleSheet("QLabel { color: #888; }")
+            self._meta_grid.addRow(label, value)
+            self._meta_value_labels[key] = value
+            self._meta_key_labels[key] = label
+        outer.addLayout(self._meta_grid)
+
+        # Description — a plain wrapped QLabel that hides entirely when
+        # no description text is available, so the panel doesn't reserve
+        # vertical space for an empty box (which it usually was). Selectable
+        # so the user can copy quotes out.
+        self.description = QLabel("", self)
+        self.description.setWordWrap(True)
+        self.description.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.description.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.description.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self.description.hide()
         outer.addWidget(self.description, 1)
 
         # ROM list (one row per linked ROM).
@@ -286,12 +343,10 @@ class DetailPanel(QWidget):
         self.title_label.setText("Select a game")
         self.system_label.clear()
         self.system_label.setText("")
-        self.region_label.setText("")
-        self.revision_label.setText("")
-        self.genre_label.setText("")
-        self.developer_label.setText("")
-        self.publisher_label.setText("")
+        for key in self._meta_value_labels:
+            self._set_field(key, None)
         self.description.clear()
+        self.description.hide()
         self.rom_list.clear()
         self.match_badge.setText("")
         self.match_badge.setStyleSheet("QLabel {}")
@@ -310,22 +365,31 @@ class DetailPanel(QWidget):
         """Populate every label / image from DB rows."""
         self.title_label.setText(str(game["title"]))
         self._render_system_indicator(str(game["system_id"] or ""))
-        self.region_label.setText(self._field("Region", game["region"]))
-        self.revision_label.setText(self._field("Revision", game["revision"]))
+
+        self._set_field("region", game["region"])
+        self._set_field("revision", game["revision"])
+        # ROM-derived facts (size + DAT name) come straight off the linked
+        # rom rows; SHA-1 requires a hashes-table join, so look that up
+        # separately. SHA-1 row stays hidden until Heavy Scan populates it.
+        self._set_field("size", self._sum_rom_size(roms))
+        self._set_field(
+            "sha1", self._format_sha1(self._first_sha1_for_game(int(game["id"])))
+        )
+        self._set_field("dat_name", self._best_dat_match(roms, game["canonical_name"]))
+
         if metadata is not None:
-            self.genre_label.setText(self._field("Genre", metadata["genre"]))
-            self.developer_label.setText(
-                self._field("Developer", metadata["developer"])
-            )
-            self.publisher_label.setText(
-                self._field("Publisher", metadata["publisher"])
-            )
-            self.description.setPlainText(metadata["description"] or "")
+            self._set_field("genre", metadata["genre"])
+            self._set_field("developer", metadata["developer"])
+            self._set_field("publisher", metadata["publisher"])
+            self._set_field("release_date", metadata["release_date"])
+            self._set_field("players", metadata["players"])
+            self._set_field("rating", metadata["rating"])
+            self._set_description(metadata["description"])
         else:
-            self.genre_label.setText("")
-            self.developer_label.setText("")
-            self.publisher_label.setText("")
-            self.description.clear()
+            for key in ("genre", "developer", "publisher", "release_date",
+                        "players", "rating"):
+                self._set_field(key, None)
+            self._set_description(None)
 
         # Match badge from the strongest match across linked ROMs.
         best_confidence = self._best_confidence(roms)
@@ -528,11 +592,96 @@ class DetailPanel(QWidget):
         self._cover_index = 0
         self._render_cover_at_index()
 
-    @staticmethod
-    def _field(label: str, value: str | int | None) -> str:
+    def _set_field(self, key: str, value: object | None) -> None:
+        """Populate or hide the grid row for ``key``.
+
+        Empty / None / zero-length values hide *both* the key label and
+        the value cell so the surrounding rows close up tight. Non-empty
+        values are stringified with ``str()`` — callers that need
+        special formatting (size, sha1) hand in already-formatted text.
+        """
         if value is None or value == "":
-            return ""
-        return f"{label}: {value}"
+            self._meta_key_labels[key].hide()
+            self._meta_value_labels[key].setText("")
+            self._meta_value_labels[key].hide()
+            return
+        self._meta_value_labels[key].setText(str(value))
+        self._meta_key_labels[key].show()
+        self._meta_value_labels[key].show()
+
+    def _set_description(self, value: str | None) -> None:
+        """Show the description label when non-empty, hide it otherwise."""
+        if not value:
+            self.description.clear()
+            self.description.hide()
+            return
+        self.description.setText(value)
+        self.description.show()
+
+    @staticmethod
+    def _sum_rom_size(roms: list[sqlite3.Row]) -> str | None:
+        """Sum byte sizes across all linked ROMs into a human-readable string.
+
+        Returns ``None`` when there are no roms or the total is zero — that
+        hides the row entirely rather than rendering an awkward "0 B".
+        """
+        total = sum(int(rom["size_bytes"] or 0) for rom in roms)
+        if total <= 0:
+            return None
+        return _format_bytes(total)
+
+    def _first_sha1_for_game(self, game_id: int) -> str | None:
+        """Return one SHA-1 belonging to any hashed ROM for *game_id*, or None.
+
+        Heavy Scan is what populates ``hashes.sha1``, so this returns None
+        on quick-scan-only games. Pulled live each render rather than
+        carried on the rom rows because ``get_roms_for_game`` queries the
+        roms table alone.
+        """
+        row = self._conn.execute(
+            """
+            SELECT h.sha1
+            FROM roms r
+            JOIN hashes h ON h.rom_id = r.id
+            WHERE r.game_id = ? AND h.sha1 IS NOT NULL
+            LIMIT 1
+            """,
+            (game_id,),
+        ).fetchone()
+        return row[0] if row else None
+
+    @staticmethod
+    def _format_sha1(sha1: str | None) -> str | None:
+        """Truncate a 40-char SHA-1 into a 12-char display form."""
+        if not sha1:
+            return None
+        value = str(sha1)
+        if len(value) > 12:
+            return f"{value[:8]}…{value[-4:]}"
+        return value
+
+    @staticmethod
+    def _best_dat_match(
+        roms: list[sqlite3.Row], canonical_name: str | None
+    ) -> str | None:
+        """Pick the canonical DAT-verified name for display.
+
+        Prefers any DAT-verified ROM's ``dat_match`` column over the
+        game's ``canonical_name`` (the latter can be set by L2 header
+        parsing without a DAT match). Returns None if neither is set.
+        """
+        for rom in roms:
+            try:
+                confidence = str(rom["match_confidence"] or "")
+                if confidence == "dat_verified":
+                    dat_match = rom["dat_match"]
+                    if dat_match:
+                        return str(dat_match)
+            except (IndexError, KeyError):
+                continue
+        if canonical_name:
+            return str(canonical_name)
+        return None
 
     @staticmethod
     def _best_confidence(roms: list[sqlite3.Row]) -> str:

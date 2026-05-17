@@ -12,9 +12,16 @@ from pathlib import Path
 import httpx
 import pytest
 
+from romulus.db import get_config, seed_defaults, set_config
 from romulus.db import queries as q
-from romulus.db import seed_defaults, set_config
-from romulus.metadata import enrich_library, hasheous, launchbox, libretro, screenscraper
+from romulus.metadata import (
+    enrich_library,
+    hasheous,
+    launchbox,
+    libretro,
+    screenscraper,
+    thegamesdb,
+)
 
 # ---------------------------------------------------------------------------
 # libretro-thumbnails
@@ -840,3 +847,287 @@ def test_module_does_not_smuggle_real_network_calls() -> None:
             )
     finally:
         guarded.close()
+
+
+# ---------------------------------------------------------------------------
+# TheGamesDB client
+# ---------------------------------------------------------------------------
+
+
+def _tgdb_envelope(games: list[dict], remaining: int | None = 999) -> dict:
+    """Build a minimal TGDB ByGameName envelope around a games list."""
+    return {
+        "code": 200,
+        "status": "Success",
+        "data": {"count": len(games), "games": games},
+        "remaining_monthly_allowance": remaining,
+    }
+
+
+class TestTgdbParseResponse:
+    def test_picks_exact_title_match(self) -> None:
+        envelope = _tgdb_envelope([
+            {"id": 1, "game_title": "Other Game", "overview": "wrong"},
+            {
+                "id": 2,
+                "game_title": "Super Mario World",
+                "overview": "Right one.",
+                "developers": [1],
+                "publishers": [2, 3],
+                "release_date": "1990-11-21",
+            },
+        ])
+        parsed = thegamesdb.parse_response(envelope, "Super Mario World")
+        assert parsed is not None
+        assert parsed["description"] == "Right one."
+        assert parsed["release_date"] == "1990-11-21"
+        assert parsed["developer"] == "1"
+        assert parsed["publisher"] == "2, 3"
+
+    def test_normalises_punctuation_in_title(self) -> None:
+        """``Mario's`` should match ``Marios`` after normalisation."""
+        envelope = _tgdb_envelope([
+            {"id": 1, "game_title": "Marios Picross"},
+        ])
+        parsed = thegamesdb.parse_response(envelope, "Mario's Picross")
+        assert parsed is not None
+
+    def test_no_match_returns_none(self) -> None:
+        envelope = _tgdb_envelope([
+            {"id": 1, "game_title": "Completely Unrelated"},
+        ])
+        assert thegamesdb.parse_response(envelope, "Tetris") is None
+
+    def test_malformed_envelope_returns_none(self) -> None:
+        assert thegamesdb.parse_response({}, "Tetris") is None
+        assert thegamesdb.parse_response({"data": "not-a-dict"}, "Tetris") is None
+        assert thegamesdb.parse_response({"data": {"games": "x"}}, "Tetris") is None
+
+
+class TestTgdbLookupGame:
+    def _patch_no_rate_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
+
+    def test_no_apikey_skips_network(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._patch_no_rate_limit(monkeypatch)
+        calls: list[int] = []
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(200)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        payload, remaining = thegamesdb.lookup_game(
+            "Tetris", "gb", apikey="", client=client
+        )
+        assert payload is None
+        assert remaining is None
+        assert calls == []
+
+    def test_unmapped_platform_skips_network(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """j2me has no TGDB platform mapping — must short-circuit."""
+        self._patch_no_rate_limit(monkeypatch)
+        calls: list[int] = []
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            calls.append(1)
+            return httpx.Response(200)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        payload, remaining = thegamesdb.lookup_game(
+            "Some Title", "j2me", apikey="KEY", client=client
+        )
+        assert payload is None
+        assert remaining is None
+        assert calls == []
+
+    def test_returns_payload_and_remaining(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._patch_no_rate_limit(monkeypatch)
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            # apikey/platform filter must be present in the query string.
+            assert req.url.params.get("apikey") == "KEY"
+            assert req.url.params.get("filter[platform]") == "6"  # snes
+            return httpx.Response(
+                200,
+                json=_tgdb_envelope(
+                    [{"id": 1, "game_title": "Super Mario World",
+                      "overview": "ok"}],
+                    remaining=42,
+                ),
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        payload, remaining = thegamesdb.lookup_game(
+            "Super Mario World", "snes", apikey="KEY", client=client
+        )
+        assert payload is not None
+        assert payload["description"] == "ok"
+        assert remaining == 42
+
+    def test_403_returns_zero_remaining(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 403 typically means apikey invalid or quota exhausted."""
+        self._patch_no_rate_limit(monkeypatch)
+        client = httpx.Client(
+            transport=httpx.MockTransport(lambda _r: httpx.Response(403))
+        )
+        payload, remaining = thegamesdb.lookup_game(
+            "Tetris", "gb", apikey="KEY", client=client
+        )
+        assert payload is None
+        assert remaining == 0
+
+
+class TestTgdbEnrichmentChain:
+    def test_tgdb_fires_when_other_sources_miss(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        set_config(seeded_db, "thegamesdb_api_key", "KEY")
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
+
+        _seed_verified_game(
+            seeded_db, title="Super Mario World", system_id="snes", sha1="c" * 40
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                return httpx.Response(404)  # miss -> falls through
+            if "thegamesdb" in host:
+                return httpx.Response(
+                    200,
+                    json=_tgdb_envelope(
+                        [{"id": 99, "game_title": "Super Mario World",
+                          "overview": "Mario via TGDB"}],
+                        remaining=99,
+                    ),
+                )
+            # libretro misses for now (this test isn't about covers).
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+
+        assert stats["metadata_added"] == 1
+        meta = q.get_metadata(seeded_db, 1)
+        assert meta is not None
+        assert meta["source"] == "thegamesdb"
+        assert meta["description"] == "Mario via TGDB"
+        # Allowance is persisted for the next session.
+        assert get_config(seeded_db, "thegamesdb_remaining_allowance") == "99"
+
+    def test_tgdb_skipped_when_hasheous_hits(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hash-keyed Hasheous wins; TGDB must NOT spend quota."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        set_config(seeded_db, "thegamesdb_api_key", "KEY")
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
+        _seed_verified_game(
+            seeded_db, title="Tetris", system_id="gb", sha1="d" * 40
+        )
+
+        tgdb_calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                return httpx.Response(200, json={"title": "Tetris", "description": "Blocks."})
+            if "thegamesdb" in host:
+                tgdb_calls.append(1)
+                return httpx.Response(200, json=_tgdb_envelope([]))
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+
+        assert stats["metadata_added"] == 1
+        assert tgdb_calls == [], "TGDB should not be called when Hasheous matches"
+
+    def test_tgdb_disabled_after_zero_allowance(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Once TGDB reports remaining=0, subsequent games skip it entirely."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        set_config(seeded_db, "thegamesdb_api_key", "KEY")
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
+
+        # Two games; both with hasheous misses so they'd both reach TGDB.
+        _seed_verified_game(
+            seeded_db, title="One", system_id="gb", sha1="1" * 40
+        )
+        _seed_verified_game(
+            seeded_db, title="Two", system_id="gb", sha1="2" * 40
+        )
+
+        tgdb_calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                return httpx.Response(404)
+            if "thegamesdb" in host:
+                tgdb_calls.append(1)
+                # First call returns remaining=0 so we should be disabled
+                # from that point onwards.
+                return httpx.Response(
+                    200, json=_tgdb_envelope([], remaining=0)
+                )
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+        assert len(tgdb_calls) == 1, (
+            f"TGDB should disable after first remaining=0; got {len(tgdb_calls)} calls"
+        )
+
+    def test_tgdb_short_circuits_when_persisted_allowance_zero(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Config carrying remaining=0 must skip TGDB without trying once."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        set_config(seeded_db, "thegamesdb_api_key", "KEY")
+        set_config(seeded_db, "thegamesdb_remaining_allowance", "0")
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
+
+        _seed_verified_game(
+            seeded_db, title="Game", system_id="gb", sha1="e" * 40
+        )
+
+        tgdb_calls: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                return httpx.Response(404)
+            if "thegamesdb" in host:
+                tgdb_calls.append(1)
+                return httpx.Response(200, json=_tgdb_envelope([]))
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+        assert tgdb_calls == [], "Persisted zero allowance must skip TGDB"

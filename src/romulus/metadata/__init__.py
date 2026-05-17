@@ -17,9 +17,9 @@ from typing import TypedDict
 
 import httpx
 
-from romulus.db import get_config, queries
+from romulus.db import get_config, queries, set_config
 from romulus.db.config import DEFAULT_COVER_CACHE_DIR
-from romulus.metadata import hasheous, launchbox, libretro, screenscraper
+from romulus.metadata import hasheous, launchbox, libretro, screenscraper, thegamesdb
 from romulus.metadata.launchbox import LaunchBoxIndex
 from romulus.models.system import SYSTEM_REGISTRY
 
@@ -143,8 +143,18 @@ def _fetch_metadata_for_game(
     launchbox_index: LaunchBoxIndex | None,
     credentials: dict[str, str] | None,
     http_client: httpx.Client | None,
+    tgdb_state: _TgdbRunState,
 ) -> bool:
-    """Try each metadata provider in priority order. Returns True on success."""
+    """Try each metadata provider in priority order. Returns True on success.
+
+    Order is deliberate:
+
+    1. Hasheous — hash-keyed lookup, free, no quota; most precise match.
+    2. LaunchBox — offline XML, no network at all; precise when present.
+    3. ScreenScraper — hash-keyed but requires a (free) user account.
+    4. TheGamesDB — name+platform, monthly quota — *last* so we only
+       spend quota on games every cheaper source missed.
+    """
     if sha1:
         result = hasheous.lookup_by_hash(sha1, client=http_client)
         if result:
@@ -168,7 +178,71 @@ def _fetch_metadata_for_game(
             queries.upsert_metadata(conn, game_id, result, source="screenscraper")
             return True
 
+    if tgdb_state.is_active():
+        payload, remaining = thegamesdb.lookup_game(
+            title, system_id, tgdb_state.apikey, client=http_client
+        )
+        tgdb_state.update_allowance(remaining)
+        if payload:
+            queries.upsert_metadata(conn, game_id, payload, source="thegamesdb")
+            return True
+
     return False
+
+
+class _TgdbRunState:
+    """Per-run state for the TheGamesDB provider.
+
+    Holds the api key (None if unconfigured), the last reported
+    remaining-monthly-allowance counter, and a sticky disabled flag set
+    when the counter drops to zero. Persists the final counter back to
+    config so the next enrich session starts informed.
+
+    ``is_active`` returns False as soon as we know the quota is out;
+    callers check it before each TGDB call.
+    """
+
+    __slots__ = ("apikey", "_remaining", "_disabled", "_conn")
+
+    def __init__(self, conn: sqlite3.Connection, apikey: str) -> None:
+        self._conn = conn
+        self.apikey = apikey
+        # Restore last-known counter (empty string -> unknown -> try once).
+        cached = get_config(conn, "thegamesdb_remaining_allowance") or ""
+        try:
+            self._remaining: int | None = int(cached) if cached else None
+        except ValueError:
+            self._remaining = None
+        # Hard-disable when we already know we're out of quota AND we
+        # have a key. Without a key there's nothing to disable — the
+        # client short-circuits on its own.
+        self._disabled = bool(apikey) and self._remaining == 0
+
+    def is_active(self) -> bool:
+        """True when TGDB has a configured key AND remaining allowance > 0."""
+        return bool(self.apikey) and not self._disabled
+
+    def update_allowance(self, remaining: int | None) -> None:
+        """Record the latest remaining-allowance counter from a TGDB response.
+
+        ``None`` (no counter reported) is a no-op. ``0`` flips the
+        sticky disabled flag.
+        """
+        if remaining is None:
+            return
+        self._remaining = remaining
+        if remaining <= 0:
+            self._disabled = True
+
+    def persist(self) -> None:
+        """Save the last-seen allowance counter back to config."""
+        if self._remaining is None:
+            return
+        set_config(
+            self._conn,
+            "thegamesdb_remaining_allowance",
+            str(self._remaining),
+        )
 
 
 def _fetch_covers_for_game(
@@ -242,6 +316,9 @@ def enrich_library(
         "username": get_config(conn, "screenscraper_username") or "",
         "password": get_config(conn, "screenscraper_password") or "",
     }
+    tgdb_state = _TgdbRunState(
+        conn, get_config(conn, "thegamesdb_api_key") or ""
+    )
 
     launchbox_index: LaunchBoxIndex | None = None
     if launchbox_xml_path is not None and Path(launchbox_xml_path).exists():
@@ -285,6 +362,7 @@ def enrich_library(
             launchbox_index,
             credentials,
             http_client,
+            tgdb_state,
         ):
             metadata_added += 1
 
@@ -298,6 +376,10 @@ def enrich_library(
         )
 
         conn.commit()
+
+    # Persist whatever quota counter we ended on so the next session
+    # short-circuits if we burnt through the monthly budget.
+    tgdb_state.persist()
 
     return {
         "games_processed": total,
@@ -313,4 +395,5 @@ __all__ = [
     "launchbox",
     "libretro",
     "screenscraper",
+    "thegamesdb",
 ]

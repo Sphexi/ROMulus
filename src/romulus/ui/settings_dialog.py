@@ -140,7 +140,7 @@ class _DatTab(QWidget):
 
 
 class _MetadataTab(QWidget):
-    """ScreenScraper credentials."""
+    """ScreenScraper credentials + TheGamesDB API key."""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         super().__init__()
@@ -154,10 +154,30 @@ class _MetadataTab(QWidget):
         )
         self.test_button.clicked.connect(self._on_test_connection)
 
+        # TheGamesDB key — separate provider, separate key. Public TGDB
+        # keys cap at ~1000 requests/month/IP; private 6000 lifetime keys
+        # exist too. We persist the latest remaining-allowance counter
+        # alongside so the user can see what's left without burning a call.
+        self.tgdb_apikey = QLineEdit(get_config(conn, "thegamesdb_api_key") or "")
+        self.tgdb_apikey.setEchoMode(QLineEdit.EchoMode.Password)
+        self.tgdb_apikey.setPlaceholderText(
+            "Optional — leave blank to skip TheGamesDB"
+        )
+        remaining = get_config(conn, "thegamesdb_remaining_allowance") or ""
+        remaining_text = (
+            f"Last seen: {remaining} requests remaining"
+            if remaining
+            else "No allowance data yet — runs once per enrich session."
+        )
+        self.tgdb_remaining = QLabel(remaining_text)
+        self.tgdb_remaining.setStyleSheet("QLabel { color: #888; }")
+
         form = QFormLayout(self)
         form.addRow("ScreenScraper username:", self.username)
         form.addRow("ScreenScraper password:", self.password)
         form.addRow("", self.test_button)
+        form.addRow("TheGamesDB API key:", self.tgdb_apikey)
+        form.addRow("", self.tgdb_remaining)
 
     def _on_test_connection(self) -> None:
         """Validate the current form values via ScreenScraper's user-info API.
@@ -186,6 +206,13 @@ class _MetadataTab(QWidget):
     def save(self) -> None:
         set_config(self._conn, "screenscraper_username", self.username.text())
         set_config(self._conn, "screenscraper_password", self.password.text())
+        new_apikey = self.tgdb_apikey.text().strip()
+        existing_apikey = get_config(self._conn, "thegamesdb_api_key") or ""
+        set_config(self._conn, "thegamesdb_api_key", new_apikey)
+        # Clear the cached allowance when the key changes — a new key has
+        # its own (unknown) quota and the old counter no longer applies.
+        if new_apikey != existing_apikey:
+            set_config(self._conn, "thegamesdb_remaining_allowance", "")
 
 
 class _ScanTab(QWidget):

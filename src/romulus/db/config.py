@@ -58,6 +58,11 @@ DEFAULT_CONFIG: dict[str, str] = {
     "cover_cache_path": str(DEFAULT_COVER_CACHE_DIR),
     "screenscraper_username": "",
     "screenscraper_password": "",
+    "thegamesdb_api_key": "",
+    # Last-known monthly allowance reported by TheGamesDB. Persisted so a
+    # cold session doesn't reissue a doomed call when we already know
+    # we're out of quota. Empty string means "unknown — try once".
+    "thegamesdb_remaining_allowance": "",
     "theme": "system",
     "default_view": "table",
     "scan_threads": "8",
