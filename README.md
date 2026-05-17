@@ -11,9 +11,26 @@ Everything lives in a single SQLite database under the install folder
 read-only) and a folder of cached cover art. Built with Python 3.12+,
 PySide6 (Qt 6), and SQLite.
 
-**Project status:** v0.1.0 — first complete end-to-end release. The full
-scan → identify → enrich → organize → export pipeline works. See
-[CHANGELOG.md](CHANGELOG.md) for the full feature list and known limitations.
+**Project status:** v0.3.0 (in development). The full
+scan → identify → enrich → organize → export → **sync** pipeline works.
+v0.3.0 adds destination sync (push/pull/two-way with 4-tier identity
+matching), single-library cleanup (tombstone-missing + library-root
+change handling), and a single-binary portable Windows build. See
+[CHANGELOG.md](CHANGELOG.md) for per-release detail.
+
+**License:** [Apache License 2.0](LICENSE).
+
+**Built with LLM assistance.** Most of the implementation work was driven
+by [Claude Code][claude-code] — visible in commit metadata (
+`Co-Authored-By: Claude Opus ...` trailers), the per-session task lists
+under [docs/sessions/](docs/sessions/), and the orientation file
+[CLAUDE.md](CLAUDE.md) at the repo root. Architecture decisions, API
+choices, and the design rules are owned by the human maintainer; the LLM
+agent does the typing and the test-driven iteration. Worth knowing if
+you're auditing the code or wondering why the commit history has unusual
+co-author entries.
+
+[claude-code]: https://docs.claude.com/en/docs/claude-code
 
 ---
 
@@ -77,8 +94,8 @@ and cover cache on a roomier drive.
 ## Installation (from source)
 
 If you'd rather run from source — required for macOS / Linux today, since
-the binary distribution is Windows-only for v0.2.0 — clone the repo,
-create a virtual environment, install in editable mode, and launch.
+the portable binary distribution is Windows-only — clone the repo, create
+a virtual environment, install in editable mode, and launch.
 
 ### Prerequisites
 
@@ -123,15 +140,20 @@ The first time you run ROMulus the window is empty. The recommended workflow
 is:
 
 1. **File → Open Library...** Pick the root folder that contains your ROMs.
-   ROMulus will save the path; you only need to do this once.
+   ROMulus will save the path; you only need to do this once. If you've
+   previously scanned a *different* folder, ROMulus prompts to wipe the
+   stale entries — ROMulus treats one library folder at a time as the
+   source of truth.
 2. **Quick Scan** (toolbar). Walks the library, detects which console each
    ROM belongs to (via folder aliases and file extensions), and parses
    filenames for region/revision/disc/hack flags. Runs in seconds to a few
-   minutes for tens of thousands of files. No hashing happens here.
-3. **Heavy Scan** *(disabled in the toolbar for v0.1.0; the underlying
-   hashing engine ships but the trigger button is wired up in v0.2.0)*.
-   Computes SHA-1/CRC32 with header stripping and matches against No-Intro
-   DATs for canonical naming.
+   minutes for tens of thousands of files. No hashing happens here. Files
+   that have disappeared from disk since the last scan are *tombstoned*
+   rather than dropped — the row is kept with `missing=1` so its metadata
+   and enrichment survive a temporarily-unmounted network share.
+3. **Heavy Scan** (toolbar). Computes SHA-1/CRC32 with header stripping
+   and matches against No-Intro DATs for canonical naming. Bundled DATs
+   cover ~106 systems out of the box.
 4. **Enrich** (toolbar). Pulls cover art from libretro-thumbnails and
    metadata from Hasheous / LaunchBox. Adds genres, descriptions, players,
    release dates, and cached PNG thumbnails. Free, no account required.
@@ -140,15 +162,32 @@ is:
    merges, canonical-name renames, duplicate removal, cross-extension
    dedup. You see every action and approve them individually before
    anything moves.
-6. **Export** (toolbar). Pick a destination profile (Batocera, RetroPie,
-   MiSTer, etc.), pick a target folder, optionally generate `gamelist.xml`
-   for EmulationStation-based frontends and `.m3u` for multi-disc games,
-   and ship a clean subset of your library to the device.
+6. **Export / Sync** (toolbar). Pick a destination profile (Batocera,
+   RetroPie, MiSTer, Anbernic RGLauncher, etc.), pick a target folder,
+   and run a one-shot **Export** (mirror the library to a fresh target)
+   or a **Sync** with one of five modes:
+   - **Push merge** — copy new local files to the destination, leave
+     everything else alone (default).
+   - **Push mirror** — make the destination match the library; orphan
+     files there are deleted.
+   - **Push wipe** — wipe the destination first, then push everything.
+   - **Pull merge** — copy dest-only files back into the library and
+     enrol them as fuzzy matches.
+   - **Two-way** — the diff goes both directions; conflicts surface in
+     the preview for resolution (skip / take local / take dest / newest).
+
+   Every sync produces a preview with per-action counts and totals, a
+   double-confirm before destructive actions, and per-action SAVEPOINT
+   rollback if anything fails mid-run.
+7. **Tools → Clean Missing Entries** removes tombstoned rows the user is
+   confident are gone for good (and their dependent `hashes` /
+   `dest_inventory` rows + orphan `games` rows).
 
 Right-click any game in the table for **Add to Favorites** / **Add to
-Collection...** Click a game to see its detail panel (cover, description,
-metadata, tags). The system sidebar on the left filters the table by
-console or by user-defined collection.
+Collection...** / **Heavy Scan (this game)** / **Enrich (this game)** /
+**Find Local Covers (this game)**. Click a game to see its detail panel
+(cover, description, metadata, tags). The system sidebar on the left
+filters the table by console or by user-defined collection.
 
 ---
 
@@ -164,7 +203,8 @@ console or by user-defined collection.
 │  └─────────┘  └──────────────┘  └─────────────────────┘ │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
-│  │          Enrich | Export | Settings                  ││
+│  │          Enrich | Export/Sync | Settings             ││
+│  │ Tools menu: Clean Missing Entries…                   ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
                │ signals/slots + QThread workers
@@ -172,17 +212,21 @@ console or by user-defined collection.
 │                    Core Engine                           │
 │                                                          │
 │  Scanner ──→ Identifier Pipeline ──→ SQLite DB           │
-│              (L1 fuzzy, L2 header,     │                 │
-│               L3 hash+DAT)        Metadata Client        │
+│  (+ missing  (L1 fuzzy, L2 header,     │                 │
+│     sweep)    L3 hash+DAT)        Metadata Client        │
 │                                   (libretro-thumbnails,  │
-│  DAT Parser (bundled + user)       Hasheous, LaunchBox)  │
+│  DAT Parser (bundled No-Intro       Hasheous, LaunchBox, │
+│   + user)    DATs, ~106 systems)    ScreenScraper opt.)  │
 │                                                          │
-│  Organizer (rename/merge/dedup     Export Engine         │
-│             with preview/commit)   (dest profiles, copy, │
-│                                    gamelist.xml, .m3u)   │
+│  Organizer  Export Engine    Sync Engine                 │
+│  (preview/  (dest profiles,  (5 modes: push merge/       │
+│   commit)   gamelist.xml,     mirror/wipe, pull merge,   │
+│             .m3u, artwork)    two-way; 4-tier identity   │
+│                               match; dest_inventory      │
+│                               cache; SAVEPOINT rollback) │
 │                                                          │
-│  Cover Cache (~/.romulus/covers/)                        │
-│  SQLite DB   (~/.romulus/romulus.db)                     │
+│  Cover Cache (<install_dir>/data/covers/)                │
+│  SQLite DB   (<install_dir>/data/romulus.db)             │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -198,19 +242,21 @@ so a cancelled or killed worker can never leave a half-written file behind.
 
 ## Configuration reference
 
-All configuration lives in the `config` table in `~/.romulus/romulus.db`.
-There is no config file to hand-edit — everything is editable through
-**File → Settings...** in the app. The full set of keys, taken from
-`romulus.db.config.DEFAULT_CONFIG`:
+All configuration lives in the `config` table in
+`<install_dir>/data/romulus.db` (with `~/.romulus/romulus.db` as a fallback
+when the install folder isn't writable). There is no config file to
+hand-edit — everything is editable through **File → Settings...** in the
+app. The full set of keys, taken from `romulus.db.config.DEFAULT_CONFIG`:
 
 | Key                       | Default                                    | Meaning                                                   |
 |---------------------------|--------------------------------------------|-----------------------------------------------------------|
 | `library_path`            | `""` (unset)                               | Root folder of your ROM library                            |
-| `dat_paths`               | `["data/dats"]` (JSON)                     | Folders scanned for No-Intro / Redump XML DAT files       |
-| `cover_cache_path`        | `~/.romulus/covers`                        | Where libretro / Hasheous covers are cached on disk       |
+| `dat_paths`               | `["dats"]` (JSON)                          | Folders scanned for No-Intro / Redump XML DAT files       |
+| `cover_cache_path`        | `<data_dir>/covers`                        | Where libretro / Hasheous covers are cached on disk       |
 | `screenscraper_username`  | `""`                                       | Optional ScreenScraper account username                    |
 | `screenscraper_password`  | `""`                                       | Optional ScreenScraper account password (see Security)    |
-| `theme`                   | `system`                                   | UI theme: `system`, `light`, or `dark`                     |
+| `theme`                   | `system`                                   | UI theme: `system`, `light`, `dark`, or `wbm_classic`     |
+| `log_level`               | `INFO`                                     | `DEBUG`, `INFO`, `WARNING`, or `ERROR` (live-applied)     |
 | `default_view`            | `table`                                    | Default view mode for the game list                        |
 | `scan_threads`            | `8`                                        | Worker threads used by Heavy Scan / hashing                |
 | `last_scan_type`          | `""`                                       | Diagnostic — last scan type that completed                 |
@@ -219,22 +265,35 @@ There is no config file to hand-edit — everything is editable through
 `dat_paths` is JSON-encoded in storage. Use the **DATs** tab in Settings to
 add or remove folders rather than editing the value directly.
 
+The `ROMULUS_LOG_LEVEL` environment variable (`DEBUG` / `INFO` / `WARNING`
+/ `ERROR`) takes precedence over the Settings value at startup, useful for
+one-off diagnostics without touching the saved config. The
+`ROMULUS_DATA_DIR` environment variable pins the data directory anywhere
+on disk.
+
 ---
 
 ## Destination profiles
 
 Profiles describe how to lay out an exported library for a specific device or
 launcher. Each profile is a YAML file with a system-by-system map of folder
-names and supported file extensions. Six profiles ship in `data/profiles/`:
+names and supported file extensions. Seven profiles ship in `profiles/`:
 
-| Profile           | Target                                                  |
-|-------------------|---------------------------------------------------------|
-| `batocera.yaml`   | Batocera (`/roms/<system>/`) with gamelist.xml         |
-| `retropie.yaml`   | RetroPie (`~/RetroPie/roms/<system>/`)                 |
-| `onionos.yaml`    | Onion OS for Miyoo Mini                                 |
-| `muos.yaml`       | muOS for ROCKNIX / RG-series handhelds                  |
-| `mister.yaml`     | MiSTer FPGA (`/media/fat/games/<Core>/`)                |
-| `analogue-pocket.yaml` | Analogue Pocket via openFPGA cores                 |
+| Profile                     | Target                                                  |
+|-----------------------------|---------------------------------------------------------|
+| `batocera.yaml`             | Batocera (`/roms/<system>/`) with gamelist.xml          |
+| `retropie.yaml`             | RetroPie (`~/RetroPie/roms/<system>/`)                  |
+| `onionos.yaml`              | Onion OS for Miyoo Mini                                 |
+| `muos.yaml`                 | muOS for ROCKNIX / RG-series handhelds                  |
+| `mister.yaml`               | MiSTer FPGA (`/media/fat/games/<Core>/`)                |
+| `analogue-pocket.yaml`      | Analogue Pocket via openFPGA cores                      |
+| `anbernic-rglauncher.yaml`  | Anbernic stock OS / RGLauncher (`Roms/<system>/` + ES-DE-style gamelists) |
+
+Profiles also specify an `artwork_filename_template` (`{stem}{ext}` by
+default; `{stem}-image{ext}` for EmulationStation classic) so artwork copies
+land at the filename the target expects, and a `gamelist_format`
+(`emulationstation_xml`) for the per-system XML the device's frontend
+consumes.
 
 ### Folder-name accuracy
 
@@ -286,28 +345,24 @@ built-ins and show up in the Export dialog's profile dropdown.
 
 ## DAT files
 
-ROMulus uses [No-Intro][nointro]-style Logiqx XML DAT files to (eventually)
-match ROMs by SHA-1/CRC32 and replace messy filenames with canonical
-names. DAT parsing is implemented and unit-tested; what ships in
-`data/dats/` for v0.1.0 is **two synthetic placeholder files** (one for
-Game Boy, one for SNES, one game each). They exist to keep the parser
-exercised — they are not a usable matching dataset.
+ROMulus uses [No-Intro][nointro]-style Logiqx XML DAT files to match ROMs
+by SHA-1/CRC32 and replace messy filenames with canonical names.
 
-**To get real DAT matching, you need to supply your own DATs.** No-Intro
-DAT files are redistributed under terms that don't permit bundling in
-third-party software, so you download them yourself and point ROMulus
-at the folder:
+**Real No-Intro DATs ship with v0.2.0+** — 106 DAT files covering roughly
+80 systems, ~457k total entries. They land in `dats/` next to the exe in
+the portable build, and under `data/dats/` in a source checkout. Heavy
+Scan works out of the box on common systems (Nintendo, Sega, Sony, Atari,
+NEC, Sega CD, etc.).
+
+To add more (Redump for disc-based systems, TOSEC, or newer No-Intro
+revisions):
 
 1. Visit [DAT-o-MATIC][datomatic] (the official No-Intro distribution
-   site).
+   site) or the Redump downloads page.
 2. Download the `Standard` DAT for each system you care about.
-3. Unzip the `.dat` files into a folder anywhere on disk.
-4. In ROMulus, open **Settings → DATs**, click **Add folder...**, and pick
-   your DAT folder.
-
-Multiple DAT folders are supported — ROMulus rescans them on startup and
-when you confirm changes in the Settings dialog. Heavy Scan match rates
-will be very low until you've added real DATs.
+3. Drop the `.dat` files into the `dats/` folder, OR pick a different
+   folder via **Settings → DATs → Add folder...** — multiple DAT folders
+   are supported and rescanned on startup.
 
 [nointro]: https://no-intro.org/
 [datomatic]: https://datomatic.no-intro.org/
@@ -366,31 +421,60 @@ the SQLite file lands at mode `0o600`.
 ### Project structure
 
 ```
-romulus/
-├── CLAUDE.md
+ROMulous/
+├── CLAUDE.md                     # Project rules + session checklist
 ├── CHANGELOG.md
 ├── README.md
 ├── pyproject.toml
+├── romulus.spec                  # PyInstaller spec (--onefile)
+├── build-portable.ps1            # Windows portable-ZIP builder
+├── scripts/
+│   └── generate_icon.py          # CD-ROM disc icon generator (QPainter)
 ├── .github/workflows/ci.yml      # Lint + test on push/PR
+├── .github/workflows/release.yml # Tag-driven portable ZIP build
+├── profiles/                     # 7 built-in destination profile YAMLs
+├── systems/                      # System registry YAML (builtin.yaml)
 ├── data/
-│   ├── dats/                     # Placeholder DAT files (see "DAT files")
-│   └── profiles/                 # 6 built-in destination profiles
+│   └── dats/                     # 106 bundled No-Intro DAT files
 ├── docs/
 │   ├── TECHNICAL_PLAN.md         # Full design doc
+│   ├── sync-design.md            # Destination sync engine spec
 │   ├── ROM-FORMATS-REFERENCE.md
 │   ├── ROM-DEDUP-METHODOLOGY.md
 │   ├── ROM-LIBRARY-ANALYSIS-REPORT.md
 │   └── sessions/                 # Per-build-session task lists + summaries
 ├── src/romulus/
 │   ├── __main__.py               # Entry point: `python -m romulus`
-│   ├── app.py                    # QApplication setup, DB initialization
-│   ├── core/                     # Scanner, identifier, hasher, DAT parser,
-│   │                             # organizer, exporter, atomic-write helpers
+│   ├── app.py                    # QApplication setup, DB init, log setup,
+│   │                             # data-dir resolution, first-launch seeding
+│   ├── core/
+│   │   ├── scanner.py            # Filesystem walk + L1/L2 + missing sweep
+│   │   ├── identifier.py         # L2 header extraction
+│   │   ├── hasher.py             # SHA-1/CRC32 + header stripping
+│   │   ├── dat_parser.py         # Logiqx XML DAT parser + match_hashes
+│   │   ├── organizer.py          # Library reorganization (preview/commit)
+│   │   ├── exporter.py           # Destination profile export engine
+│   │   ├── sync.py               # 5-mode sync engine + 4-tier identity match
+│   │   ├── dest_inventory.py     # Destination filesystem scanner + cache
+│   │   ├── local_cover_finder.py # Disk-side cover discovery + linking
+│   │   └── atomic.py             # tempfile.mkstemp + os.replace helpers
 │   ├── db/                       # SQLite connection, schema, queries, config
 │   ├── metadata/                 # libretro / Hasheous / LaunchBox / ScreenScraper
-│   ├── models/                   # Pydantic data models + system registry
-│   └── ui/                       # PySide6 widgets, dialogs, QThread workers
-└── tests/                        # pytest, ~415 tests
+│   ├── models/                   # Pydantic data models + system registry loader
+│   └── ui/
+│       ├── main_window.py        # Main window, menu, toolbar
+│       ├── system_sidebar.py     # System + Favorites + collections tree
+│       ├── game_table.py         # Sortable, filterable QTableView
+│       ├── detail_panel.py       # Cover, description, metadata, tags
+│       ├── settings_dialog.py    # General / DATs / Metadata / Scan / Diagnostics
+│       ├── scan_progress.py      # Quick / Heavy / DestScan progress dialogs
+│       ├── organize_preview.py
+│       ├── export_dialog.py
+│       ├── sync_preview.py       # Sync preview + apply UI
+│       ├── icons/cdrom.{png,ico} # CD-ROM disc app icon
+│       ├── themes/*.qss          # light / dark / wbm_classic
+│       └── workers.py            # QThread workers for async ops
+└── tests/                        # pytest, 838 tests
 ```
 
 ### Continuous integration
@@ -405,8 +489,9 @@ every push to `main` and on every pull request. The workflow:
 - Installs the project via `pip install -e ".[dev]"`.
 
 Per the CI/CD Local Validation Rule in `CLAUDE.md`, the workflow's exact
-commands were run locally on Windows before the file was committed — they
-pass with 415 tests collected, 1 skipped (the POSIX-only chmod test).
+commands are run locally on Windows before any release tag is pushed.
+Current state: **838 tests passing, 1 skipped** (the POSIX-only chmod
+test, skipped on Windows because NTFS ACLs are inherited).
 
 ### Code style
 
@@ -430,28 +515,56 @@ Library...** first to point ROMulus at the root of your ROM folder.
 shows files it could place in a known system folder. Check
 `docs/ROM-FORMATS-REFERENCE.md` for the folder-name aliases each system
 accepts. Either rename your folder to match (e.g. `SNES`, `snes`,
-`Super Nintendo`) or wait for a future release to add a folder-mapping UI.
+`Super Nintendo`) or add a YAML entry to `systems/` and restart.
 
-**Enrich button does nothing visible.** Enrichment only fires for games
-the identifier pipeline has matched (via filename parsing in v0.1.0,
-plus DAT matching once you add real DATs). Games that scanned as raw
-ROM files with no system match get skipped.
+**Quick Scan shows "N missing" in the status bar.** Files the scanner
+expected to find (from a previous scan under the current library root)
+weren't on disk this time. Reconnect the drive / remount the share and
+re-scan — tombstoned rows un-tombstone automatically via the path-keyed
+UPSERT. If they're really gone, **Tools → Clean Missing Entries…** drops
+them along with their `hashes`, `dest_inventory`, and orphan `games`
+rows.
 
-**Cover art doesn't appear after Enrich.** libretro-thumbnails has a
-specific naming convention — covers are keyed by the *canonical*
-No-Intro game name. Without real DATs (see above) most lookups will
-404. That's not an error, just a miss.
+**Switching libraries shows a "N entries from previous libraries will be
+removed" prompt.** ROMulus treats one library folder at a time as the
+source of truth (see [Key Design Rules](#key-design-rules) below). Pick
+"Yes" to drop the previous library's rows so they don't show up as
+duplicates; pick "No" to back out of the switch.
 
-**Heavy Scan toolbar button is disabled.** Intentional for v0.1.0.
-The hashing and DAT-matching engine is implemented and tested, but the
-toolbar trigger is wired up in v0.2.0. The Organizer's "rename to
-canonical" actions depend on real DATs being present.
+**DEBUG log level in Settings looks like nothing happens.** Set
+`ROMULUS_LOG_LEVEL=DEBUG` in the environment before launching for
+verbose breadcrumbs from the DAT parser, identifier, hasher, local
+cover finder, exporter, organizer, sync, and every metadata client.
+The env var beats the Settings value on startup. The log file is at
+`<install_dir>/logs/romulus.log` (rotating, 5 MB × 3 backups).
+
+**Heavy Scan completes but nothing got matched.** Check that the
+relevant DAT file is in `dats/` — bundled DATs cover ~80 systems but
+not everything (Atari Lynx, some computer platforms, etc. require user
+DATs). DEBUG logs from `romulus.core.dat_parser` and
+`romulus.core.identifier` show every hash compared and which DAT
+entry won (or "no match found").
+
+**Cover art doesn't appear after Enrich.** libretro-thumbnails keys
+covers by the *canonical* No-Intro game name. A ROM that didn't pick
+up a canonical name (no header, no hash match, no DAT entry) won't
+fetch covers cleanly. Right-click → **Heavy Scan (this game)** to
+upgrade the identifier confidence, then re-enrich.
+
+**Sync preview shows nothing or shows everything as "identical".**
+The sync engine's tier-2 identity matcher requires the destination
+file's folder to map to the same system as the local ROM (so a Game
+Boy `Pac-Man.gb` doesn't accidentally match a Game Boy Color
+`Pac-Man.gbc`). If your destination uses non-standard folder names,
+the profile YAML's `systems.<id>.folder` field needs to match what's
+actually on disk.
 
 **The app froze during a long operation.** Workers communicate progress
 back to the UI via Qt signals at file-level granularity. If the UI
 itself appears unresponsive (not just slow progress updates), please
-open an issue with the worker name (Scan / Enrich / Organize / Export),
-the approximate library size, and what was happening at the time.
+open an issue with the worker name (Scan / Heavy Scan / Enrich /
+Organize / Export / Sync), the approximate library size, and what was
+happening at the time.
 
 **ScreenScraper "Test connection" says invalid even though my
 credentials work on the website.** ScreenScraper occasionally returns
@@ -463,40 +576,69 @@ check that your account has API access (some free tiers limit it).
 error` or a missing-library import error.** PySide6 wheels link
 against a long list of X11 / Wayland / OpenGL libraries. Install them
 via your package manager — the CI workflow in `.github/workflows/ci.yml`
-has the full list for Debian/Ubuntu.
+has the full list for Debian/Ubuntu. (The portable Windows build is the
+supported distribution for v0.3.0; Linux/macOS run from source only.)
+
+---
+
+## Key Design Rules
+
+These are intentional and non-negotiable for the current architecture.
+Listed here so the behavior doesn't surprise users.
+
+1. **Single library at a time.** Switching `library_path` offers to wipe
+   the previous library's rows. The scan sweep is library-agnostic — any
+   row not visited this scan becomes `missing=1`. Multi-library is not
+   supported.
+2. **Tombstone before delete.** A vanished file becomes `missing=1`;
+   the row stays in the DB so its enrichment / hash cache / metadata
+   survives a temporarily-unmounted share. Re-scanning after reconnect
+   flips `missing` back to 0. **Tools → Clean Missing Entries** is the
+   only way to actually remove rows.
+3. **Preview before mutation.** Organize and Sync both show a per-action
+   preview with totals; nothing on disk changes until the user confirms.
+   Destructive sync actions (mirror, wipe, two-way with deletes) require
+   a second confirm prompt.
+4. **Atomic writes only.** Every file write goes through
+   `core/atomic.py` (`tempfile.mkstemp` + `os.replace`) so a cancelled
+   or killed worker can never leave a half-written file behind.
+   Per-action SAVEPOINT rollback keeps the DB consistent with the disk.
+5. **Hacks are first-class.** ROM hacks are never silently merged with
+   their base titles — `[h]` / `[T+]` markers anchor a distinct
+   fuzzy_key suffix.
 
 ---
 
 ## Known limitations
 
-These are issues that exist intentionally in v0.1.0 and are tracked
-for resolution in v0.2.0. They are documented here so they don't
-surprise you.
+These are intentional gaps in the current architecture, documented so
+they don't surprise you.
 
-1. **No real bundled DAT files.** `data/dats/` contains two synthetic
-   placeholder files only. Real No-Intro DATs are not redistributable —
-   see the [DAT files](#dat-files) section above for how to install
-   them yourself. Heavy Scan match rates are low until you do.
+1. **Single-library design.** Switching to a different library root
+   offers to wipe the prior library's rows. There is no multi-library
+   mode — by design, since the user explicitly asked for "one library
+   at a time" behavior.
 
-2. **Heavy Scan trigger is disabled in the toolbar.** The hashing /
-   DAT-matching engine ships and is fully tested. Wiring the toolbar
-   button to it with the duration-warning dialog is a v0.2.0 task.
+2. **No DB migrations for pre-v0.3.0 databases.** ROMulus is pre-1.0
+   with no shipped user base; v0.3.0 dropped the migration helper for
+   pre-v0.3.0 schemas in favor of "wipe `data/romulus.db` and let it
+   rebuild on next launch". A real migration framework will land when
+   the project gets a real user base.
 
 3. **ScreenScraper credentials are stored in plaintext in SQLite.**
    The database file is `chmod 0o600` on POSIX (Linux/macOS), so other
    local users cannot read it. On Windows, NTFS ACLs inherited from
-   `~/.romulus/` (your home directory) provide the same protection.
-   Moving credentials into the system keyring (`keyring` package) is
-   deferred to v0.2.0 to avoid blocking v0.1.0 on a packaging
-   complication.
+   the install folder provide the same protection. Moving credentials
+   into the system keyring (`keyring` package) is deferred to a future
+   release.
 
 4. **Organize plan history is not displayed in the UI.** Every applied
-   organize plan is persisted to the `organize_plans` table as JSON,
-   but there is no "View history / undo last plan" UI yet. The data
-   model supports it; the dialog is v0.2.0.
+   organize plan is persisted to the `organize_plans` table as JSON.
+   The "View history / undo last plan" dialog isn't built.
 
-5. **Folder-name guesses in built-in profiles.** See
-   [Destination profiles → Folder-name accuracy](#folder-name-accuracy).
+5. **Sync plan history is not displayed in the UI.** Same shape as
+   above — `sync_plans` rows are persisted on every apply, but no
+   history view exists yet.
 
 6. **No Heavy Scan progress estimate.** Hashing speed depends so
    heavily on the filesystem (240 GB over SMB ≈ 80 min, the same
@@ -504,8 +646,26 @@ surprise you.
    per-file progress callback is wired up; only the headline ETA is
    missing.
 
+7. **Linux / macOS distribution is source-only.** The portable Windows
+   build (`romulus.exe` + side-by-side data folders, see
+   [Installation](#installation-portable-windows)) is the supported
+   distribution for v0.3.0. Run from source on other platforms.
+
 ---
+
+## Credits
+
+See [docs/CREDITS.md](docs/CREDITS.md) for the upstream services, open-source
+libraries, ROM-preservation projects, console/launcher targets, and other
+sources that ROMulus builds on or interoperates with.
 
 ## License
 
-See repository for license terms.
+ROMulus is distributed under the [Apache License 2.0](LICENSE). All code
+in this repository is original work authored by the human maintainer with
+LLM assistance (see the LLM-assistance callout near the top of this file
+and the `Co-Authored-By` trailers in the git history).
+
+Third-party services and data sources used by ROMulus retain their own
+licenses and usage terms — see `docs/CREDITS.md` for the full list, links,
+and any usage notes.

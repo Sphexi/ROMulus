@@ -1,25 +1,52 @@
 # ROMulus — Full Technical Specification
 
-> **This file is a reference document.** The concise project rules live in `CLAUDE.md` at the project root. Session definitions live in `docs/sessions/*.md` (split from this file during Session 0). Read this file when you need specific implementation details not covered in the session file's Context section.
+> **This file is a reference document.** The concise project rules live in `CLAUDE.md` at the project root. Session definitions live in `docs/sessions/*.md` (split from this file during Session 0). Read this file when you need specific implementation details not covered in the session file's Context section. For per-release feature + fix history see `CHANGELOG.md`.
 
 ---
 
 ## Table of Contents
 
-1. [Project Overview](#project-overview)
-2. [Architecture](#architecture)
-3. [SQLite Schema](#sqlite-schema)
-4. [System Registry](#system-registry)
-5. [Scanner](#scanner)
-6. [Identifier Pipeline](#identifier-pipeline)
-7. [DAT Parser](#dat-parser)
-8. [Metadata & Cover Art Clients](#metadata--cover-art-clients)
-9. [Library Organizer](#library-organizer)
-10. [Export Engine & Destination Profiles](#export-engine--destination-profiles)
-11. [UI Components](#ui-components)
-12. [Error Handling](#error-handling)
-13. [Technical Guardrails](#technical-guardrails)
-14. [Session Definitions](#session-definitions)
+1. [Current State](#current-state) (added 2026-05-17)
+2. [Project Overview](#project-overview)
+3. [Architecture](#architecture)
+4. [SQLite Schema](#sqlite-schema)
+5. [System Registry](#system-registry)
+6. [Scanner](#scanner)
+7. [Identifier Pipeline](#identifier-pipeline)
+8. [DAT Parser](#dat-parser)
+9. [Metadata & Cover Art Clients](#metadata--cover-art-clients)
+10. [Library Organizer](#library-organizer)
+11. [Export Engine & Destination Profiles](#export-engine--destination-profiles)
+12. [Destination Sync Engine](#destination-sync-engine) — full spec in `docs/sync-design.md`
+13. [Library Cleanup (Tombstone-Missing)](#library-cleanup-tombstone-missing)
+14. [Packaging & Distribution](#packaging--distribution)
+15. [UI Components](#ui-components)
+16. [Error Handling](#error-handling)
+17. [Technical Guardrails](#technical-guardrails)
+18. [Session Definitions](#session-definitions)
+
+---
+
+## Current State
+
+**As of v0.3.0 (in development; last reviewed 2026-05-17):**
+
+- **838 tests passing, 1 skipped.** Ruff clean.
+- All 11 numbered build sessions (00–11) are complete. v0.1.0 shipped the full Quick/Heavy/Enrich/Organize/Export pipeline. v0.2.0 added portable Windows packaging + Heavy Scan UI + real bundled DATs. v0.3.0 (in development) adds destination sync, library cleanup, single-binary build, and a debug-logging overhaul.
+- Subsequent work after Session 11 is committed directly via `feat(scope):` / `fix(scope):` / `refactor(scope):` style commits without a numbered session file.
+- See `CHANGELOG.md` for the per-release feature + fix log.
+
+**v0.3.0 deltas worth knowing when reading the rest of this doc:**
+
+- **Sync engine** (sections [Destination Sync Engine](#destination-sync-engine) below; full spec `docs/sync-design.md`) — five modes (push merge/mirror/wipe, pull merge, two-way), four-tier identity matcher keyed on `(fuzzy_key, region, system_id)`, `dest_inventory` cache, `sync_plans` persistence, SAVEPOINT-per-action rollback.
+- **Library cleanup** ([section](#library-cleanup-tombstone-missing) below) — `roms.library_root` + `roms.missing` columns; single-library design (switching `library_path` prompts to wipe prior rows); scanner sweep marks any unvisited row missing; **Tools → Clean Missing Entries** drops them with FK cascade.
+- **Single-binary portable build** ([section](#packaging--distribution)) — PyInstaller `--onefile` produces `romulus.exe` containing Python + PySide6 + every transitive DLL. Data folders (`dats/`, `profiles/`, `systems/`) ship as real folders next to the exe in the ZIP.
+- **Logging precedence fixed:** `ROMULUS_LOG_LEVEL` env var beats stored `config.log_level`. DEBUG breadcrumbs added across `dat_parser`, `identifier`, `hasher`, `local_cover_finder`, `exporter`, `organizer`, and every metadata client.
+- **Schema migrations removed.** Pre-v0.3.0 databases are not migrated; wipe `data/romulus.db` and rescan.
+- **Real DATs bundled.** 106 No-Intro DATs covering ~80 systems live in `data/dats/` (dev) and `dats/` (portable build).
+- **Rename: Romulus → ROMulus.** Python package import path `romulus` (lowercase) preserved; only display-name strings changed.
+
+These deltas don't invalidate the sections that follow — they extend them.
 
 ---
 
@@ -583,6 +610,278 @@ User custom profiles go in `~/.romulus/profiles/`.
   </game>
 </gameList>
 ```
+
+---
+
+## Destination Sync Engine
+
+Added in v0.3.0. Lives in `src/romulus/core/sync.py` and
+`src/romulus/core/dest_inventory.py`. The full design spec is in
+`docs/sync-design.md` — this section summarises the moving parts and
+records the post-implementation fixes.
+
+### Five sync modes
+
+- **`push_merge`** (default) — copy local-only files to the destination,
+  leave dest-only files alone, skip identical pairs.
+- **`push_mirror`** — same as push_merge plus delete dest-only files so
+  the target matches the local library exactly. Destructive.
+- **`push_wipe`** — wipe the destination's `base_path` first, then push.
+  Most destructive.
+- **`pull_merge`** — copy dest-only files back into the local library and
+  enrol them as fuzzy matches.
+- **`two_way`** — bi-directional diff. Conflicts (same rel_path, differing
+  bytes) surface in the preview with a per-action resolution dropdown
+  (`skip` / `local` / `dest` / `newest` / `prompt`).
+
+### Four-tier identity matcher
+
+For every dest file, `_match_dest_entry` tries (in order):
+
+1. **Tier 1 — path equivalence.** Does the dest entry's `rel_path` equal
+   what this local rom *would* land at under the active profile?
+2. **Tier 2 — `(fuzzy_key, region, system_id)`.** Parses the dest
+   filename, computes the same fuzzy_key + region the scanner would,
+   joins with the system_id resolved from the dest folder via
+   `_system_id_from_rel_path(rel_path, profile)`. The system_id segment
+   is the cross-platform guard — without it, Game Boy `Pac-Man.gb` and
+   Game Boy Color `Pac-Man.gbc` collide on identical fuzzy keys.
+3. **Tier 3 — size sanity gate.** When tier 2 matches AND the local rom
+   has a known SHA-1, mismatched sizes are logged but the match still
+   wins (the spec treats size as a soft hint, not a hard reject).
+4. **Tier 4 — SHA-1 deep verify.** Authoritative when present. Set by
+   the user toggling "Deep verify" during the destination scan.
+
+### Persistent cache + plan
+
+- **`sync_destinations`** — user's saved destination targets (target_path,
+  profile_id, last_synced_at, last_inventory_signature).
+- **`dest_inventory`** — cached filesystem state per destination
+  (`dest_id, rel_path, size_bytes, mtime, sha1, rom_id, game_id,
+  last_seen_at`). Primary key `(dest_id, rel_path)`. Signature-drift
+  detection invalidates the cache when the user has manually moved files.
+- **`sync_plans`** — persisted JSON payload of every preview + apply
+  (`dest_id, mode, status, summary, plan_json, created_at`). Foundation
+  for a history dialog (deferred).
+
+### Apply semantics
+
+- Per-action SAVEPOINT rollback. A failed copy never leaves the
+  inventory cache out of sync with disk.
+- `plan.dest_id` is threaded into every helper (`_execute_copy_to_dest`,
+  `_execute_delete_dest`, `_rebuild_gamelists`) rather than re-derived
+  from `str(target_path)` — Path stringification can diverge from the
+  value stored when the destination row was created (UNC trailing slash,
+  separator normalization), and a mismatch returns `-1` and breaks every
+  subsequent `upsert_dest_inventory` on the FK constraint. One-shot
+  syncs (no saved destination, `dest_id < 0`) silently skip the inventory
+  write; the file copy still completes.
+- Cover art follows the ROM on copy. `gamelist.xml` is rebuilt for every
+  system touched by the sync regardless of mode.
+- Cover deletion on `delete_dest` actions is keyed by filename within
+  the system folder.
+
+### Sync API surface
+
+```python
+# core/sync.py
+def build_plan(conn, dest_id, profile, target, inv, mode,
+               *, conflict_policy="skip", library_path=None) -> SyncPlan
+def apply_plan(conn, plan, profile, target_path, *,
+               library_path=None, progress_callback=None) -> SyncSummary
+def persist_plan(conn, plan, status="pending") -> int
+def load_plan(conn, plan_id) -> SyncPlan | None
+```
+
+`SyncPlan` carries `dest_id`, `mode`, list of `SyncAction`, and a
+`conflict_policy`. Each `SyncAction` has a kind (`copy_to_dest`,
+`delete_dest`, `copy_to_local`, `conflict`, `identical`), rel_path,
+local_path, dest_path, size_bytes, rom_id, game_id, system_id, and
+an `executed` flag set by `apply_plan` for partial-failure replay.
+
+### Tests
+
+`tests/test_sync.py`, `tests/test_sync_preview.py`,
+`tests/test_sync_fixes.py` cover the five modes, all four identity
+tiers, conflict policies, atomic-delete via tombstone, plan
+persistence + reload, gamelist rebuild on every mode, pull-mode
+enrolment, unknown-system `_unsorted/` fallback, signature-drift
+re-recognition, the cross-platform tier-2 guard, and the
+path-mismatch `plan.dest_id` regression.
+
+---
+
+## Library Cleanup (Tombstone-Missing)
+
+Added in v0.3.0. Lives in `src/romulus/core/scanner.py` (sweep step) and
+`src/romulus/db/queries.py` (`mark_missing_under_root`,
+`count_missing_roms`, `delete_missing_roms`, `_delete_rom_dependents`,
+`count_roms_with_other_library_root`,
+`delete_roms_with_other_library_root`, `prune_orphan_games`).
+
+### Schema additions
+
+```sql
+-- v0.3.0 columns on roms (existing columns unchanged)
+library_root  TEXT,                        -- canonical absolute path
+missing       INTEGER NOT NULL DEFAULT 0,  -- 0=present, 1=tombstoned
+
+CREATE INDEX idx_roms_library_root ON roms(library_root);
+CREATE INDEX idx_roms_missing ON roms(missing) WHERE missing = 1;
+```
+
+### Scan-time behavior
+
+```python
+# core/scanner.py, end of scan_library:
+files_newly_missing = queries.mark_missing_under_root(
+    conn, library_root_str, visited_rom_ids
+)
+# Note: library_root_str is captured but not used by the SQL filter —
+# the sweep marks ALL unvisited rows missing (library-agnostic) under
+# the single-library design. The parameter is kept for backward compat.
+```
+
+The library-agnostic sweep matches the "one library at a time" design
+rule. If the user previously scanned library A, then switches to
+library B and scans, A's rows all flip to `missing=1` because they
+weren't visited. Re-scanning A flips them back via the path-keyed
+UPSERT in `upsert_rom` (which always sets `missing=0` on conflict).
+
+### `upsert_rom` invariants
+
+- Uses `RETURNING id` to get the correct row id whether the UPSERT goes
+  INSERT or UPDATE. `cursor.lastrowid` is unreliable for UPSERT-UPDATE
+  on SQLite — the connection's `last_insert_rowid` doesn't update on
+  the UPDATE branch and returns the most-recent INSERTED rowid, which
+  is the wrong row in a multi-file rescan.
+- Every successful upsert sets `missing = 0`. Pre-existing rows that
+  were tombstoned get un-tombstoned via UPSERT-UPDATE without any
+  caller action.
+- `library_root` uses `COALESCE(excluded.library_root, roms.library_root)`
+  so passing `None` doesn't blank out an existing value.
+
+### Library-switch flow
+
+```python
+# ui/main_window.py::_on_open_library
+chosen_canonical = str(Path(chosen).resolve())
+stale_count = q.count_roms_with_other_library_root(conn, chosen_canonical)
+if stale_count > 0:
+    if user confirms "Switch library?":
+        q.delete_roms_with_other_library_root(conn, chosen_canonical)
+        q.prune_orphan_games(conn)
+        conn.commit()
+set_config(conn, "library_path", chosen)
+```
+
+### Clean Missing flow
+
+```python
+# ui/main_window.py::_on_clean_missing
+count = q.count_missing_roms(conn)
+if count == 0: show "No missing entries"
+elif user confirms:
+    q.delete_missing_roms(conn)   # cascades hashes + dest_inventory
+    q.prune_orphan_games(conn)    # drops games whose roms are now all gone
+    conn.commit()
+```
+
+### FK cascade
+
+`hashes.rom_id` and `dest_inventory.rom_id` both reference `roms(id)` and
+neither declares `ON DELETE CASCADE` (would require table-recreate on
+SQLite). `_delete_rom_dependents` deletes those rows in chunks of 500
+ids before the rom delete, so the FK constraint never triggers.
+
+### Status bar surfacing
+
+`refresh_game_table` writes
+`"{total} ROMs ({missing} missing — Tools > Clean Missing Entries)"`
+when any tombstones exist, otherwise just `"{total} ROMs"`.
+
+### Tests
+
+`tests/test_library_cleanup.py` (24 tests): scanner sweep,
+reconnect-untombstone, library-root stamping, single-library
+cross-library flagging, count/delete with-other-root, FK-dependent
+delete, orphan-game prune, `upsert_rom` resets missing, logging
+precedence (env var > Settings > default).
+
+---
+
+## Packaging & Distribution
+
+Added in v0.2.0, revised in v0.3.0.
+
+### Portable Windows ZIP (`build-portable.ps1`)
+
+1. PyInstaller (`--onefile` per `romulus.spec`) produces
+   `dist/romulus.exe`. The exe self-extracts to `%TEMP%/_MEIxxxxxx/` on
+   launch and runs from there.
+2. `build-portable.ps1` moves the exe into `dist/romulus/`, then copies
+   `data/dats/` → `dist/romulus/dats/`, `profiles/` → `dist/romulus/profiles/`,
+   `systems/` → `dist/romulus/systems/`.
+3. The `dist/romulus/` folder is ZIPed to
+   `dist/romulus-windows-x64.zip`.
+
+End-user layout:
+```
+romulus/
+  romulus.exe       (single self-contained binary)
+  dats/*.dat        (bundled No-Intro DATs)
+  profiles/*.yaml   (destination profiles — user-editable)
+  systems/*.yaml    (system registry — user-editable)
+```
+
+After first launch the app creates `data/` (SQLite DB + cover cache)
+and `logs/` (rotating log) alongside the exe.
+
+### Spec choices
+
+- **`--onefile` over `--onedir`** — produces a single binary at the
+  cost of ~1.5s extra startup on first launch each session
+  (bootloader unpacks to %TEMP%). Acceptable for an infrequently-
+  updated portable.
+- **`contents_directory='.'`** would be redundant since onefile has no
+  contents directory.
+- **UPX disabled.** Trips Windows Defender heuristics; the savings
+  are marginal vs. ZIP compression.
+- **Themes + icons embedded** (loaded via `Path(__file__).parent`),
+  but **profiles/systems/dats are external** (live alongside the exe
+  in the ZIP) so users can edit them without launching the app.
+
+### Install-dir resolution
+
+`app._resolve_install_dir` returns:
+
+1. `sys.executable.parent` when running frozen.
+2. Walks up from the module looking for `pyproject.toml` when running
+   from a dev clone.
+3. Falls back to `~/.romulus/` if neither works.
+
+`app.resolve_data_dir` then prefers `<install_dir>/data` if writable,
+else `~/.romulus/`. `ROMULUS_DATA_DIR` env var overrides both.
+
+### Three-tier profile + system YAML loading
+
+`exporter.load_all_profiles` and `models.system.load_systems_from_yaml`
+both consult, in order:
+
+1. `~/.romulus/profiles/` (or `<install_dir>/profiles/` for v0.2.0+)
+2. `<install_dir>/profiles/` (the bundled defaults shipped in the ZIP)
+3. `importlib.resources.files(romulus.data.profiles)` (the empty stub
+   left in the wheel for backward compat with editable installs)
+
+Same pattern for systems. User-supplied YAML overrides built-in by id.
+
+### Tests
+
+`tests/test_packaging.py` covers `_resolve_install_dir`,
+`resolve_data_dir` (env var, install dir writable, legacy fallback),
+`ensure_user_editable_files` (creates folders + seeds defaults),
+three-tier profile loading precedence, system YAML round-trip, and
+the Settings → Diagnostics tab surfacing of install + data dirs.
 
 ---
 

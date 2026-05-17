@@ -2,34 +2,45 @@
 
 ## What This Project Is
 
-ROMulus is a local-first desktop ROM collection manager for retro game consoles. It scans, identifies, enriches with metadata/cover art, organizes, and exports ROM collections to device-specific folder structures (Anbernic, Batocera, MiSTer, etc.). Built with Python + PySide6 (Qt), SQLite, and no server infrastructure.
+ROMulus is a local-first desktop ROM collection manager for retro game consoles. It scans, identifies, enriches with metadata/cover art, organizes, **syncs** to device-specific folder structures (Anbernic, Batocera, MiSTer, RetroPie, muOS, Onion OS, Analogue Pocket), and exports collections. Built with Python + PySide6 (Qt), SQLite, and no server infrastructure. Shipped as a single-binary portable Windows ZIP.
 
 ## Project Tier
 
 **Standard** — unit tests + ruff, code reviews every 2–3 build sessions.
 
+## Current State (as of v0.3.0 in development)
+
+- **838 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
+- Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich → Organize → Export / Sync.
+- Single library at a time model — switching library_path wipes prior rows; tombstone-missing rather than delete-missing for un-tombstone-on-reconnect.
+- 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging + Heavy Scan UI + real DATs; v0.3.0 added destination sync, library cleanup, single-binary build, DEBUG breadcrumbs, plus many fixes.
+- Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db` and rescan if you have a pre-v0.3.0 DB lying around.
+
+See `CHANGELOG.md` for the full per-release breakdown.
+
 ## Session Start
 
 At the start of every session:
-1. Read this file for project rules and architecture
-2. Read the current session file from `docs/sessions/` (check `docs/TECHNICAL_PLAN.md` session overview table for the current session number, then open `docs/sessions/NN-slug.md`)
-3. Produce an execution plan before writing any code
-
-**Find sessions:** `ls docs/sessions/`
+1. Read this file for project rules, architecture, and current state.
+2. Check what work is in progress. If the user has a specific task, follow it. If `docs/sessions/NN-slug.md` is being used for a new piece of work, read it.
+3. Run `git log --oneline -20` to see recent commits. The 11 numbered sessions (00–11) are complete; subsequent work is committed directly via `feat:` / `fix:` / `refactor:` commits without a session file (the project is past the bootstrap phase).
+4. Produce an execution plan before writing any code on non-trivial work.
 
 ## Follow the Plan
 
-Claude Code MUST follow the tasks in the current session file. Do not add features, refactors, or improvements not specified. Do not ask questions already answered in CLAUDE.md or the session file's Context section. If something seems missing, flag it — do not silently add unplanned work.
+Claude Code MUST follow the tasks in the current session file (when one applies). Do not add features, refactors, or improvements not specified. Do not ask questions already answered in CLAUDE.md or the session file's Context section. If something seems missing, flag it — do not silently add unplanned work.
 
 ## Reference Documents
 
 | Document | Purpose | When to Read |
 |---|---|---|
-| `docs/sessions/NN-slug.md` | Current session tasks, context, acceptance criteria | Session start (self-contained — has everything you need) |
-| `docs/TECHNICAL_PLAN.md` | Full API details, schema, implementation pseudocode | On-demand for edge cases not covered in the session file |
+| `docs/sessions/NN-slug.md` | Per-session task list, context, acceptance criteria (sessions 00–11 are done) | When the user resumes a numbered session |
+| `docs/TECHNICAL_PLAN.md` | Full API details, schema, implementation pseudocode | On-demand for edge cases not covered elsewhere |
+| `docs/sync-design.md` | Destination sync engine spec (modes, identity matcher, dest_inventory, sync_plans) | When touching `core/sync.py` or `core/dest_inventory.py` |
 | `docs/ROM-FORMATS-REFERENCE.md` | Extension tables, naming conventions, folder aliases | When implementing scanner or system registry |
 | `docs/ROM-DEDUP-METHODOLOGY.md` | Three-layer identification pipeline methodology | When implementing identifier pipeline |
 | `docs/ROM-LIBRARY-ANALYSIS-REPORT.md` | Real-world library stats, test validation data | When writing tests or validating assumptions |
+| `CHANGELOG.md` | Per-release feature + fix history with breaking-change callouts | When orienting on what shipped when |
 
 Do not load reference documents into context every turn — read them when needed.
 
@@ -39,40 +50,52 @@ Do not load reference documents into context every turn — read them when neede
 ┌──────────────────────────────────────────────────────────┐
 │                     PySide6 UI                           │
 │  ┌─────────┐  ┌──────────────┐  ┌─────────────────────┐ │
-│  │ System   │  │  Game Table  │  │   Game Detail Panel │ │
-│  │ Sidebar  │  │  (sortable,  │  │   (cover, desc,     │ │
-│  │          │  │   filterable)│  │    metadata, tags)   │ │
+│  │ System  │  │  Game Table  │  │   Game Detail Panel │ │
+│  │ Sidebar │  │  (sortable,  │  │   (cover, desc,     │ │
+│  │         │  │   filterable)│  │    metadata, tags)  │ │
 │  └─────────┘  └──────────────┘  └─────────────────────┘ │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
-│  │          Enrich | Export | Settings                   ││
+│  │          Enrich | Export/Sync | Settings             ││
+│  │ Tools menu: Clean Missing Entries…                   ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
                │ signals/slots + QThread workers
 ┌──────────────┴───────────────────────────────────────────┐
-│                    Core Engine                            │
-│                                                           │
-│  Scanner ──→ Identifier Pipeline ──→ SQLite DB            │
-│              (L1 fuzzy, L2 header,     │                  │
-│               L3 hash+DAT)        Metadata Client         │
-│                                   (libretro-thumbnails,   │
-│  DAT Parser (bundled + user)       Hasheous, LaunchBox)   │
-│                                                           │
-│  Organizer (rename/merge/dedup     Export Engine           │
-│             with preview/commit)   (dest profiles, copy,  │
-│                                    gamelist.xml, .lpl)     │
-│                                                           │
-│  Cover Cache (~/.romulus/covers/)                          │
-│  SQLite DB   (~/.romulus/romulus.db)                       │
-└───────────────────────────────────────────────────────────┘
+│                    Core Engine                           │
+│                                                          │
+│  Scanner (+missing sweep) ──→ Identifier ──→ SQLite DB   │
+│                              (L1 fuzzy, L2 header,       │
+│                               L3 hash+DAT)               │
+│                                                          │
+│  DAT Parser (bundled No-Intro + user)                    │
+│  Metadata Clients (libretro-thumbnails, Hasheous,        │
+│                    LaunchBox, ScreenScraper optional)    │
+│                                                          │
+│  Organizer (preview/commit, atomic move, SAVEPOINT)      │
+│  Export Engine (dest profiles, copy, gamelist.xml, .m3u) │
+│                                                          │
+│  Sync Engine  ── 5 modes: push merge/mirror/wipe,        │
+│   (core/sync.py)  pull merge, two-way                    │
+│                ── 4-tier identity match: path, fuzzy+    │
+│                   region+system_id, hash-by-name, sha1   │
+│                ── dest_inventory cache (per destination) │
+│                ── sync_plans persisted JSON per apply    │
+│                                                          │
+│  Cover Cache (<install_dir>/data/covers/)                │
+│  SQLite DB   (<install_dir>/data/romulus.db)             │
+└──────────────────────────────────────────────────────────┘
 ```
 
 **Key architecture notes:**
-- Single-process desktop app, no server, no Docker
-- SQLite for all persistent state (library, config, metadata, scan history)
-- QThread workers for scanner/hasher/enricher with progress signals to UI
-- Quick scan (L1+L2, seconds-to-minutes) vs Heavy scan (L3, minutes-to-hours)
-- Config stored in SQLite, not files — user edits everything via Settings dialog
+- Single-process desktop app, no server, no Docker.
+- Distributed as a single-binary portable Windows ZIP (PyInstaller `--onefile`); data folders (`dats/`, `profiles/`, `systems/`) ship alongside the exe in the ZIP.
+- SQLite for all persistent state (library, config, metadata, scan history, dest inventory, sync plans).
+- QThread workers for scanner / heavy-scan / enricher / organizer / exporter / sync / dest-inventory-scan / local-cover-finder with cooperative cancel via private exception raised inside the progress callback.
+- Quick scan (L1+L2, seconds-to-minutes) vs Heavy scan (L3, minutes-to-hours).
+- Config stored in SQLite, not files — user edits everything via Settings dialog.
+- **Single library at a time.** Switching `library_path` prompts to wipe prior rows; the scan sweep flags any row not visited this scan as `missing=1` regardless of its `library_root`.
+- Pre-v0.3.0 schema migrations were removed; users with a pre-v0.3.0 database wipe `data/romulus.db` and rescan.
 
 ## Tech Stack
 
@@ -91,81 +114,105 @@ Do not load reference documents into context every turn — read them when neede
 ## Project Structure
 
 ```
-romulus/
+ROMulous/
 ├── CLAUDE.md
+├── CHANGELOG.md
+├── README.md
 ├── pyproject.toml
-├── .claude/
-│   └── settings.json
+├── romulus.spec                  # PyInstaller spec (--onefile)
+├── build-portable.ps1            # Windows portable-ZIP builder
+├── scripts/
+│   └── generate_icon.py          # CD-ROM disc icon generator (QPainter)
+├── .github/workflows/
+│   ├── ci.yml                    # Lint + test on push/PR
+│   └── release.yml               # Tag-driven portable ZIP build
+├── profiles/                     # 7 built-in destination profiles (YAML)
+├── systems/                      # System registry YAML (builtin.yaml)
 ├── data/
-│   └── dats/                    # Bundled No-Intro DAT files (~30 systems)
-│   └── profiles/                # Built-in destination profiles (YAML)
+│   └── dats/                     # 106 bundled No-Intro DAT files
 ├── docs/
 │   ├── TECHNICAL_PLAN.md
+│   ├── sync-design.md            # Destination sync engine spec
+│   ├── CREDITS.md                # Upstream services, libraries, devices
 │   ├── ROM-FORMATS-REFERENCE.md
 │   ├── ROM-DEDUP-METHODOLOGY.md
 │   ├── ROM-LIBRARY-ANALYSIS-REPORT.md
-│   └── sessions/
-│       ├── 00-bootstrap.md
-│       ├── 01-data-models.md
-│       ├── ...
-│       └── 11-final-review.md
-├── src/
-│   └── romulus/
-│       ├── __init__.py
-│       ├── __main__.py          # Entry point
-│       ├── app.py               # QApplication setup
-│       ├── db/
-│       │   ├── __init__.py
-│       │   ├── connection.py    # SQLite connection manager
-│       │   ├── schema.py        # Table definitions, migrations
-│       │   └── queries.py       # Query functions
-│       ├── core/
-│       │   ├── __init__.py
-│       │   ├── scanner.py       # Filesystem walker, platform detection
-│       │   ├── identifier.py    # Three-layer identification pipeline
-│       │   ├── hasher.py        # SHA-1/CRC32 with header stripping
-│       │   ├── dat_parser.py    # Logiqx XML DAT parser
-│       │   ├── organizer.py     # Library reorganization (preview/commit)
-│       │   └── exporter.py      # Destination profile export engine
-│       ├── metadata/
-│       │   ├── __init__.py
-│       │   ├── libretro.py      # libretro-thumbnails cover art
-│       │   ├── hasheous.py      # Hasheous API client
-│       │   ├── launchbox.py     # LaunchBox XML parser
-│       │   └── screenscraper.py # ScreenScraper API client (optional)
-│       ├── models/
-│       │   ├── __init__.py
-│       │   ├── system.py        # System/platform definitions
-│       │   ├── rom.py           # ROM file model
-│       │   ├── game.py          # Logical game model
-│       │   └── profile.py       # Destination profile model
-│       └── ui/
-│           ├── __init__.py
-│           ├── main_window.py   # Main window layout
-│           ├── system_sidebar.py
-│           ├── game_table.py
-│           ├── detail_panel.py
-│           ├── settings_dialog.py
-│           ├── scan_progress.py
-│           ├── organize_preview.py
-│           ├── export_dialog.py
-│           └── workers.py       # QThread workers for async ops
+│   └── sessions/                 # Sessions 00-11 (done)
+├── src/romulus/
+│   ├── __init__.py
+│   ├── __main__.py               # Entry point
+│   ├── app.py                    # QApplication setup, log + DB init,
+│   │                             # data-dir resolution, first-launch seeding
+│   ├── db/
+│   │   ├── connection.py         # SQLite connection manager
+│   │   ├── schema.py             # Table definitions, migration helpers
+│   │   ├── queries.py            # All SQL queries
+│   │   └── config.py             # Default config + accessors
+│   ├── core/
+│   │   ├── scanner.py            # Filesystem walk + L1/L2 + missing sweep
+│   │   ├── identifier.py         # L2 header extraction
+│   │   ├── hasher.py             # SHA-1/CRC32 + header stripping + archives
+│   │   ├── dat_parser.py         # Logiqx XML DAT parser + match_hashes
+│   │   ├── organizer.py          # Library reorganization (preview/commit)
+│   │   ├── exporter.py           # Destination profile export engine
+│   │   ├── sync.py               # 5-mode sync + 4-tier identity match
+│   │   ├── dest_inventory.py     # Destination filesystem scanner + cache
+│   │   ├── local_cover_finder.py # Disk-side cover discovery + linking
+│   │   ├── atomic.py             # tempfile.mkstemp + os.replace helpers
+│   │   └── _no_intro_tokens.py   # FILENAME_REGION_TOKENS, REVISION_RE
+│   ├── metadata/
+│   │   ├── libretro.py           # libretro-thumbnails cover art
+│   │   ├── hasheous.py           # Hasheous API client
+│   │   ├── launchbox.py          # LaunchBox XML parser
+│   │   └── screenscraper.py      # ScreenScraper API client (optional)
+│   ├── models/
+│   │   ├── system.py             # SYSTEM_REGISTRY + YAML loader
+│   │   ├── rom.py
+│   │   ├── game.py
+│   │   └── profile.py            # DestinationProfile + SystemMapping
+│   └── ui/
+│       ├── main_window.py        # Window, menu, toolbar, all workflow hooks
+│       ├── system_sidebar.py
+│       ├── game_table.py
+│       ├── detail_panel.py
+│       ├── settings_dialog.py    # General / DATs / Metadata / Scan / Diagnostics
+│       ├── scan_progress.py      # Quick / Heavy / DestScan dialogs
+│       ├── organize_preview.py
+│       ├── export_dialog.py
+│       ├── sync_preview.py       # Sync preview + apply UI
+│       ├── workers.py            # QThread workers (Scan / HeavyScan / Enrich /
+│       │                          # Organize / Export / Sync / DestInventory /
+│       │                          # LocalCover)
+│       ├── icons/cdrom.{png,ico}
+│       └── themes/                # light, dark, wbm_classic .qss
 └── tests/
-    ├── conftest.py
+    ├── conftest.py                # db / seeded_db / qapp fixtures
     ├── test_scanner.py
     ├── test_identifier.py
     ├── test_hasher.py
     ├── test_dat_parser.py
     ├── test_organizer.py
     ├── test_exporter.py
-    └── test_metadata.py
+    ├── test_metadata.py
+    ├── test_sync.py               # 5 modes, 4 tiers, cross-platform guard,
+    │                              # path-mismatch dest_id threading
+    ├── test_sync_preview.py
+    ├── test_sync_fixes.py
+    ├── test_library_cleanup.py    # tombstone, root-change, FK cascade,
+    │                              # logging precedence
+    ├── test_packaging.py          # install-dir, three-tier profile loading
+    └── ...                        # 838 tests total, 1 skipped
 ```
 
 ## Git Policy
 
-Claude Code handles `git add` and `git commit` at the end of each session. `git push` is ALWAYS denied. `git merge`, `git rebase`, `git stash`, `git reset --hard` are denied.
+Claude Code handles `git add` and `git commit` at the end of each work unit (session OR feature/fix commit). `git push` is ALWAYS denied. `git merge`, `git rebase`, `git stash`, `git reset --hard`, `--no-verify` are denied.
 
-At the end of each session, stage and commit all changes with a descriptive commit message referencing the session number.
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) style: `feat(scope): ...`, `fix(scope): ...`, `refactor(scope): ...`, `docs(scope): ...`. Sessions 00–11 used `Session N: ...` style; that pattern is retired.
+
+## License
+
+[Apache License 2.0](LICENSE). All code in this repo is original work; LLM-assisted authorship is acknowledged in the README and via `Co-Authored-By` trailers on commits.
 
 ## Code Style & Conventions
 
@@ -187,22 +234,41 @@ At the end of each session, stage and commit all changes with a descriptive comm
 1. **Local-first.** No server, no Docker, no external dependencies to run. SQLite for storage, files on disk for covers.
 2. **No external CDN/JS dependencies.** All assets vendored locally if needed.
 3. **Quick scan must be fast.** L1 (fuzzy filename) + L2 (internal header) run automatically during scan. L3 (hash+DAT) is a separate "Heavy Scan" action with a progress dialog and duration warning.
-4. **Never modify files without preview.** The Organizer shows a before/after diff. The Exporter shows what will be copied. User must explicitly confirm before any filesystem changes.
-5. **Hacks are first-class artifacts.** Never silently deduplicate a hack against its original. Treat them as distinct titles.
-6. **Hash cache is sacred.** Hashes are expensive. Cache in SQLite keyed by (path, mtime, size). Reuse on rescan if file hasn't changed.
-7. **DATs are bundled.** No-Intro DATs for ~30 common systems ship in `data/dats/`. Users can add more to a configurable folder. The app watches both.
-8. **Cover art is free.** Primary source: libretro-thumbnails (HTTP, no API key). ScreenScraper is optional — app prompts user, works without it.
-9. **Config lives in SQLite.** No manual config file editing. Everything through the Settings dialog.
-10. **Destination profiles are YAML.** Ship 6 built-in profiles. Users can create custom ones in `~/.romulus/profiles/`.
+4. **Never modify files without preview.** The Organizer shows a before/after diff. The Exporter shows what will be copied. The Sync engine shows a per-action preview with totals + a double-confirm prompt before destructive runs. User must explicitly confirm before any filesystem changes.
+5. **Atomic writes only.** Every file write goes through `core/atomic.py` (`tempfile.mkstemp` + `os.replace`). Per-action SAVEPOINT rollback in organizer + sync keeps the DB consistent with disk.
+6. **Single library at a time.** ROMulus treats one `library_path` as the source of truth. Switching libraries prompts to wipe prior rows. The scanner sweep marks any row not visited as `missing=1` regardless of its `library_root` — see `core/scanner.py::scan_library` and `core/queries.py::mark_missing_under_root`.
+7. **Tombstone, don't delete.** A vanished file becomes `missing=1`; the row stays in the DB so its metadata / hashes / enrichment survive a temporarily-unmounted share. Re-scanning un-tombstones via the path-keyed UPSERT. **Tools → Clean Missing Entries** is the only path that actually removes rows, and it cascades to `hashes` + `dest_inventory` + orphan `games`.
+8. **Hacks are first-class artifacts.** Never silently deduplicate a hack against its original. Treat them as distinct titles.
+9. **Hash cache is sacred.** Hashes are expensive. Cache in SQLite keyed by (path, mtime, size). Reuse on rescan if file hasn't changed.
+10. **DATs are bundled.** 106 No-Intro DATs covering ~80 systems ship in `data/dats/` (dev) / `dats/` (portable). Users can add more to a configurable folder. Both are merged on startup.
+11. **Cover art is free.** Primary source: libretro-thumbnails (HTTP, no API key). ScreenScraper is optional — app prompts user, works without it.
+12. **Config lives in SQLite.** No manual config file editing. Everything through the Settings dialog.
+13. **Destination profiles are YAML.** Ship 7 built-in profiles in `profiles/`. Users can create custom ones; three-tier load (user > install > package builtin).
+14. **No pre-v0.3.0 DB migration support.** ROMulus is pre-1.0 with no production user base; legacy DBs get wiped, not migrated. Re-introduce migration framework when v1.0 ships.
+15. **Sync identity matching anchors on system_id.** Tier-2 fuzzy match keys on `(fuzzy_key, region, system_id)` so cross-platform fuzzy-key collisions (e.g. Game Boy vs Game Boy Color "Pac-Man") never match. Tier-1 path equivalence and tier-4 SHA-1 are also gated correctly.
+16. **Plan.dest_id is authoritative.** Sync apply uses `plan.dest_id` directly; do NOT re-derive from `str(target_path)` because Path stringification can diverge from the value stored at destination-creation time (UNC trailing slash, separator normalization).
 
 ## Scan Types
 
 | Type | What runs | Speed | Trigger |
 |---|---|---|---|
-| **Quick Scan** | Filesystem walk + platform detection + filename parsing (L1) + internal header extraction (L2) | Seconds to minutes | "Quick Scan" button or on library import |
-| **Heavy Scan** | SHA-1/CRC32 hashing + DAT matching (L3) | Minutes to hours (240 GB ≈ 80 min over SMB) | "Heavy Scan" button with warning dialog |
+| **Quick Scan** | Filesystem walk + platform detection + filename parsing (L1) + internal header extraction (L2) + missing-row sweep | Seconds to minutes | "Quick Scan" button or on library import |
+| **Heavy Scan** | SHA-1/CRC32 hashing + DAT matching (L3) | Minutes to hours (240 GB ≈ 80 min over SMB) | "Heavy Scan" toolbar/menu action with duration warning dialog. Can be scoped per-game via right-click |
+| **Destination Scan** | Filesystem walk of a sync target + signature-drift check against cached `dest_inventory` rows | Seconds to a minute | First step of the Sync workflow |
 
-Quick scan gives a browsable library immediately. Heavy scan unlocks canonical naming, accurate dedup, cover art matching, and completeness reporting.
+Quick scan gives a browsable library immediately and tombstones any file that has vanished since the last scan. Heavy scan unlocks canonical naming, accurate dedup, cover art matching, and completeness reporting. Destination scan is the read-only first half of a sync.
+
+## Sync Modes
+
+| Mode | Direction | Dest-only files | Destructive? |
+|---|---|---|---|
+| `push_merge` (default) | Local → Dest | Left in place | No |
+| `push_mirror` | Local → Dest | Deleted | Yes — needs double-confirm |
+| `push_wipe` | Local → Dest | Wiped before push | Yes — needs double-confirm |
+| `pull_merge` | Dest → Local | Copied to library + enrolled as fuzzy match | No |
+| `two_way` | Both | Conflicts surface in preview (skip / local / dest / newest / prompt) | Possibly — confirm based on action mix |
+
+See `docs/sync-design.md` for the full spec (5 modes × 4 identity tiers × dest_inventory cache × sync_plans persistence).
 
 ## Agent & Plugin Routing
 

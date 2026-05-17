@@ -1,9 +1,8 @@
 # Destination Sync — Design Spec
 
-**Status:** scoped, pre-implementation
-**Targeted version:** v0.2.0
-**Last updated:** 2026-05-15
-**Authoritative reference:** this doc. Implementation diverging from it must update the doc in the same commit.
+**Status:** implemented (v0.2.0), refined (v0.3.0).
+**Last updated:** 2026-05-17
+**Authoritative reference:** this doc. Implementation diverging from it must update the doc in the same commit. Post-implementation fixes are recorded in [§12](#12-post-implementation-notes-v030).
 
 ---
 
@@ -427,3 +426,113 @@ Deferred to v0.3.0+ (and explicitly NOT in this work):
 - **Two-way in v0.2.0?** Yes, included.
 - **Always rebuild dest gamelist.xml?** Yes — derived artifact, no value in
   diffing.
+
+---
+
+## 12. Post-implementation notes (v0.3.0)
+
+The sync engine landed in v0.2.0 (commit `4b61049`). Real-world testing
+on the maintainer's library surfaced four classes of bug that were each
+fixed with a focused commit + regression test. They're recorded here so
+the spec stays canonical and the patches don't drift.
+
+### 12.1 Tier-2 cross-platform false positives (commit `0c161d5`)
+
+**Symptom.** Destination scans logged ~30 "tier-2 match with size drift"
+warnings pairing local Game Boy `.gb` files to dest Game Boy Color
+`.gbc` files (and vice versa, GB↔GBA, etc.) with massive size deltas
+(32 KB vs 1 MB).
+
+**Root cause.** The tier-2 match key was `(fuzzy_key, region)`. Both
+"Pac-Man (USA).gb" and "Pac-Man (USA).gbc" produced identical
+fuzzy_key + region, so the matcher cross-pollinated them. The size
+drift warning fired but the match still won (per §3.3).
+
+**Fix.** Added `system_id` to the tier-2 key:
+`(fuzzy_key, region, system_id)`. Local rows contribute their
+`rom.system_id`. The dest side derives its `system_id` from
+`entry.rel_path` via `_system_id_from_rel_path(rel_path, profile)`
+(which was already there for cover-delete grouping). Dest files
+outside any known system folder return `None` rather than risk a
+false positive.
+
+`_MatchIndex` gained a `profile` field so the matcher can do the
+folder→system lookup without an extra argument. `_find_tier2_inventory_entry`
+got the same guard.
+
+Regression: `tests/test_sync.py::TestTier2CrossPlatformGuard` (3 tests).
+
+### 12.2 FK constraint storm during apply (commit `eb56c05`)
+
+**Symptom.** A real push_merge run logged ~2000
+`WARNING sync action failed: kind=copy_to_dest err=FOREIGN KEY constraint failed`
+entries. Files were copied to disk but the inventory cache was never
+populated — every re-run proposed the same copies.
+
+**Root cause.** `_execute_copy_to_dest`, `_execute_delete_dest`, and
+`_gamelist_rows_for_system` re-derived `dest_id` at apply time via
+`_dest_id_from_target(conn, target)` → `SELECT id FROM sync_destinations
+WHERE target_path = str(target)`. Path stringification can diverge from
+the value stored at destination creation:
+- Trailing-slash differences on UNC paths
+  (`\\host\share\path` vs `\\host\share\path\`).
+- Separator normalization (`//server/share/dir` vs
+  `\\server\share\dir`).
+- Case folding on Windows.
+
+A mismatch returned `-1`, and the dest_inventory upsert then trip the
+`dest_id REFERENCES sync_destinations(id)` FK.
+
+**Fix.** `plan.dest_id` is now captured once at the top of `apply_plan`
+and threaded into every helper as an explicit `dest_id: int` keyword
+arg. When `dest_id < 0` (one-shot sync without a saved destination
+row), the inventory write is silently skipped — the file copy still
+succeeds, there's just no cache row.
+
+Regression: `tests/test_sync.py::TestApplyUsesPlanDestId` (2 tests). The
+path-mismatch test asserts `_dest_id_from_target` actively returns -1
+in its setup before asserting `apply_plan` succeeds anyway via the
+plan's dest_id.
+
+### 12.3 Cover deletion + cleanup edge cases (commit `f5669b3`)
+
+**Symptom.** Initial sync runs failed with FK errors on one-shot
+destinations (the dropdown sentinel `dest_id=-1` reached
+`upsert_dest_inventory` / `sync_plans`), the destination scan locked the
+UI (no progress dialog), and the preview was unclear about what would
+happen on Apply.
+
+**Fixes.**
+- Removed the `dest_id=-1` sentinel from the destination dropdown;
+  added `q.ensure_sync_destination_by_path()` called before the scan
+  worker spawns. (See also §12.2 for the deeper fix.)
+- Added `DestScanProgressDialog` matching the pattern of other
+  workers (modal QDialog, progress signals, cooperative cancel).
+- Reworded the preview dialog (intro paragraph, totals label, button
+  text `Apply changes to <target>` instead of generic `OK`).
+
+### 12.4 Preview "Apply" → "Close" transition (commit `baaee64`)
+
+**Symptom.** After the sync completed, the preview dialog still showed
+only a `Cancel` button — users didn't know they were done.
+
+**Fix.** `_enter_done_state` swaps the Apply button out, renames Cancel
+to Close, rewires the slot to `accept()`. Used
+`contextlib.suppress(RuntimeError, TypeError)` per ruff SIM105.
+
+### 12.5 Behavioural spec amendments
+
+These are *spec changes* that resulted from the fixes above. They take
+precedence over earlier sections in this doc if anything reads
+inconsistently:
+
+1. **Tier-2 match key is now 3-tuple `(fuzzy_key, region, system_id)`.**
+   Section [§3.2](#32-tier-2-fuzzy_key--region) describes a 2-tuple;
+   the implementation uses the 3-tuple per §12.1.
+2. **`plan.dest_id` is authoritative throughout apply.** §4 doesn't
+   forbid re-deriving from target_path, but §12.2 makes clear it's
+   forbidden in practice. New helpers must take `dest_id` as a
+   parameter.
+3. **One-shot syncs (`dest_id < 0`) skip dest_inventory writes
+   entirely.** Not specified before; recorded now so future apply-step
+   work doesn't try to make them work the same as saved destinations.
