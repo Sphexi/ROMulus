@@ -24,6 +24,8 @@ systems:
     dat_name: Nintendo - Nintendo Entertainment System
     dat_name_aliases:
       - Nintendo - Family Computer Disk System
+    logo_dark: systems/nes-dark.png
+    logo_light: systems/nes-light.png
   - id: snes
     display_name: Super Nintendo Entertainment System
     short_name: SNES
@@ -45,6 +47,8 @@ systems:
     dat_name: Nintendo - Super Nintendo Entertainment System
     dat_name_aliases:
       - Nintendo - Super Nintendo Entertainment System (Combined)
+    logo_dark: systems/snes-dark.png
+    logo_light: systems/snes-light.png
   - id: n64
     display_name: Nintendo 64
     short_name: N64
@@ -63,6 +67,8 @@ systems:
     dat_name: Nintendo - Nintendo 64
     dat_name_aliases:
       - Nintendo - Nintendo 64 (BigEndian)
+    logo_dark: systems/n64-dark.png
+    logo_light: systems/n64-light.png
   - id: gamecube
     display_name: Nintendo GameCube
     short_name: GameCube
@@ -82,6 +88,8 @@ systems:
       - gamecube
       - ngc
     dat_name: Nintendo - GameCube
+    logo_dark: systems/gamecube-dark.png
+    logo_light: systems/gamecube-light.png
   - id: gb
     display_name: Game Boy
     short_name: GB
@@ -94,6 +102,8 @@ systems:
       - gb
       - gameboy
     dat_name: Nintendo - Game Boy
+    logo_dark: systems/gb-dark.png
+    logo_light: systems/gb-light.png
   - id: gbc
     display_name: Game Boy Color
     short_name: GBC
@@ -107,6 +117,8 @@ systems:
       - gbc
       - gameboycolor
     dat_name: Nintendo - Game Boy Color
+    logo_dark: systems/gbc-dark.png
+    logo_light: systems/gbc-light.png
   - id: gba
     display_name: Game Boy Advance
     short_name: GBA
@@ -119,6 +131,8 @@ systems:
       - gba
       - gameboyadvance
     dat_name: Nintendo - Game Boy Advance
+    logo_dark: systems/gba-dark.png
+    logo_light: systems/gba-light.png
   - id: nds
     display_name: Nintendo DS
     short_name: DS
@@ -135,6 +149,8 @@ systems:
       - Nintendo - Nintendo DS (Decrypted)
       - Nintendo - Nintendo DS (Download Play)
       - Nintendo - Nintendo DSi (Decrypted)
+    logo_dark: systems/nds-dark.png
+    logo_light: systems/nds-light.png
   - id: virtualboy
     display_name: Virtual Boy
     short_name: VB
@@ -148,6 +164,8 @@ systems:
       - vb
       - virtualboy
     dat_name: Nintendo - Virtual Boy
+    logo_dark: systems/virtualboy-dark.png
+    logo_light: systems/virtualboy-light.png
   - id: megadrive
     display_name: Sega Mega Drive / Genesis
     short_name: Mega Drive
@@ -166,6 +184,8 @@ systems:
       - md
       - gen
     dat_name: Sega - Mega Drive - Genesis
+    logo_dark: systems/megadrive-dark.png
+    logo_light: systems/megadrive-light.png
   - id: mastersystem
     display_name: Sega Master System
     short_name: Master System
@@ -179,6 +199,8 @@ systems:
       - mastersystem
       - sms
     dat_name: Sega - Master System - Mark III
+    logo_dark: systems/mastersystem-dark.png
+    logo_light: systems/mastersystem-light.png
   - id: gamegear
     display_name: Sega Game Gear
     short_name: Game Gear
@@ -191,6 +213,8 @@ systems:
       - gamegear
       - gg
     dat_name: Sega - Game Gear
+    logo_dark: systems/gamegear-dark.png
+    logo_light: systems/gamegear-light.png
   - id: saturn
     display_name: Sega Saturn
     short_name: Saturn
@@ -209,6 +233,8 @@ systems:
       - ss
       - segasaturn
     dat_name: Sega - Saturn
+    logo_dark: systems/saturn-dark.png
+    logo_light: systems/saturn-light.png
   - id: dreamcast
     display_name: Sega Dreamcast
     short_name: Dreamcast
@@ -225,6 +251,8 @@ systems:
       - dreamcast
       - dc
     dat_name: Sega - Dreamcast
+    logo_dark: systems/dreamcast-dark.png
+    logo_light: systems/dreamcast-light.png
   - id: sega32x
     display_name: Sega 32X
     short_name: 32X
@@ -238,6 +266,8 @@ systems:
       - 32x
       - sega32x
     dat_name: Sega - 32X
+    logo_dark: systems/sega32x-dark.png
+    logo_light: systems/sega32x-light.png
   - id: psx
     display_name: Sony PlayStation
     short_name: PSX
@@ -259,6 +289,8 @@ systems:
       - playstation
       - psone
     dat_name: Sony - PlayStation
+    logo_dark: systems/psx-dark.png
+    logo_light: systems/psx-light.png
   - id: psp
     display_name: Sony PlayStation Portable
     short_name: PSP
@@ -278,6 +310,8 @@ systems:
       - Sony - PlayStation Portable (PSN) (Decrypted)
       - Sony - PlayStation Portable (PSN) (Encrypted)
       - Sony - PlayStation Portable (PSX2PSP)
+    logo_dark: systems/psp-dark.png
+    logo_light: systems/psp-light.png
   - id: atari2600
     display_name: Atari 2600
     short_name: '2600'
@@ -292,6 +326,8 @@ systems:
       - a2600
       - '2600'
     dat_name: Atari - 2600
+    logo_dark: systems/atari2600-dark.png
+    logo_light: systems/atari2600-light.png
   - id: atari7800
     display_name: Atari 7800
     short_name: '7800'
@@ -306,6 +342,8 @@ systems:
       - a7800
       - '7800'
     dat_name: Atari - 7800
+    logo_dark: systems/atari7800-dark.png
+    logo_light: systems/atari7800-light.png
   - id: lynx
     display_name: Atari Lynx
     short_name: Lynx
@@ -321,6 +359,8 @@ systems:
       - lynx
       - atarilynx
     dat_name: Atari - Lynx
+    logo_dark: systems/lynx-dark.png
+    logo_light: systems/lynx-light.png
   - id: atarist
     display_name: Atari ST
     short_name: Atari ST
@@ -335,6 +375,8 @@ systems:
       - atarist
       - st
     dat_name: Atari - ST
+    logo_dark: systems/atarist-dark.png
+    logo_light: systems/atarist-light.png
   - id: pcengine
     display_name: PC Engine / TurboGrafx-16
     short_name: PCE
@@ -350,6 +392,8 @@ systems:
       - pce
       - turbografx16
     dat_name: NEC - PC Engine - TurboGrafx 16
+    logo_dark: systems/pcengine-dark.png
+    logo_light: systems/pcengine-light.png
   - id: pcenginecd
     display_name: PC Engine CD / TurboGrafx-CD
     short_name: PCE-CD
@@ -368,6 +412,8 @@ systems:
       - pcecd
       - turbografxcd
     dat_name: NEC - PC Engine CD - TurboGrafx-CD
+    logo_dark: systems/pcenginecd-dark.png
+    logo_light: systems/pcenginecd-light.png
   - id: neogeo
     display_name: SNK Neo Geo
     short_name: Neo Geo
@@ -380,6 +426,8 @@ systems:
     folder_aliases:
       - neogeo
     dat_name: SNK - Neo Geo
+    logo_dark: systems/neogeo-dark.png
+    logo_light: systems/neogeo-light.png
   - id: ngp
     display_name: Neo Geo Pocket
     short_name: NGP
@@ -392,6 +440,8 @@ systems:
       - ngp
       - neogeopocket
     dat_name: SNK - Neo Geo Pocket
+    logo_dark: systems/ngp-dark.png
+    logo_light: systems/ngp-light.png
   - id: ngpc
     display_name: Neo Geo Pocket Color
     short_name: NGPC
@@ -405,6 +455,8 @@ systems:
       - ngpc
       - neogeopocketcolor
     dat_name: SNK - Neo Geo Pocket Color
+    logo_dark: systems/ngpc-dark.png
+    logo_light: systems/ngpc-light.png
   - id: mame
     display_name: MAME
     short_name: MAME
@@ -418,6 +470,8 @@ systems:
       - mame
       - arcade
     dat_name: MAME
+    logo_dark: systems/mame-dark.png
+    logo_light: systems/mame-light.png
   - id: fbneo
     display_name: FinalBurn Neo
     short_name: FBNeo
@@ -431,6 +485,8 @@ systems:
       - fba
       - fbn
     dat_name: FBNeo - Arcade Games
+    logo_dark: systems/fbneo-dark.png
+    logo_light: systems/fbneo-light.png
   - id: msx
     display_name: MSX
     short_name: MSX
@@ -449,6 +505,8 @@ systems:
     dat_name: Microsoft - MSX
     dat_name_aliases:
       - Microsoft - MSX2
+    logo_dark: systems/msx-dark.png
+    logo_light: systems/msx-light.png
   - id: amiga
     display_name: Commodore Amiga
     short_name: Amiga
@@ -466,6 +524,8 @@ systems:
       - amiga500
       - amiga1200
     dat_name: Commodore - Amiga
+    logo_dark: systems/amiga-dark.png
+    logo_light: systems/amiga-light.png
   - id: c64
     display_name: Commodore 64
     short_name: C64
@@ -486,6 +546,8 @@ systems:
     dat_name_aliases:
       - Commodore - 64 (PP)
       - Commodore - 64 (Tapes)
+    logo_dark: systems/c64-dark.png
+    logo_light: systems/c64-light.png
   - id: zxspectrum
     display_name: Sinclair ZX Spectrum
     short_name: ZX Spectrum
@@ -507,6 +569,8 @@ systems:
     dat_name: Sinclair - ZX Spectrum
     dat_name_aliases:
       - Sinclair - ZX Spectrum +3
+    logo_dark: systems/zxspectrum-dark.png
+    logo_light: systems/zxspectrum-light.png
   - id: amstradcpc
     display_name: Amstrad CPC
     short_name: CPC
@@ -520,6 +584,8 @@ systems:
       - amstradcpc
       - cpc
     dat_name: Amstrad - CPC
+    logo_dark: systems/amstradcpc-dark.png
+    logo_light: systems/amstradcpc-light.png
   - id: atari5200
     display_name: Atari 5200
     short_name: '5200'
@@ -535,6 +601,8 @@ systems:
       - a5200
       - '5200'
     dat_name: Atari - 5200
+    logo_dark: systems/atari5200-dark.png
+    logo_light: systems/atari5200-light.png
   - id: jaguar
     display_name: Atari Jaguar
     short_name: Jaguar
@@ -550,6 +618,8 @@ systems:
       - jaguar
       - atarijaguar
     dat_name: Atari - Jaguar (J64)
+    logo_dark: systems/jaguar-dark.png
+    logo_light: systems/jaguar-light.png
   - id: wonderswan
     display_name: Bandai WonderSwan
     short_name: WS
@@ -563,6 +633,8 @@ systems:
       - ws
       - wswan
     dat_name: Bandai - WonderSwan
+    logo_dark: systems/wonderswan-dark.png
+    logo_light: systems/wonderswan-light.png
   - id: wonderswancolor
     display_name: Bandai WonderSwan Color
     short_name: WSC
@@ -577,6 +649,8 @@ systems:
       - wsc
       - wswanc
     dat_name: Bandai - WonderSwan Color
+    logo_dark: systems/wonderswancolor-dark.png
+    logo_light: systems/wonderswancolor-light.png
   - id: pocketchallengev2
     display_name: Benesse Pocket Challenge V2
     short_name: PC V2
@@ -605,6 +679,8 @@ systems:
       - colecovision
       - coleco
     dat_name: Coleco - ColecoVision
+    logo_dark: systems/colecovision-dark.png
+    logo_light: systems/colecovision-light.png
   - id: c64plus4
     display_name: Commodore Plus/4
     short_name: Plus/4
@@ -621,6 +697,8 @@ systems:
       - c16
       - commodoreplus4
     dat_name: Commodore - Plus-4
+    logo_dark: systems/c64plus4-dark.png
+    logo_light: systems/c64plus4-light.png
   - id: vic20
     display_name: Commodore VIC-20
     short_name: VIC-20
@@ -637,6 +715,8 @@ systems:
       - vic-20
       - commodorevic20
     dat_name: Commodore - VIC-20
+    logo_dark: systems/vic20-dark.png
+    logo_light: systems/vic20-light.png
   - id: arcadia2001
     display_name: Emerson Arcadia 2001
     short_name: Arcadia 2001
@@ -649,6 +729,8 @@ systems:
       - arcadia
       - arcadia2001
     dat_name: Emerson - Arcadia 2001
+    logo_dark: systems/arcadia2001-dark.png
+    logo_light: systems/arcadia2001-light.png
   - id: adventurevision
     display_name: Entex Adventure Vision
     short_name: Adventure Vision
@@ -660,6 +742,8 @@ systems:
     folder_aliases:
       - adventurevision
     dat_name: Entex - Adventure Vision
+    logo_dark: systems/adventurevision-dark.png
+    logo_light: systems/adventurevision-light.png
   - id: scv
     display_name: Epoch Super Cassette Vision
     short_name: SCV
@@ -672,6 +756,8 @@ systems:
       - scv
       - supercassettevision
     dat_name: Epoch - Super Cassette Vision
+    logo_dark: systems/scv-dark.png
+    logo_light: systems/scv-light.png
   - id: channelf
     display_name: Fairchild Channel F
     short_name: Channel F
@@ -686,6 +772,8 @@ systems:
       - channelf
       - chanf
     dat_name: Fairchild - Channel F
+    logo_dark: systems/channelf-dark.png
+    logo_light: systems/channelf-light.png
   - id: superacan
     display_name: Funtech Super A'Can
     short_name: Super A'Can
@@ -697,6 +785,8 @@ systems:
     folder_aliases:
       - superacan
     dat_name: Funtech - Super Acan
+    logo_dark: systems/superacan-dark.png
+    logo_light: systems/superacan-light.png
   - id: vectrex
     display_name: GCE Vectrex
     short_name: Vectrex
@@ -710,6 +800,8 @@ systems:
     folder_aliases:
       - vectrex
     dat_name: GCE - Vectrex
+    logo_dark: systems/vectrex-dark.png
+    logo_light: systems/vectrex-light.png
   - id: gamemaster
     display_name: Hartung Game Master
     short_name: Game Master
@@ -722,6 +814,8 @@ systems:
       - gamemaster
       - hartung
     dat_name: Hartung - Game Master
+    logo_dark: systems/gamemaster-dark.png
+    logo_light: systems/gamemaster-light.png
   - id: picno
     display_name: Konami Picno
     short_name: Picno
@@ -780,6 +874,8 @@ systems:
     dat_name: Magnavox - Odyssey2
     dat_name_aliases:
       - Philips - Videopac+
+    logo_dark: systems/odyssey2-dark.png
+    logo_light: systems/odyssey2-light.png
   - id: intellivision
     display_name: Mattel Intellivision
     short_name: Intellivision
@@ -795,6 +891,8 @@ systems:
       - intellivision
       - intv
     dat_name: Mattel - Intellivision
+    logo_dark: systems/intellivision-dark.png
+    logo_light: systems/intellivision-light.png
   - id: studio2
     display_name: RCA Studio II
     short_name: Studio II
@@ -807,6 +905,8 @@ systems:
       - studio2
       - rcastudio2
     dat_name: RCA - Studio II
+    logo_dark: systems/studio2-dark.png
+    logo_light: systems/studio2-light.png
   - id: gamecom
     display_name: Tiger Game.com
     short_name: Game.com
@@ -820,6 +920,8 @@ systems:
       - gamecom
       - game.com
     dat_name: Tiger - Game.com
+    logo_dark: systems/gamecom-dark.png
+    logo_light: systems/gamecom-light.png
   - id: creativision
     display_name: VTech CreatiVision
     short_name: CreatiVision
@@ -832,6 +934,8 @@ systems:
       - creativision
       - vtechcreativision
     dat_name: VTech - CreatiVision
+    logo_dark: systems/creativision-dark.png
+    logo_light: systems/creativision-light.png
   - id: vsmile
     display_name: VTech V.Smile
     short_name: V.Smile
@@ -856,6 +960,8 @@ systems:
       - supervision
       - watara
     dat_name: Watara - Supervision
+    logo_dark: systems/supervision-dark.png
+    logo_light: systems/supervision-light.png
   - id: supergrafx
     display_name: NEC PC Engine SuperGrafx
     short_name: SuperGrafx
@@ -870,6 +976,8 @@ systems:
       - sgx
       - supergrafx
     dat_name: NEC - PC Engine SuperGrafx
+    logo_dark: systems/supergrafx-dark.png
+    logo_light: systems/supergrafx-light.png
   - id: sg1000
     display_name: Sega SG-1000
     short_name: SG-1000
@@ -884,6 +992,8 @@ systems:
       - sg-1000
       - sg1000
     dat_name: Sega - SG-1000
+    logo_dark: systems/sg1000-dark.png
+    logo_light: systems/sg1000-light.png
   - id: segapico
     display_name: Sega Pico
     short_name: Pico
@@ -897,6 +1007,8 @@ systems:
       - pico
       - segapico
     dat_name: Sega - PICO
+    logo_dark: systems/segapico-dark.png
+    logo_light: systems/segapico-light.png
   - id: beena
     display_name: Sega Beena
     short_name: Beena
@@ -920,6 +1032,8 @@ systems:
       - n64dd
       - 64dd
     dat_name: Nintendo - Nintendo 64DD
+    logo_dark: systems/n64dd-dark.png
+    logo_light: systems/n64dd-light.png
   - id: pokemini
     display_name: Pokemon Mini
     short_name: Pokemini
@@ -932,6 +1046,8 @@ systems:
       - pokemini
       - pmini
     dat_name: Nintendo - Pokemon Mini
+    logo_dark: systems/pokemini-dark.png
+    logo_light: systems/pokemini-light.png
   - id: satellaview
     display_name: Nintendo Satellaview
     short_name: Satellaview
@@ -945,6 +1061,8 @@ systems:
       - satellaview
       - bsx
     dat_name: Nintendo - Satellaview
+    logo_dark: systems/satellaview-dark.png
+    logo_light: systems/satellaview-light.png
   - id: sufami
     display_name: Nintendo Sufami Turbo
     short_name: Sufami Turbo
@@ -957,6 +1075,8 @@ systems:
     folder_aliases:
       - sufami
     dat_name: Nintendo - Sufami Turbo
+    logo_dark: systems/sufami-dark.png
+    logo_light: systems/sufami-light.png
   - id: ereader
     display_name: Nintendo e-Reader
     short_name: e-Reader
@@ -970,6 +1090,8 @@ systems:
       - ereader
       - e-reader
     dat_name: Nintendo - e-Reader
+    logo_dark: systems/ereader-dark.png
+    logo_light: systems/ereader-light.png
   - id: gp32
     display_name: GamePark GP32
     short_name: GP32
@@ -995,6 +1117,8 @@ systems:
       - loopy
       - casioloopy
     dat_name: Casio - Loopy
+    logo_dark: systems/casioloopy-dark.png
+    logo_light: systems/casioloopy-light.png
   - id: pv1000
     display_name: Casio PV-1000
     short_name: PV-1000
@@ -1007,6 +1131,8 @@ systems:
       - pv1000
       - pv-1000
     dat_name: Casio - PV-1000
+    logo_dark: systems/pv1000-dark.png
+    logo_light: systems/pv1000-light.png
   - id: wii
     display_name: Nintendo Wii
     short_name: Wii
@@ -1028,6 +1154,8 @@ systems:
     dat_name_aliases:
       - Nintendo - Wii (Digital) (CDN)
       - Nintendo - Wii (Digital) (WAD)
+    logo_dark: systems/wii-dark.png
+    logo_light: systems/wii-light.png
   - id: wiiu
     display_name: Nintendo Wii U
     short_name: Wii U
@@ -1046,6 +1174,8 @@ systems:
     dat_name_aliases:
       - Nintendo - Wii U (Digital)
       - Nintendo - Wii U (Digital) (CDN)
+    logo_dark: systems/wiiu-dark.png
+    logo_light: systems/wiiu-light.png
   - id: n3ds
     display_name: Nintendo 3DS
     short_name: 3DS
@@ -1069,6 +1199,8 @@ systems:
       - Nintendo - Nintendo 3DS (Encrypted)
       - Nintendo - New Nintendo 3DS (Digital)
       - Nintendo - New Nintendo 3DS (Encrypted)
+    logo_dark: systems/n3ds-dark.png
+    logo_light: systems/n3ds-light.png
   - id: dsiware
     display_name: Nintendo DSiWare
     short_name: DSiWare
@@ -1083,6 +1215,8 @@ systems:
       - dsiware
       - dsi
     dat_name: Nintendo - Nintendo DSi (Digital)
+    logo_dark: systems/dsiware-dark.png
+    logo_light: systems/dsiware-light.png
   - id: psvita
     display_name: Sony PlayStation Vita
     short_name: Vita
@@ -1100,6 +1234,8 @@ systems:
     dat_name_aliases:
       - Sony - PlayStation Vita (PSN) (Decrypted)
       - Sony - PlayStation Vita (PSN) (Encrypted)
+    logo_dark: systems/psvita-dark.png
+    logo_light: systems/psvita-light.png
   - id: ps3
     display_name: Sony PlayStation 3
     short_name: PS3
@@ -1116,6 +1252,8 @@ systems:
     dat_name: Sony - PlayStation 3 (PSN) (Decrypted)
     dat_name_aliases:
       - Sony - PlayStation 3 (PSN) (Encrypted)
+    logo_dark: systems/ps3-dark.png
+    logo_light: systems/ps3-light.png
   - id: xbox360
     display_name: Microsoft Xbox 360
     short_name: X360
@@ -1132,6 +1270,8 @@ systems:
     dat_name: Microsoft - XBOX 360 (Digital)
     dat_name_aliases:
       - Microsoft - XBOX 360 (Title Updates) (Discontinued)
+    logo_dark: systems/xbox360-dark.png
+    logo_light: systems/xbox360-light.png
   - id: j2me
     display_name: Java ME (Mobile)
     short_name: J2ME

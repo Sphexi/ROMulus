@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QAction, QStandardItem, QStandardItemModel
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QAction, QIcon, QPixmap, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import QMenu, QTreeView, QWidget
 
+from romulus.db import get_config
 from romulus.db import queries as q
+from romulus.ui.artwork import resolve_system_logo
 
 SYSTEM_ID_ROLE = Qt.ItemDataRole.UserRole + 1
 NODE_KIND_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -16,6 +18,13 @@ NODE_KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 KIND_ALL = "all"
 KIND_SYSTEM = "system"
 KIND_COLLECTION = "collection"
+
+# Logo height in pixels at sidebar zoom; width is whatever preserves the
+# native aspect ratio (these logos are typically ~5:1 letterboxes). Bumped
+# above the default Qt iconSize (16) because below ~20px the wordmarks
+# turn to mush. The QTreeView iconSize cell is square at this height; the
+# pixmap is rendered inside that, letterboxed.
+_SIDEBAR_LOGO_HEIGHT = 22
 
 
 def get_rom_counts_by_system(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
@@ -62,6 +71,10 @@ class SystemSidebar(QTreeView):
         self.setHeaderHidden(True)
         self.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self.selectionModel().currentChanged.connect(self._on_current_changed)
+        # Give the icon column enough room for the wide logo PNGs. iconSize
+        # only sets the *bounding* box; QStandardItem.setIcon() scales the
+        # source pixmap into it preserving aspect ratio.
+        self.setIconSize(QSize(_SIDEBAR_LOGO_HEIGHT * 3, _SIDEBAR_LOGO_HEIGHT))
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
@@ -69,6 +82,7 @@ class SystemSidebar(QTreeView):
     def populate(self, conn: sqlite3.Connection) -> None:
         """Rebuild the tree from the database."""
         self._model.removeRows(0, self._model.rowCount())
+        theme = get_config(conn, "theme") or "system"
 
         total = get_total_rom_count(conn)
         all_item = QStandardItem(f"All ({total})")
@@ -84,6 +98,9 @@ class SystemSidebar(QTreeView):
             item = QStandardItem(f"{display_name} ({count})")
             item.setData(KIND_SYSTEM, NODE_KIND_ROLE)
             item.setData(system_id, SYSTEM_ID_ROLE)
+            icon = _logo_icon_for(system_id, theme)
+            if icon is not None:
+                item.setIcon(icon)
             systems_header.appendRow(item)
         self.expand(self._model.indexFromItem(systems_header))
 
@@ -192,3 +209,23 @@ class SystemSidebar(QTreeView):
         menu.addAction(covers)
 
         menu.exec(self.viewport().mapToGlobal(point))  # type: ignore[arg-type]
+
+
+def _logo_icon_for(system_id: str, theme_id: str) -> QIcon | None:
+    """Resolve a bundled platform logo into a sidebar-sized QIcon.
+
+    Returns ``None`` when ``system_id`` has no logo for the current theme,
+    or when the resolved PNG fails to decode. Callers must treat ``None``
+    as "skip the icon, show text only".
+    """
+    path = resolve_system_logo(system_id, theme_id)
+    if path is None:
+        return None
+    pix = QPixmap(str(path))
+    if pix.isNull():
+        return None
+    scaled = pix.scaledToHeight(
+        _SIDEBAR_LOGO_HEIGHT,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    return QIcon(scaled)

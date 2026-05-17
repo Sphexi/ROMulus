@@ -130,7 +130,7 @@ under direction from the human maintainer. The session checklists under
 `Co-Authored-By: Claude Opus ... <noreply@anthropic.com>` trailers as
 attribution.
 
-Architecture decisions, API choices, scope calls, and the [design
+Technical spec, architecture decisions, API choices, scope calls, and the [design
 rules](../CLAUDE.md#key-design-rules-non-negotiable) are owned by the
 human maintainer.
 
@@ -144,10 +144,11 @@ human maintainer.
 |---|---|---|
 | **CD-ROM disc app icon** (`src/romulus/ui/icons/cdrom.{png,ico}`) | Original work — rendered via `scripts/generate_icon.py` using PySide6 `QPainter` | Apache 2.0 (with the rest of this repo) |
 | **Theme stylesheets** (`src/romulus/ui/themes/{light,dark,wbm_classic}.qss`) | Original work | Apache 2.0 |
+| **Console / handheld / computer platform logos** (`src/romulus/ui/artwork/systems/*.png`) | Extracted from the v2.1 *Recommended Versions (Normal, 1 Per Platform)* set in **Console Logos — Professionally Redrawn + Official Versions** by **Dan Patrick**, hosted on Internet Archive ([archive.org/details/console-logos-professionally-redrawn-plus-official-versions](https://archive.org/details/console-logos-professionally-redrawn-plus-official-versions)). Dark + Light Color variants only; renamed to `<system_id>-{dark,light}.png` by `scripts/extract_system_logos.py`. | Redraws by Dan Patrick; please credit the source above when redistributing. The original wordmarks and logos are trademarks of their respective platform holders (Nintendo, Sega, Sony, Microsoft, Atari, NEC, SNK, Bandai, etc.) and remain the property of those companies. |
 
-When console / launcher logos and other third-party artwork is added to
-the repo, each asset will get an entry here noting its source, license,
-and whether it's bundled or fetched at runtime.
+When additional third-party artwork is added to the repo, each asset
+will get an entry here noting its source, license, and whether it's
+bundled or fetched at runtime.
 
 ---
 

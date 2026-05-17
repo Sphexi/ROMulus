@@ -59,6 +59,21 @@ class SystemDef(BaseModel):
             "'(Decrypted)', etc. without duplicating registry entries."
         ),
     )
+    logo_dark: str | None = Field(
+        default=None,
+        description=(
+            "Path to a logo PNG suitable for dark UI themes, relative to "
+            "``src/romulus/ui/artwork/`` (e.g. ``systems/nes-dark.png``). "
+            "Resolved by :func:`romulus.ui.artwork.resolve_system_logo`."
+        ),
+    )
+    logo_light: str | None = Field(
+        default=None,
+        description=(
+            "Path to a logo PNG suitable for light UI themes, relative to "
+            "``src/romulus/ui/artwork/``."
+        ),
+    )
 
     @field_validator("extensions", mode="after")
     @classmethod
@@ -97,6 +112,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["nes", "famicom", "fc"],
         dat_name="Nintendo - Nintendo Entertainment System",
         dat_name_aliases=["Nintendo - Family Computer Disk System"],
+        logo_dark="systems/nes-dark.png",
+        logo_light="systems/nes-light.png",
     ),
     SystemDef(
         id="snes",
@@ -110,6 +127,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["snes", "sfc", "superfamicom", "supernintendo", "supernes"],
         dat_name="Nintendo - Super Nintendo Entertainment System",
         dat_name_aliases=["Nintendo - Super Nintendo Entertainment System (Combined)"],
+        logo_dark="systems/snes-dark.png",
+        logo_light="systems/snes-light.png",
     ),
     SystemDef(
         id="n64",
@@ -123,6 +142,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["n64", "nintendo64"],
         dat_name="Nintendo - Nintendo 64",
         dat_name_aliases=["Nintendo - Nintendo 64 (BigEndian)"],
+        logo_dark="systems/n64-dark.png",
+        logo_light="systems/n64-light.png",
     ),
     SystemDef(
         id="gamecube",
@@ -135,6 +156,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - GameCube",
         folder_aliases=["gc", "gamecube", "ngc"],
         dat_name="Nintendo - GameCube",
+        logo_dark="systems/gamecube-dark.png",
+        logo_light="systems/gamecube-light.png",
     ),
     SystemDef(
         id="gb",
@@ -147,6 +170,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Game Boy",
         folder_aliases=["gb", "gameboy"],
         dat_name="Nintendo - Game Boy",
+        logo_dark="systems/gb-dark.png",
+        logo_light="systems/gb-light.png",
     ),
     SystemDef(
         id="gbc",
@@ -159,6 +184,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Game Boy Color",
         folder_aliases=["gbc", "gameboycolor"],
         dat_name="Nintendo - Game Boy Color",
+        logo_dark="systems/gbc-dark.png",
+        logo_light="systems/gbc-light.png",
     ),
     SystemDef(
         id="gba",
@@ -171,6 +198,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Game Boy Advance",
         folder_aliases=["gba", "gameboyadvance"],
         dat_name="Nintendo - Game Boy Advance",
+        logo_dark="systems/gba-dark.png",
+        logo_light="systems/gba-light.png",
     ),
     SystemDef(
         id="nds",
@@ -192,6 +221,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
             # rare and the user can still route them via folder aliases.
             "Nintendo - Nintendo DSi (Decrypted)",
         ],
+        logo_dark="systems/nds-dark.png",
+        logo_light="systems/nds-light.png",
     ),
     SystemDef(
         id="virtualboy",
@@ -204,6 +235,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Virtual Boy",
         folder_aliases=["vb", "virtualboy"],
         dat_name="Nintendo - Virtual Boy",
+        logo_dark="systems/virtualboy-dark.png",
+        logo_light="systems/virtualboy-light.png",
     ),
     # --- Sega ---
     SystemDef(
@@ -217,6 +250,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - Mega Drive - Genesis",
         folder_aliases=["megadrive", "genesis", "md", "gen"],
         dat_name="Sega - Mega Drive - Genesis",
+        logo_dark="systems/megadrive-dark.png",
+        logo_light="systems/megadrive-light.png",
     ),
     SystemDef(
         id="mastersystem",
@@ -229,6 +264,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - Master System - Mark III",
         folder_aliases=["mastersystem", "sms"],
         dat_name="Sega - Master System - Mark III",
+        logo_dark="systems/mastersystem-dark.png",
+        logo_light="systems/mastersystem-light.png",
     ),
     SystemDef(
         id="gamegear",
@@ -241,6 +278,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - Game Gear",
         folder_aliases=["gamegear", "gg"],
         dat_name="Sega - Game Gear",
+        logo_dark="systems/gamegear-dark.png",
+        logo_light="systems/gamegear-light.png",
     ),
     SystemDef(
         id="saturn",
@@ -253,6 +292,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - Saturn",
         folder_aliases=["saturn", "ss", "segasaturn"],
         dat_name="Sega - Saturn",
+        logo_dark="systems/saturn-dark.png",
+        logo_light="systems/saturn-light.png",
     ),
     SystemDef(
         id="dreamcast",
@@ -265,6 +306,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - Dreamcast",
         folder_aliases=["dreamcast", "dc"],
         dat_name="Sega - Dreamcast",
+        logo_dark="systems/dreamcast-dark.png",
+        logo_light="systems/dreamcast-light.png",
     ),
     SystemDef(
         id="sega32x",
@@ -277,6 +320,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - 32X",
         folder_aliases=["32x", "sega32x"],
         dat_name="Sega - 32X",
+        logo_dark="systems/sega32x-dark.png",
+        logo_light="systems/sega32x-light.png",
     ),
     # --- Sony ---
     SystemDef(
@@ -290,6 +335,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sony - PlayStation",
         folder_aliases=["psx", "ps1", "playstation", "psone"],
         dat_name="Sony - PlayStation",
+        logo_dark="systems/psx-dark.png",
+        logo_light="systems/psx-light.png",
     ),
     SystemDef(
         id="psp",
@@ -312,6 +359,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
             # bundled libretro PPSSPP core handles them.
             "Sony - PlayStation Portable (PSX2PSP)",
         ],
+        logo_dark="systems/psp-dark.png",
+        logo_light="systems/psp-light.png",
     ),
     # --- Atari ---
     SystemDef(
@@ -325,6 +374,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Atari - 2600",
         folder_aliases=["atari2600", "a2600", "2600"],
         dat_name="Atari - 2600",
+        logo_dark="systems/atari2600-dark.png",
+        logo_light="systems/atari2600-light.png",
     ),
     SystemDef(
         id="atari7800",
@@ -337,6 +388,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Atari - 7800",
         folder_aliases=["atari7800", "a7800", "7800"],
         dat_name="Atari - 7800",
+        logo_dark="systems/atari7800-dark.png",
+        logo_light="systems/atari7800-light.png",
     ),
     SystemDef(
         id="lynx",
@@ -349,6 +402,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Atari - Lynx",
         folder_aliases=["lynx", "atarilynx"],
         dat_name="Atari - Lynx",
+        logo_dark="systems/lynx-dark.png",
+        logo_light="systems/lynx-light.png",
     ),
     SystemDef(
         id="atarist",
@@ -361,6 +416,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Atari - ST",
         folder_aliases=["atarist", "st"],
         dat_name="Atari - ST",
+        logo_dark="systems/atarist-dark.png",
+        logo_light="systems/atarist-light.png",
     ),
     # --- NEC ---
     SystemDef(
@@ -374,6 +431,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="NEC - PC Engine - TurboGrafx 16",
         folder_aliases=["pcengine", "tg16", "pce", "turbografx16"],
         dat_name="NEC - PC Engine - TurboGrafx 16",
+        logo_dark="systems/pcengine-dark.png",
+        logo_light="systems/pcengine-light.png",
     ),
     SystemDef(
         id="pcenginecd",
@@ -386,6 +445,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="NEC - PC Engine CD - TurboGrafx-CD",
         folder_aliases=["pcenginecd", "tg-cd", "pcecd", "turbografxcd"],
         dat_name="NEC - PC Engine CD - TurboGrafx-CD",
+        logo_dark="systems/pcenginecd-dark.png",
+        logo_light="systems/pcenginecd-light.png",
     ),
     # --- SNK ---
     SystemDef(
@@ -399,6 +460,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="SNK - Neo Geo",
         folder_aliases=["neogeo"],
         dat_name="SNK - Neo Geo",
+        logo_dark="systems/neogeo-dark.png",
+        logo_light="systems/neogeo-light.png",
     ),
     SystemDef(
         id="ngp",
@@ -411,6 +474,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="SNK - Neo Geo Pocket",
         folder_aliases=["ngp", "neogeopocket"],
         dat_name="SNK - Neo Geo Pocket",
+        logo_dark="systems/ngp-dark.png",
+        logo_light="systems/ngp-light.png",
     ),
     SystemDef(
         id="ngpc",
@@ -423,6 +488,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="SNK - Neo Geo Pocket Color",
         folder_aliases=["ngpc", "neogeopocketcolor"],
         dat_name="SNK - Neo Geo Pocket Color",
+        logo_dark="systems/ngpc-dark.png",
+        logo_light="systems/ngpc-light.png",
     ),
     # --- Arcade ---
     SystemDef(
@@ -436,6 +503,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="MAME",
         folder_aliases=["mame", "arcade"],
         dat_name="MAME",
+        logo_dark="systems/mame-dark.png",
+        logo_light="systems/mame-light.png",
     ),
     SystemDef(
         id="fbneo",
@@ -448,6 +517,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="FBNeo - Arcade Games",
         folder_aliases=["fbneo", "fba", "fbn"],
         dat_name="FBNeo - Arcade Games",
+        logo_dark="systems/fbneo-dark.png",
+        logo_light="systems/fbneo-light.png",
     ),
     # --- Home computers ---
     SystemDef(
@@ -462,6 +533,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["msx", "msx1"],
         dat_name="Microsoft - MSX",
         dat_name_aliases=["Microsoft - MSX2"],
+        logo_dark="systems/msx-dark.png",
+        logo_light="systems/msx-light.png",
     ),
     SystemDef(
         id="amiga",
@@ -474,6 +547,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Commodore - Amiga",
         folder_aliases=["amiga", "amiga500", "amiga1200"],
         dat_name="Commodore - Amiga",
+        logo_dark="systems/amiga-dark.png",
+        logo_light="systems/amiga-light.png",
     ),
     SystemDef(
         id="c64",
@@ -487,6 +562,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["c64", "commodore64"],
         dat_name="Commodore - 64",
         dat_name_aliases=["Commodore - 64 (PP)", "Commodore - 64 (Tapes)"],
+        logo_dark="systems/c64-dark.png",
+        logo_light="systems/c64-light.png",
     ),
     SystemDef(
         id="zxspectrum",
@@ -500,6 +577,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["zxspectrum", "zx", "spectrum"],
         dat_name="Sinclair - ZX Spectrum",
         dat_name_aliases=["Sinclair - ZX Spectrum +3"],
+        logo_dark="systems/zxspectrum-dark.png",
+        logo_light="systems/zxspectrum-light.png",
     ),
     SystemDef(
         id="amstradcpc",
@@ -512,6 +591,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Amstrad - CPC",
         folder_aliases=["amstradcpc", "cpc"],
         dat_name="Amstrad - CPC",
+        logo_dark="systems/amstradcpc-dark.png",
+        logo_light="systems/amstradcpc-light.png",
     ),
     # --- Atari (extended) ---
     SystemDef(
@@ -525,6 +606,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Atari - 5200",
         folder_aliases=["atari5200", "a5200", "5200"],
         dat_name="Atari - 5200",
+        logo_dark="systems/atari5200-dark.png",
+        logo_light="systems/atari5200-light.png",
     ),
     SystemDef(
         id="jaguar",
@@ -537,6 +620,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Atari - Jaguar",
         folder_aliases=["jaguar", "atarijaguar"],
         dat_name="Atari - Jaguar (J64)",
+        logo_dark="systems/jaguar-dark.png",
+        logo_light="systems/jaguar-light.png",
     ),
     # --- Bandai ---
     SystemDef(
@@ -550,6 +635,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Bandai - WonderSwan",
         folder_aliases=["wonderswan", "ws", "wswan"],
         dat_name="Bandai - WonderSwan",
+        logo_dark="systems/wonderswan-dark.png",
+        logo_light="systems/wonderswan-light.png",
     ),
     SystemDef(
         id="wonderswancolor",
@@ -562,6 +649,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Bandai - WonderSwan Color",
         folder_aliases=["wonderswancolor", "wsc", "wswanc"],
         dat_name="Bandai - WonderSwan Color",
+        logo_dark="systems/wonderswancolor-dark.png",
+        logo_light="systems/wonderswancolor-light.png",
     ),
     # --- Benesse ---
     # Pocket Challenge V2 is a WonderSwan-compatible educational handheld sold
@@ -592,6 +681,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Coleco - ColecoVision",
         folder_aliases=["colecovision", "coleco"],
         dat_name="Coleco - ColecoVision",
+        logo_dark="systems/colecovision-dark.png",
+        logo_light="systems/colecovision-light.png",
     ),
     # --- Commodore (extended) ---
     SystemDef(
@@ -605,6 +696,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Commodore - Plus-4",
         folder_aliases=["plus4", "c16", "commodoreplus4"],
         dat_name="Commodore - Plus-4",
+        logo_dark="systems/c64plus4-dark.png",
+        logo_light="systems/c64plus4-light.png",
     ),
     SystemDef(
         id="vic20",
@@ -617,6 +710,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Commodore - VIC-20",
         folder_aliases=["vic20", "vic-20", "commodorevic20"],
         dat_name="Commodore - VIC-20",
+        logo_dark="systems/vic20-dark.png",
+        logo_light="systems/vic20-light.png",
     ),
     # --- Other classic / mini consoles ---
     SystemDef(
@@ -630,6 +725,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Emerson - Arcadia 2001",
         folder_aliases=["arcadia", "arcadia2001"],
         dat_name="Emerson - Arcadia 2001",
+        logo_dark="systems/arcadia2001-dark.png",
+        logo_light="systems/arcadia2001-light.png",
     ),
     SystemDef(
         id="adventurevision",
@@ -642,6 +739,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Entex - Adventure Vision",
         folder_aliases=["adventurevision"],
         dat_name="Entex - Adventure Vision",
+        logo_dark="systems/adventurevision-dark.png",
+        logo_light="systems/adventurevision-light.png",
     ),
     SystemDef(
         id="scv",
@@ -654,6 +753,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Epoch - Super Cassette Vision",
         folder_aliases=["scv", "supercassettevision"],
         dat_name="Epoch - Super Cassette Vision",
+        logo_dark="systems/scv-dark.png",
+        logo_light="systems/scv-light.png",
     ),
     SystemDef(
         id="channelf",
@@ -666,6 +767,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Fairchild - Channel F",
         folder_aliases=["channelf", "chanf"],
         dat_name="Fairchild - Channel F",
+        logo_dark="systems/channelf-dark.png",
+        logo_light="systems/channelf-light.png",
     ),
     SystemDef(
         id="superacan",
@@ -678,6 +781,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Funtech - Super Acan",
         folder_aliases=["superacan"],
         dat_name="Funtech - Super Acan",
+        logo_dark="systems/superacan-dark.png",
+        logo_light="systems/superacan-light.png",
     ),
     SystemDef(
         id="vectrex",
@@ -690,6 +795,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="GCE - Vectrex",
         folder_aliases=["vectrex"],
         dat_name="GCE - Vectrex",
+        logo_dark="systems/vectrex-dark.png",
+        logo_light="systems/vectrex-light.png",
     ),
     SystemDef(
         id="gamemaster",
@@ -702,6 +809,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Hartung - Game Master",
         folder_aliases=["gamemaster", "hartung"],
         dat_name="Hartung - Game Master",
+        logo_dark="systems/gamemaster-dark.png",
+        logo_light="systems/gamemaster-light.png",
     ),
     # --- Konami ---
     # The Picno was a Japan-only edutainment console aimed at toddlers. Tiny
@@ -774,6 +883,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         folder_aliases=["odyssey2", "o2em", "videopac", "odyssey"],
         dat_name="Magnavox - Odyssey2",
         dat_name_aliases=["Philips - Videopac+"],
+        logo_dark="systems/odyssey2-dark.png",
+        logo_light="systems/odyssey2-light.png",
     ),
     SystemDef(
         id="intellivision",
@@ -786,6 +897,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Mattel - Intellivision",
         folder_aliases=["intellivision", "intv"],
         dat_name="Mattel - Intellivision",
+        logo_dark="systems/intellivision-dark.png",
+        logo_light="systems/intellivision-light.png",
     ),
     SystemDef(
         id="studio2",
@@ -798,6 +911,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="RCA - Studio II",
         folder_aliases=["studio2", "rcastudio2"],
         dat_name="RCA - Studio II",
+        logo_dark="systems/studio2-dark.png",
+        logo_light="systems/studio2-light.png",
     ),
     SystemDef(
         id="gamecom",
@@ -810,6 +925,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Tiger - Game.com",
         folder_aliases=["gamecom", "game.com"],
         dat_name="Tiger - Game.com",
+        logo_dark="systems/gamecom-dark.png",
+        logo_light="systems/gamecom-light.png",
     ),
     SystemDef(
         id="creativision",
@@ -822,6 +939,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="VTech - CreatiVision",
         folder_aliases=["creativision", "vtechcreativision"],
         dat_name="VTech - CreatiVision",
+        logo_dark="systems/creativision-dark.png",
+        logo_light="systems/creativision-light.png",
     ),
     SystemDef(
         id="vsmile",
@@ -846,6 +965,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Watara - Supervision",
         folder_aliases=["supervision", "watara"],
         dat_name="Watara - Supervision",
+        logo_dark="systems/supervision-dark.png",
+        logo_light="systems/supervision-light.png",
     ),
     # --- NEC (extended) ---
     SystemDef(
@@ -859,6 +980,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="NEC - PC Engine SuperGrafx",
         folder_aliases=["pcenginesgx", "sgx", "supergrafx"],
         dat_name="NEC - PC Engine SuperGrafx",
+        logo_dark="systems/supergrafx-dark.png",
+        logo_light="systems/supergrafx-light.png",
     ),
     # --- Sega (extended) ---
     SystemDef(
@@ -872,6 +995,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - SG-1000",
         folder_aliases=["sg-1000", "sg1000"],
         dat_name="Sega - SG-1000",
+        logo_dark="systems/sg1000-dark.png",
+        logo_light="systems/sg1000-light.png",
     ),
     SystemDef(
         id="segapico",
@@ -884,6 +1009,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Sega - PICO",
         folder_aliases=["pico", "segapico"],
         dat_name="Sega - PICO",
+        logo_dark="systems/segapico-dark.png",
+        logo_light="systems/segapico-light.png",
     ),
     # The Beena was a Japan-only educational console aimed at preschoolers,
     # released by Sega in 2005. Routed for completeness; no real cores emulate
@@ -912,6 +1039,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Nintendo 64DD",
         folder_aliases=["n64dd", "64dd"],
         dat_name="Nintendo - Nintendo 64DD",
+        logo_dark="systems/n64dd-dark.png",
+        logo_light="systems/n64dd-light.png",
     ),
     SystemDef(
         id="pokemini",
@@ -924,6 +1053,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Pokemon Mini",
         folder_aliases=["pokemini", "pmini"],
         dat_name="Nintendo - Pokemon Mini",
+        logo_dark="systems/pokemini-dark.png",
+        logo_light="systems/pokemini-light.png",
     ),
     SystemDef(
         id="satellaview",
@@ -936,6 +1067,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Satellaview",
         folder_aliases=["satellaview", "bsx"],
         dat_name="Nintendo - Satellaview",
+        logo_dark="systems/satellaview-dark.png",
+        logo_light="systems/satellaview-light.png",
     ),
     # Sufami Turbo: SNES cartridge accessory. The `.st` extension collides with
     # Atari ST disk images — disambiguation has to come from folder/system
@@ -951,6 +1084,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - Sufami Turbo",
         folder_aliases=["sufami"],
         dat_name="Nintendo - Sufami Turbo",
+        logo_dark="systems/sufami-dark.png",
+        logo_light="systems/sufami-light.png",
     ),
     SystemDef(
         id="ereader",
@@ -963,6 +1098,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Nintendo - e-Reader",
         folder_aliases=["ereader", "e-reader"],
         dat_name="Nintendo - e-Reader",
+        logo_dark="systems/ereader-dark.png",
+        logo_light="systems/ereader-light.png",
     ),
     # --- Korean / Japanese niche ---
     SystemDef(
@@ -988,6 +1125,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Casio - Loopy",
         folder_aliases=["loopy", "casioloopy"],
         dat_name="Casio - Loopy",
+        logo_dark="systems/casioloopy-dark.png",
+        logo_light="systems/casioloopy-light.png",
     ),
     SystemDef(
         id="pv1000",
@@ -1000,6 +1139,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         libretro_name="Casio - PV-1000",
         folder_aliases=["pv1000", "pv-1000"],
         dat_name="Casio - PV-1000",
+        logo_dark="systems/pv1000-dark.png",
+        logo_light="systems/pv1000-light.png",
     ),
     # --- Digital-distribution / install-package era ---
     #
@@ -1028,6 +1169,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
             "Nintendo - Wii (Digital) (CDN)",
             "Nintendo - Wii (Digital) (WAD)",
         ],
+        logo_dark="systems/wii-dark.png",
+        logo_light="systems/wii-light.png",
     ),
     SystemDef(
         id="wiiu",
@@ -1044,6 +1187,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
             "Nintendo - Wii U (Digital)",
             "Nintendo - Wii U (Digital) (CDN)",
         ],
+        logo_dark="systems/wiiu-dark.png",
+        logo_light="systems/wiiu-light.png",
     ),
     SystemDef(
         id="n3ds",
@@ -1066,6 +1211,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
             "Nintendo - New Nintendo 3DS (Digital)",
             "Nintendo - New Nintendo 3DS (Encrypted)",
         ],
+        logo_dark="systems/n3ds-dark.png",
+        logo_light="systems/n3ds-light.png",
     ),
     SystemDef(
         id="dsiware",
@@ -1082,6 +1229,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         # filesystem. DSiWare (digital-only shop titles) is its own thing:
         # melonDS / mGBA handle them as ``.nds`` or ``.tad`` blobs.
         dat_name="Nintendo - Nintendo DSi (Digital)",
+        logo_dark="systems/dsiware-dark.png",
+        logo_light="systems/dsiware-light.png",
     ),
     SystemDef(
         id="psvita",
@@ -1100,6 +1249,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
             "Sony - PlayStation Vita (PSN) (Decrypted)",
             "Sony - PlayStation Vita (PSN) (Encrypted)",
         ],
+        logo_dark="systems/psvita-dark.png",
+        logo_light="systems/psvita-light.png",
     ),
     SystemDef(
         id="ps3",
@@ -1118,6 +1269,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=[
             "Sony - PlayStation 3 (PSN) (Encrypted)",
         ],
+        logo_dark="systems/ps3-dark.png",
+        logo_light="systems/ps3-light.png",
     ),
     SystemDef(
         id="xbox360",
@@ -1133,6 +1286,8 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=[
             "Microsoft - XBOX 360 (Title Updates) (Discontinued)",
         ],
+        logo_dark="systems/xbox360-dark.png",
+        logo_light="systems/xbox360-light.png",
     ),
     # --- Mobile / PDA ---
     # J2ME and Palm OS predate or sit alongside the cartridge era. There are

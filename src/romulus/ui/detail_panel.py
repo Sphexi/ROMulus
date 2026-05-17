@@ -22,12 +22,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from romulus.db import get_config
 from romulus.db import queries as q
 from romulus.db.queries import CONFIDENCE_RANK
+from romulus.models.system import SYSTEM_REGISTRY
+from romulus.ui.artwork import resolve_system_logo
 
 COVER_WIDTH = 240
 COVER_HEIGHT = 320
 PLACEHOLDER_TEXT = "No cover art"
+
+# Pixel height of the platform logo shown beneath the cover. Width
+# scales to whatever the source PNG's aspect ratio demands and is
+# clamped to COVER_WIDTH at render time so the panel layout doesn't
+# expand for wide wordmarks.
+_SYSTEM_LOGO_HEIGHT = 48
 
 # Match confidence -> (label, CSS background color, foreground color).
 _MATCH_BADGES: dict[str, tuple[str, str, str]] = {
@@ -144,8 +153,17 @@ class DetailPanel(QWidget):
         self.title_label.setWordWrap(True)
         outer.addWidget(self.title_label)
 
-        # System line.
+        # System indicator — a platform logo when one is bundled for the
+        # current theme, falling back to the system's display name in
+        # plain text. One QLabel handles both paths; only one of
+        # ``setPixmap`` / ``setText`` is set at a time.
         self.system_label = QLabel("", self)
+        self.system_label.setMinimumHeight(_SYSTEM_LOGO_HEIGHT)
+        self.system_label.setMaximumHeight(_SYSTEM_LOGO_HEIGHT)
+        self.system_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Subtle grey when this is being used as a text fallback. The
+        # stylesheet has no effect on the pixmap path so it's safe to
+        # leave applied unconditionally.
         self.system_label.setStyleSheet("QLabel { color: #888; }")
         outer.addWidget(self.system_label)
 
@@ -266,6 +284,7 @@ class DetailPanel(QWidget):
         self.cover_label.setText(PLACEHOLDER_TEXT)
         self.cover_label.setToolTip("")
         self.title_label.setText("Select a game")
+        self.system_label.clear()
         self.system_label.setText("")
         self.region_label.setText("")
         self.revision_label.setText("")
@@ -290,7 +309,7 @@ class DetailPanel(QWidget):
     ) -> None:
         """Populate every label / image from DB rows."""
         self.title_label.setText(str(game["title"]))
-        self.system_label.setText(str(game["system_id"] or ""))
+        self._render_system_indicator(str(game["system_id"] or ""))
         self.region_label.setText(self._field("Region", game["region"]))
         self.revision_label.setText(self._field("Revision", game["revision"]))
         if metadata is not None:
@@ -333,6 +352,50 @@ class DetailPanel(QWidget):
         self.favorite_button.blockSignals(False)
         self.favorite_button.setEnabled(True)
         self.collection_button.setEnabled(True)
+
+    def _render_system_indicator(self, system_id: str) -> None:
+        """Paint the platform logo for *system_id*; fall back to display name.
+
+        Reads the current theme from config on every refresh so a theme
+        switch picks up the right variant without needing a panel-wide
+        rebuild. Empty system ids leave the label blank.
+        """
+        if not system_id:
+            self.system_label.clear()
+            self.system_label.setText("")
+            self.system_label.setToolTip("")
+            return
+        theme = get_config(self._conn, "theme") or "system"
+        path = resolve_system_logo(system_id, theme)
+        if path is not None:
+            pix = QPixmap(str(path))
+            if not pix.isNull():
+                scaled = pix.scaled(
+                    COVER_WIDTH,
+                    _SYSTEM_LOGO_HEIGHT,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                self.system_label.setPixmap(scaled)
+                self.system_label.setText("")
+                self.system_label.setToolTip(self._display_name_for(system_id))
+                return
+        # No logo (or pixmap failed to load) — fall back to display name.
+        self.system_label.clear()
+        self.system_label.setText(self._display_name_for(system_id))
+        self.system_label.setToolTip("")
+
+    @staticmethod
+    def _display_name_for(system_id: str) -> str:
+        """Resolve a system id to its human-readable display name.
+
+        Falls back to the raw id when the registry doesn't know it — same
+        behaviour as the pre-logo path showed for unknown systems.
+        """
+        for entry in SYSTEM_REGISTRY:
+            if entry.id == system_id:
+                return entry.display_name
+        return system_id
 
     def _render_cover_at_index(self) -> None:
         """Display the cover at ``self._cover_index``; show placeholder if none."""

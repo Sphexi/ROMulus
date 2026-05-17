@@ -57,6 +57,12 @@ if icons_dir.is_dir():
     # appropriate at runtime.
     datas.append((str(icons_dir / "*.png"), "romulus/ui/icons"))
     datas.append((str(icons_dir / "*.ico"), "romulus/ui/icons"))
+artwork_systems_dir = PROJECT_ROOT / "src" / "romulus" / "ui" / "artwork" / "systems"
+if artwork_systems_dir.is_dir():
+    # Per-platform logo PNGs resolved by ``romulus.ui.artwork``. Ship the
+    # whole directory so adding a new system + asset doesn't require a
+    # spec change.
+    datas.append((str(artwork_systems_dir / "*.png"), "romulus/ui/artwork/systems"))
 
 # Path to the ICO used as the exe's Windows shell icon. Resolves to None
 # during dev if the icon hasn't been generated yet — PyInstaller treats
