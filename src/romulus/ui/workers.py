@@ -332,12 +332,14 @@ class HeavyScanWorker(_DbWorker):
     Emits ``finished_ok(total_hashed, total_matched, errors)`` on success.
     Emits ``failed(msg)`` on exception or cancel.
 
-    On first use (empty ``dat_entries`` table) the worker loads all bundled
-    DATs before hashing — this adds ~6 s but subsequent runs skip it.
+    On first use (empty ``dat_entries`` table) the worker loads every folder
+    in ``dat_paths`` before hashing — this adds ~6 s but subsequent runs skip
+    it. The caller passes ``config.dat_paths`` straight through so the
+    portable-build install dir AND any user-added folders both get loaded.
 
-    Optional ``scope_rom_ids`` limits hashing to a subset of ROMs. DAT
-    matching always runs over the full table so partial hashes are still
-    matched against the DAT database.
+    Optional ``scope_rom_ids`` limits both hashing and DAT matching to a
+    subset of ROMs so a scoped Heavy Scan never touches state outside its
+    scope.
     """
 
     progress = Signal(int, int, str)
@@ -349,14 +351,14 @@ class HeavyScanWorker(_DbWorker):
         self,
         db_path: Path | str,
         library_path: Path | str,
-        bundled_dats_path: Path | str,
+        dat_paths: list[Path | str],
         workers: int = 8,
         *,
         scope_rom_ids: list[int] | None = None,
     ) -> None:
         super().__init__(db_path)
         self._library_path = str(library_path)
-        self._bundled_dats_path = Path(bundled_dats_path)
+        self._dat_paths = [Path(p) for p in dat_paths]
         self._workers = workers
         self._scope_rom_ids = scope_rom_ids
 
@@ -365,7 +367,7 @@ class HeavyScanWorker(_DbWorker):
             "scoped" if self._scope_rom_ids is not None else "library-wide"
         )
         logger.info(
-            "HeavyScan start: %s scope (rom_ids=%s) workers=%d dats_path=%s",
+            "HeavyScan start: %s scope (rom_ids=%s) workers=%d dat_paths=%s",
             scope_kind,
             (
                 None
@@ -373,7 +375,7 @@ class HeavyScanWorker(_DbWorker):
                 else f"{len(self._scope_rom_ids)} ids"
             ),
             self._workers,
-            self._bundled_dats_path,
+            [str(p) for p in self._dat_paths],
         )
 
         # Load DATs on first run (empty dat_entries table).
@@ -382,11 +384,18 @@ class HeavyScanWorker(_DbWorker):
         ).fetchone()[0]
         if dat_count == 0:
             logger.info(
-                "HeavyScan: loading bundled DATs (empty dat_entries table)"
+                "HeavyScan: loading DATs (empty dat_entries table)"
             )
             self.progress.emit(0, 0, "Loading DATs…")
-            inserted = load_all_dats(conn, [self._bundled_dats_path])
+            inserted = load_all_dats(conn, self._dat_paths)
             logger.info("HeavyScan: loaded %d DAT entries", inserted)
+            if inserted == 0:
+                logger.warning(
+                    "HeavyScan: no DAT entries loaded — check that "
+                    "dat_paths point to folders containing .dat/.xml "
+                    "files (configured paths: %s)",
+                    [str(p) for p in self._dat_paths],
+                )
         else:
             logger.info(
                 "HeavyScan: dat_entries already populated (%d rows) — skipping DAT load",
@@ -414,7 +423,7 @@ class HeavyScanWorker(_DbWorker):
         )
 
         self.progress.emit(0, 0, "Matching against DAT database…")
-        total_matched = match_hashes(conn)
+        total_matched = match_hashes(conn, scope_rom_ids=self._scope_rom_ids)
         logger.info(
             "HeavyScan complete: hashed=%d matched=%d errors=%d",
             total_hashed,

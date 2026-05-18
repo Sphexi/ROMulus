@@ -262,13 +262,22 @@ def load_all_dats(
     return inserted
 
 
-def match_hashes(conn: sqlite3.Connection) -> int:
+def match_hashes(
+    conn: sqlite3.Connection,
+    scope_rom_ids: list[int] | None = None,
+) -> int:
     """Resolve hashed ROMs against `dat_entries` and stamp them as DAT-verified.
 
     For every (rom, hash) pair, look up by SHA-1 first, then CRC32+size as
     fallback. On hit, update `roms.dat_match` to the canonical game name and
     upgrade `match_confidence` to `dat_verified`. Returns the number of ROMs
     newly matched.
+
+    Args:
+        scope_rom_ids: When supplied, only consider ROMs whose id is in this
+            list. Out-of-scope rows are left untouched even if they would
+            otherwise match. Mirrors :func:`romulus.core.hasher.hash_library`
+            so a scoped Heavy Scan never touches state outside its scope.
     """
     rows = conn.execute(
         """
@@ -278,7 +287,14 @@ def match_hashes(conn: sqlite3.Connection) -> int:
         WHERE r.match_confidence != 'dat_verified'
         """
     ).fetchall()
-    logger.debug("match_hashes: candidates rows=%d", len(rows))
+    if scope_rom_ids is not None:
+        allowed = frozenset(scope_rom_ids)
+        rows = [r for r in rows if int(r["id"]) in allowed]
+    logger.debug(
+        "match_hashes: candidates rows=%d scoped=%s",
+        len(rows),
+        scope_rom_ids is not None,
+    )
 
     matched = 0
     for row in rows:

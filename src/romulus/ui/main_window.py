@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -46,11 +47,30 @@ from romulus.ui.workers import (
     SyncWorker,
 )
 
-# Bundled DATs directory — resolved at import time relative to this file so the
-# path is correct whether the app is run from source or installed as a package.
-_BUNDLED_DATS_PATH = (
-    Path(__file__).resolve().parent.parent.parent.parent / "data" / "dats"
-)
+
+def _resolve_dat_paths(conn: sqlite3.Connection) -> list[Path]:
+    """Decode ``config.dat_paths`` into a list of folders for HeavyScan.
+
+    The setting is JSON-encoded by ``db.config`` and editable via Settings
+    → DATs; the seeded default already covers the portable layout
+    (``<install_dir>/dats``) and the dev layout (``<install_dir>/data/dats``).
+    A missing or malformed value silently falls back to an empty list — the
+    Heavy Scan worker logs a warning when 0 entries are loaded so the user
+    still sees something useful in ``logs/romulus.log``.
+
+    Resolving at scan-launch time (rather than module import) is critical
+    for the PyInstaller ``--onefile`` build: at import time ``__file__``
+    lives inside ``sys._MEIPASS``, but DATs ship next to the exe — and the
+    only place that knows the right absolute path is the seeded config.
+    """
+    raw = get_config(conn, "dat_paths") or "[]"
+    try:
+        decoded = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [Path(str(p)) for p in decoded]
 
 
 class MainWindow(QMainWindow):
@@ -777,7 +797,7 @@ class MainWindow(QMainWindow):
         self._heavy_scan_worker = HeavyScanWorker(
             DEFAULT_DB_PATH,
             library_path,
-            _BUNDLED_DATS_PATH,
+            _resolve_dat_paths(self._conn),
             workers=scan_threads,
         )
 
@@ -869,7 +889,7 @@ class MainWindow(QMainWindow):
         self._heavy_scan_worker = HeavyScanWorker(
             DEFAULT_DB_PATH,
             library_path,
-            _BUNDLED_DATS_PATH,
+            _resolve_dat_paths(self._conn),
             workers=scan_threads,
             scope_rom_ids=scope_rom_ids,
         )

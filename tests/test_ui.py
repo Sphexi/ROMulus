@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QModelIndex, Qt
@@ -32,6 +33,10 @@ from romulus.ui.system_sidebar import (
     get_rom_counts_by_system,
     get_total_rom_count,
 )
+
+# Bundled DATs in dev layout. Tests never run under PyInstaller --onefile,
+# so ``__file__`` is always a real path inside the checked-out repo.
+_DEV_DATS_PATH = Path(__file__).resolve().parent.parent / "data" / "dats"
 
 
 def _insert_rom(
@@ -1426,6 +1431,48 @@ class TestWorkerLifetime:
 # ---------------------------------------------------------------------------
 
 
+class TestResolveDatPaths:
+    """``_resolve_dat_paths`` decodes ``config.dat_paths`` at scan-launch time.
+
+    Regression: the original ``_BUNDLED_DATS_PATH`` was a module-level
+    ``Path(__file__)...`` that resolved into ``sys._MEIPASS`` in the
+    PyInstaller --onefile build and never pointed at the real DATs next
+    to the exe. Resolving from config at launch time fixes that.
+    """
+
+    def test_decodes_json_list_from_config(self, qapp, seeded_db) -> None:
+        import json
+
+        from romulus.ui.main_window import _resolve_dat_paths
+
+        set_config(
+            seeded_db, "dat_paths", json.dumps(["C:/a/dats", "C:/b/dats"])
+        )
+        paths = _resolve_dat_paths(seeded_db)
+        assert [str(p) for p in paths] == [
+            str(Path("C:/a/dats")),
+            str(Path("C:/b/dats")),
+        ]
+
+    def test_malformed_json_falls_back_to_empty(
+        self, qapp, seeded_db
+    ) -> None:
+        from romulus.ui.main_window import _resolve_dat_paths
+
+        set_config(seeded_db, "dat_paths", "{not valid json")
+        assert _resolve_dat_paths(seeded_db) == []
+
+    def test_non_list_value_falls_back_to_empty(
+        self, qapp, seeded_db
+    ) -> None:
+        import json
+
+        from romulus.ui.main_window import _resolve_dat_paths
+
+        set_config(seeded_db, "dat_paths", json.dumps({"not": "a list"}))
+        assert _resolve_dat_paths(seeded_db) == []
+
+
 class TestHeavyScanWorker:
     def test_inherits_from_db_worker(self) -> None:
         from romulus.ui.workers import HeavyScanWorker, _DbWorker
@@ -1453,10 +1500,7 @@ class TestHeavyScanWorker:
         library = tmp_path / "library"
         library.mkdir()
 
-        # Use the real bundled DATs path.
-        from romulus.ui.main_window import _BUNDLED_DATS_PATH
-
-        worker = HeavyScanWorker(db_path, library, _BUNDLED_DATS_PATH, workers=2)
+        worker = HeavyScanWorker(db_path, library, [_DEV_DATS_PATH], workers=2)
         finished: list[tuple] = []
         failed: list[str] = []
         worker.finished_ok.connect(lambda *a: finished.append(a))
@@ -1487,7 +1531,6 @@ class TestHeavyScanWorker:
 
         from romulus.core.dat_parser import load_all_dats
         from romulus.db import get_connection
-        from romulus.ui.main_window import _BUNDLED_DATS_PATH
         from romulus.ui.workers import HeavyScanWorker
 
         db_path = tmp_path / "romulus.db"
@@ -1496,7 +1539,7 @@ class TestHeavyScanWorker:
         seed_systems(conn)
         seed_defaults(conn)
         # Pre-load DATs so dat_entries is not empty.
-        load_all_dats(conn, [_BUNDLED_DATS_PATH])
+        load_all_dats(conn, [_DEV_DATS_PATH])
         first_count = conn.execute(
             "SELECT COUNT(*) FROM dat_entries"
         ).fetchone()[0]
@@ -1504,7 +1547,7 @@ class TestHeavyScanWorker:
 
         library = tmp_path / "library"
         library.mkdir()
-        worker = HeavyScanWorker(db_path, library, _BUNDLED_DATS_PATH, workers=2)
+        worker = HeavyScanWorker(db_path, library, [_DEV_DATS_PATH], workers=2)
         finished: list[tuple] = []
         worker.finished_ok.connect(lambda *a: finished.append(a))
 
@@ -1521,6 +1564,56 @@ class TestHeavyScanWorker:
         ).fetchone()[0]
         conn2.close()
         assert second_count == first_count
+
+    def test_heavy_scan_worker_accepts_list_of_dat_paths(
+        self, qapp, tmp_path
+    ) -> None:
+        """Worker takes a *list* of folders (mirrors ``config.dat_paths``).
+
+        The portable seeded default lists both ``<install_dir>/dats`` and
+        ``<install_dir>/data/dats``; only one of them exists in any given
+        layout, so the worker must tolerate non-existent entries gracefully
+        and still load DATs from the one that does.
+        """
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.db import get_connection
+        from romulus.ui.workers import HeavyScanWorker
+
+        db_path = tmp_path / "romulus.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        seed_defaults(conn)
+        conn.close()
+
+        library = tmp_path / "library"
+        library.mkdir()
+        nonexistent = tmp_path / "does_not_exist"
+        worker = HeavyScanWorker(
+            db_path,
+            library,
+            [nonexistent, _DEV_DATS_PATH],
+            workers=2,
+        )
+        finished: list[tuple] = []
+        failed: list[str] = []
+        worker.finished_ok.connect(lambda *a: finished.append(a))
+        worker.failed.connect(failed.append)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        assert not failed, f"Worker failed: {failed}"
+        assert finished
+        conn2 = get_connection(db_path)
+        dat_count = conn2.execute(
+            "SELECT COUNT(*) FROM dat_entries"
+        ).fetchone()[0]
+        conn2.close()
+        assert dat_count > 0
 
     def test_heavy_scan_action_is_enabled(self, qapp, seeded_db) -> None:
         """The Heavy Scan menu action must be enabled and connected."""

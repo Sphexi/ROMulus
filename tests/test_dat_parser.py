@@ -377,6 +377,49 @@ class TestMatchHashes:
         # Should still be the original name (no re-stamp).
         assert row["dat_match"] == "Existing Name"
 
+    def test_scope_rom_ids_filters_to_subset(self, seeded_db, tmp_path):
+        # Two ROMs, both hashed, both would otherwise match the same DAT row.
+        # Scoping to only the first must leave the second's confidence alone —
+        # this is the right-click "Heavy Scan this game" guarantee.
+        rom_a = tmp_path / "a.sfc"
+        rom_b = tmp_path / "b.sfc"
+        rom_a.write_bytes(b"\x00" * 1024)
+        rom_b.write_bytes(b"\x00" * 1024)
+        id_a = _enroll_rom(seeded_db, rom_a, "snes", 1024, time.time())
+        id_b = _enroll_rom(seeded_db, rom_b, "snes", 1024, time.time())
+        queries.upsert_hash(seeded_db, id_a, "deadbeef", "a" * 40, None)
+        queries.upsert_hash(seeded_db, id_b, "deadbeef", "a" * 40, None)
+        _write_dat(tmp_path / "snes.dat", sha1="a" * 40, size=1024)
+        load_all_dats(seeded_db, [tmp_path / "snes.dat"])
+
+        matched = match_hashes(seeded_db, scope_rom_ids=[id_a])
+
+        assert matched == 1
+        row_a = seeded_db.execute(
+            "SELECT match_confidence FROM roms WHERE id = ?", (id_a,)
+        ).fetchone()
+        row_b = seeded_db.execute(
+            "SELECT match_confidence FROM roms WHERE id = ?", (id_b,)
+        ).fetchone()
+        assert row_a["match_confidence"] == "dat_verified"
+        assert row_b["match_confidence"] != "dat_verified"
+
+    def test_empty_scope_matches_nothing(self, seeded_db, tmp_path):
+        rom = tmp_path / "g.sfc"
+        rom.write_bytes(b"\x00" * 1024)
+        rom_id = _enroll_rom(seeded_db, rom, "snes", 1024, time.time())
+        queries.upsert_hash(seeded_db, rom_id, "deadbeef", "a" * 40, None)
+        _write_dat(tmp_path / "snes.dat", sha1="a" * 40, size=1024)
+        load_all_dats(seeded_db, [tmp_path / "snes.dat"])
+
+        matched = match_hashes(seeded_db, scope_rom_ids=[])
+
+        assert matched == 0
+        row = seeded_db.execute(
+            "SELECT match_confidence FROM roms WHERE id = ?", (rom_id,)
+        ).fetchone()
+        assert row["match_confidence"] != "dat_verified"
+
 
 # ---------------------------------------------------------------------------
 # Security regression — XML entity-expansion DoS (audit v0.1.0 finding #3)
