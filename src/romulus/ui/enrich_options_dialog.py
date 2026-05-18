@@ -1,13 +1,15 @@
 """Pre-run prompt for batch enrichment.
 
-Surfaces the two silent filters in ``get_games_needing_enrichment`` as
-explicit user choices when enrichment is about to touch a lot of games
+Surfaces the silent filters in ``get_games_needing_enrichment`` and
+the online/offline split in the metadata orchestrator as explicit
+user choices when enrichment is about to touch a lot of games
 (per-system, per-collection, or full library). The single-game right-
 click path bypasses this dialog entirely — see ``MainWindow._enrich_scoped``.
 
-The default state for both checkboxes is *unchecked* — that matches the
-historic enricher behaviour (only DAT-verified, no re-enrich) so users
-who click through without reading get the safe path.
+Default state: ``fuzzy`` and ``re-enrich`` start unchecked (safe
+historic behaviour); ``online sources`` starts checked (otherwise an
+unaware user might bypass the option and silently lose every chance
+of enrichment for games not in the bundled offline databases).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from PySide6.QtWidgets import (
 class EnrichOptionsDialog(QDialog):
     """Ask the user which enrichment filters to loosen for a batch run.
 
-    Two checkboxes:
+    Three checkboxes:
 
     * ``Also enrich fuzzy-matched games`` — opt in to enriching ROMs that
       were only matched by filename heuristics, not DAT hash. Risky: a
@@ -34,9 +36,15 @@ class EnrichOptionsDialog(QDialog):
       re-running every provider against games whose metadata row was
       filled by a prior enrich pass. Useful after configuring a new
       provider (e.g. TheGamesDB) when you want to top up partial hits.
+    * ``Also try online metadata sources`` — when *unchecked*, only the
+      bundled offline sources (libretro-database, GameDB, LaunchBox XML)
+      run; games with no offline match get skipped without ever
+      contacting Hasheous, ScreenScraper, or TheGamesDB. Checked by
+      default because that's the historic behaviour.
 
-    Read :attr:`include_fuzzy` and :attr:`include_already_enriched`
-    after :meth:`exec` returns :attr:`QDialog.Accepted`.
+    Read :attr:`include_fuzzy`, :attr:`include_already_enriched`, and
+    :attr:`include_online` after :meth:`exec` returns
+    :attr:`QDialog.Accepted`.
     """
 
     def __init__(
@@ -50,8 +58,9 @@ class EnrichOptionsDialog(QDialog):
         intro = QLabel(
             f"About to enrich {scope_label}.\n\n"
             "By default the enricher only touches DAT-verified games "
-            "that haven't been enriched yet. Tick a box below to loosen "
-            "those filters for this run."
+            "that haven't been enriched yet, and consults online metadata "
+            "sources when the bundled offline databases miss. Adjust the "
+            "boxes below to change this run."
         )
         intro.setWordWrap(True)
 
@@ -66,6 +75,15 @@ class EnrichOptionsDialog(QDialog):
         )
         self.reenrich_box.setChecked(False)
 
+        self.online_box = QCheckBox(
+            "Also try online metadata sources "
+            "(Hasheous, ScreenScraper, TheGamesDB) when offline databases miss"
+        )
+        # Checked by default — the alternative is silently doing nothing
+        # for most non-cartridge games, which is not what the historic
+        # global Enrich did.
+        self.online_box.setChecked(True)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
@@ -78,6 +96,7 @@ class EnrichOptionsDialog(QDialog):
         layout.addWidget(intro)
         layout.addWidget(self.fuzzy_box)
         layout.addWidget(self.reenrich_box)
+        layout.addWidget(self.online_box)
         layout.addWidget(buttons)
 
     @property
@@ -89,3 +108,8 @@ class EnrichOptionsDialog(QDialog):
     def include_already_enriched(self) -> bool:
         """Whether the user opted in to re-running already-enriched games."""
         return self.reenrich_box.isChecked()
+
+    @property
+    def include_online(self) -> bool:
+        """Whether online metadata providers should run for this batch."""
+        return self.online_box.isChecked()

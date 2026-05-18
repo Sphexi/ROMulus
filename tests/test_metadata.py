@@ -1992,3 +1992,131 @@ class TestLibretroMetadatEnrichmentChain:
         # chain progressed to GameDB which had publisher data.
         assert meta["source"] == "gamedb"
         assert meta["publisher"] == "GameDB Pub"
+
+
+# ---------------------------------------------------------------------------
+# include_online flag — gates Hasheous / ScreenScraper / TheGamesDB
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichIncludeOnlineFlag:
+    """``include_online=False`` must skip every network-touching provider."""
+
+    def test_offline_only_skips_remote_when_local_misses(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No libretro / GameDB hit, include_online=False -> no HTTP calls."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        set_config(seeded_db, "thegamesdb_api_key", "KEY")
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
+        libretro_metadat.reset_cache_for_tests()
+        gamedb.reset_cache_for_tests()
+        # Force both local sources to miss.
+        monkeypatch.setattr(
+            libretro_metadat, "get_index_for_system", lambda _sid: None
+        )
+        monkeypatch.setattr(
+            gamedb, "get_index_for_system", lambda _sid: None
+        )
+
+        _seed_verified_game(
+            seeded_db, title="Game", system_id="gb", sha1="0" * 40
+        )
+
+        non_cover_hosts: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "thumbnails.libretro.com" not in request.url.host:
+                non_cover_hosts.append(request.url.host)
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+            include_online=False,
+        )
+
+        assert stats["games_processed"] == 1
+        assert stats["metadata_added"] == 0
+        # No metadata-source host was contacted; only the cover CDN.
+        assert non_cover_hosts == [], (
+            f"Expected no metadata API calls; got: {non_cover_hosts}"
+        )
+
+    def test_offline_only_still_lets_local_hits_through(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Local libretro hits aren't gated by include_online."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        libretro_metadat.reset_cache_for_tests()
+        gamedb.reset_cache_for_tests()
+        _stage_libretro_metadat(tmp_path, "Nintendo - Game Boy Advance")
+        monkeypatch.setattr(
+            "romulus.app._resolve_install_dir", lambda: tmp_path
+        )
+
+        game_id = _seed_verified_game(
+            seeded_db, title="Game One", system_id="gba", sha1="1" * 40
+        )
+        q.upsert_hash(
+            seeded_db, 1, crc32="56c83c16", sha1="1" * 40, md5=None
+        )
+        seeded_db.commit()
+
+        def boom(_request: httpx.Request) -> httpx.Response:
+            # Cover fetch is allowed; metadata APIs should never fire.
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(boom))
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+            include_online=False,
+        )
+        assert stats["metadata_added"] == 1
+        meta = q.get_metadata(seeded_db, game_id)
+        assert meta is not None
+        assert meta["source"] == "libretro_metadat"
+
+    def test_online_default_runs_remote_when_local_misses(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """include_online defaults to True; Hasheous fires when local misses."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        libretro_metadat.reset_cache_for_tests()
+        gamedb.reset_cache_for_tests()
+        monkeypatch.setattr(
+            libretro_metadat, "get_index_for_system", lambda _sid: None
+        )
+        monkeypatch.setattr(
+            gamedb, "get_index_for_system", lambda _sid: None
+        )
+
+        _seed_verified_game(
+            seeded_db, title="Game", system_id="gb", sha1="2" * 40
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "hasheous" in request.url.host:
+                return httpx.Response(
+                    200, json={"title": "Game", "description": "hit"}
+                )
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+        assert stats["metadata_added"] == 1
+        meta = q.get_metadata(seeded_db, 1)
+        assert meta is not None
+        assert meta["source"] == "hasheous"

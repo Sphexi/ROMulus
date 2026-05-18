@@ -710,12 +710,13 @@ class MainWindow(QMainWindow):
         game_ids: list[int] | None,
         system_id: str | None,
         collection_id: int | None,
-    ) -> tuple[bool, bool] | None:
-        """Show :class:`EnrichOptionsDialog`; return (fuzzy, already_enriched) or None.
+    ) -> tuple[bool, bool, bool] | None:
+        """Show :class:`EnrichOptionsDialog`; return (fuzzy, already, online).
 
-        ``None`` means the user cancelled. The scope label fed into the
-        dialog is the same human-readable phrase used on the progress
-        dialog title so the user sees consistent wording in both places.
+        Returns ``None`` when the user cancels. The scope label fed
+        into the dialog is the same human-readable phrase used on the
+        progress dialog title so the user sees consistent wording in
+        both places.
         """
         if game_ids is not None:
             scope_label = (
@@ -740,7 +741,11 @@ class MainWindow(QMainWindow):
         dialog = EnrichOptionsDialog(scope_label, parent=self)
         if dialog.exec() != EnrichOptionsDialog.DialogCode.Accepted:
             return None
-        return dialog.include_fuzzy, dialog.include_already_enriched
+        return (
+            dialog.include_fuzzy,
+            dialog.include_already_enriched,
+            dialog.include_online,
+        )
 
     def _enrich_scoped(
         self,
@@ -750,16 +755,22 @@ class MainWindow(QMainWindow):
         *,
         include_fuzzy: bool = False,
         include_already_enriched: bool = False,
+        include_online: bool = True,
     ) -> None:
         """Start enrichment, optionally scoped to a game / system / collection.
 
         ``include_fuzzy`` / ``include_already_enriched`` loosen the silent
-        filters in :func:`get_games_needing_enrichment`. Callers reaching
-        this method directly with both flags True bypass the per-batch
+        filters in :func:`get_games_needing_enrichment`. ``include_online``
+        gates the network-touching providers (Hasheous, ScreenScraper,
+        TheGamesDB) — when False only the bundled offline sources
+        (libretro-database, GameDB, LaunchBox XML) run.
+
+        Callers reaching this method directly with both ``include_fuzzy``
+        and ``include_already_enriched`` True bypass the per-batch
         prompt — that's the single-game right-click "force" path. Every
         other call path (system, collection, global toolbar) goes through
-        :meth:`_prompt_for_enrich_options` first, which surfaces the two
-        flags as user checkboxes.
+        :meth:`_prompt_for_enrich_options` first, which surfaces the
+        three flags as user checkboxes.
         """
         if self._enrich_worker is not None and self._enrich_worker.isRunning():
             QMessageBox.information(
@@ -786,7 +797,7 @@ class MainWindow(QMainWindow):
             )
             if chosen is None:
                 return
-            include_fuzzy, include_already_enriched = chosen
+            include_fuzzy, include_already_enriched, include_online = chosen
 
         # Pre-flight: count using the same filters the run will apply.
         # Without this the user could opt in to "re-enrich existing" and
@@ -848,6 +859,7 @@ class MainWindow(QMainWindow):
             collection_id=collection_id,
             include_fuzzy=include_fuzzy,
             include_already_enriched=include_already_enriched,
+            include_online=include_online,
         )
 
         self._enrich_worker.progress.connect(self._enrich_dialog.on_progress)

@@ -253,6 +253,8 @@ def _fetch_metadata_for_game(
     credentials: dict[str, str] | None,
     http_client: httpx.Client | None,
     tgdb_state: _TgdbRunState,
+    *,
+    include_online: bool,
 ) -> bool:
     """Try each metadata provider in priority order. Returns True on success.
 
@@ -266,10 +268,18 @@ def _fetch_metadata_for_game(
        Covers consoles libretro doesn't (PSX, GC, Wii). May supply
        publisher / release_date for the systems where libretro missed.
     2. Hasheous — hash-keyed lookup, free, no quota; precise match.
+       *Online* — skipped when ``include_online`` is False.
     3. LaunchBox — offline XML, no network at all; precise when present.
     4. ScreenScraper — hash-keyed but requires a (free) user account.
+       *Online* — skipped when ``include_online`` is False.
     5. TheGamesDB — name+platform, monthly quota — *last* so we only
        spend quota on games every cheaper source missed.
+       *Online* — skipped when ``include_online`` is False.
+
+    When ``include_online`` is False every network-touching block is
+    bypassed; only libretro / GameDB / LaunchBox run. Games with no
+    offline match return False (the caller reports them as
+    processed-but-not-enriched in the run stats).
     """
     if _try_libretro_metadat(conn, game_id, system_id, crc32):
         return True
@@ -277,7 +287,7 @@ def _fetch_metadata_for_game(
     if _try_gamedb(conn, game_id, title, system_id, crc32, canonical_name):
         return True
 
-    if sha1:
+    if include_online and sha1:
         result = hasheous.lookup_by_hash(sha1, client=http_client)
         if result:
             queries.upsert_metadata(conn, game_id, result, source="hasheous")
@@ -294,13 +304,13 @@ def _fetch_metadata_for_game(
             )
             return True
 
-    if sha1 and screenscraper.has_credentials(credentials):
+    if include_online and sha1 and screenscraper.has_credentials(credentials):
         result = screenscraper.lookup_game(sha1, system_id, credentials, client=http_client)
         if result:
             queries.upsert_metadata(conn, game_id, result, source="screenscraper")
             return True
 
-    if tgdb_state.is_active():
+    if include_online and tgdb_state.is_active():
         payload, remaining = thegamesdb.lookup_game(
             title, system_id, tgdb_state.apikey, client=http_client
         )
@@ -421,6 +431,7 @@ def enrich_library(
     *,
     include_fuzzy: bool = False,
     include_already_enriched: bool = False,
+    include_online: bool = True,
 ) -> EnrichmentStats:
     """Walk DAT-verified games that have no metadata and try each source.
 
@@ -438,6 +449,14 @@ def enrich_library(
         include_fuzzy: also enrich fuzzy/header matched games.
         include_already_enriched: re-enrich games that already have a
             metadata row (e.g. to top up after adding a new provider).
+
+    Network gate:
+        include_online: when False, only the bundled offline sources
+            (libretro-database, GameDB, LaunchBox XML) run. Hasheous,
+            ScreenScraper, and TheGamesDB are skipped — games with no
+            offline match get reported as processed-but-not-enriched.
+            Cover-art lookups (libretro thumbnails) ARE still online;
+            ``include_online`` only governs metadata providers.
     """
     cache_dir = _resolve_cache_dir(conn, cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -500,6 +519,7 @@ def enrich_library(
             credentials,
             http_client,
             tgdb_state,
+            include_online=include_online,
         ):
             metadata_added += 1
 
