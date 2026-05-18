@@ -261,6 +261,47 @@ def ensure_user_editable_files() -> None:
     DEFAULT_LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 
+class LogFileLockedError(RuntimeError):
+    """Raised when the log file is held open by another process.
+
+    Surfaced by :func:`setup_logging` so the entry-point can print a
+    friendly message and exit instead of letting Python's logging
+    module spam stderr with a ``PermissionError`` traceback on every
+    log rotation attempt. See :func:`_log_file_is_locked` for the
+    detection mechanism.
+    """
+
+
+def _log_file_is_locked(path: Path) -> bool:
+    """True when *path* is held open by another process (Windows only).
+
+    On Windows, a file opened for shared append by one process can't
+    be renamed by a second one — and ``RotatingFileHandler`` rotates
+    by renaming. Attempting ``os.rename(path, path)`` is the standard
+    probe: it's a no-op when the file is yours (or doesn't exist), and
+    raises ``PermissionError`` when another process holds it.
+
+    On POSIX systems renames of open files always succeed, so the
+    rotation problem doesn't exist and this returns False — same as
+    "not locked" — which is the correct behaviour.
+
+    Missing files are treated as not-locked: ``RotatingFileHandler``
+    creates the file itself on first write.
+    """
+    if not path.exists():
+        return False
+    try:
+        os.rename(str(path), str(path))
+    except PermissionError:
+        return True
+    except OSError:
+        # Some other rename failure (read-only filesystem, etc.) isn't
+        # a "locked by another process" condition — let the regular
+        # handler-construction code path surface that specific error.
+        return False
+    return False
+
+
 def setup_logging(
     log_path: Path | str | None = None,
     level_name: str | None = None,
@@ -282,6 +323,12 @@ def setup_logging(
     Idempotent — safe to call more than once (existing handlers are removed
     first). Returns the resolved log path so callers can surface it in error
     dialogs.
+
+    Raises :class:`LogFileLockedError` when the log file is held open by
+    another ROMulus instance. Callers should catch and exit cleanly
+    rather than continue — Python's :class:`RotatingFileHandler` would
+    otherwise emit a ``PermissionError`` traceback on every rotation
+    attempt.
     """
     resolved = Path(log_path) if log_path is not None else DEFAULT_LOG_PATH
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -289,6 +336,25 @@ def setup_logging(
     chosen = level_name or os.environ.get("ROMULUS_LOG_LEVEL") or "INFO"
     chosen = chosen.upper()
     level = getattr(logging, chosen, logging.INFO)
+
+    # Detach + close existing root handlers FIRST so any
+    # RotatingFileHandler this process previously opened on the same
+    # path releases its lock. Without this the idempotent-call case
+    # would trip the same-process branch of ``_log_file_is_locked`` on
+    # Windows (the kernel refuses to rename a file even one of our own
+    # handles still owns).
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+        h.close()
+
+    # Probe AFTER releasing our own handles. A True result here means
+    # some *other* process still owns the file — almost always a stale
+    # ROMulus instance the user forgot to close.
+    if _log_file_is_locked(resolved):
+        raise LogFileLockedError(
+            f"log file {resolved} is held open by another process"
+        )
 
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_LOG_DATEFMT)
 
@@ -303,10 +369,6 @@ def setup_logging(
     stderr_handler = logging.StreamHandler()
     stderr_handler.setFormatter(formatter)
 
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        root.removeHandler(h)
-        h.close()
     root.setLevel(level)
     root.addHandler(file_handler)
     root.addHandler(stderr_handler)
@@ -393,7 +455,20 @@ def run() -> int:
     # get logged. The user's stored Settings level is applied below, BUT only
     # if the env var hasn't pinned a level — otherwise users couldn't override
     # via ``ROMULUS_LOG_LEVEL=DEBUG`` for diagnostics.
-    log_path = setup_logging()
+    try:
+        log_path = setup_logging()
+    except LogFileLockedError as exc:
+        # Another ROMulus instance has the log file open. Refuse to start
+        # rather than push through with a broken rotating handler that
+        # would dump a PermissionError traceback on every rotation.
+        # QApplication isn't constructed yet so we can't show a Qt dialog;
+        # a clear stderr message + non-zero exit is the next best thing.
+        print(
+            f"ROMulus: cannot start — {exc}.\n"
+            "Close any other running copy of ROMulus and try again.",
+            file=sys.stderr,
+        )
+        return 1
     logger = logging.getLogger("romulus")
     logger.info("ROMulus starting up (log file: %s)", log_path)
     ensure_user_editable_files()

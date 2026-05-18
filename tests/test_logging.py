@@ -12,6 +12,8 @@ from romulus.app import (
     DEFAULT_LOG_DIR,
     DEFAULT_LOG_PATH,
     INSTALL_DIR,
+    LogFileLockedError,
+    _log_file_is_locked,
     set_log_level,
     setup_logging,
 )
@@ -153,3 +155,79 @@ def test_set_log_level_falls_back_to_info_for_empty(tmp_path: Path) -> None:
     setup_logging(tmp_path / "romulus.log")
     set_log_level("")
     assert logging.getLogger().level == logging.INFO
+
+
+# ---------------------------------------------------------------------------
+# Log-file lock detection (Windows-only failure mode the helper guards against)
+# ---------------------------------------------------------------------------
+
+
+def test_log_file_is_locked_returns_false_for_missing_file(tmp_path: Path) -> None:
+    """Missing files are 'not locked' — RotatingFileHandler creates them."""
+    assert _log_file_is_locked(tmp_path / "does-not-exist.log") is False
+
+
+def test_log_file_is_locked_returns_false_for_writable_file(
+    tmp_path: Path,
+) -> None:
+    """A file we own and nothing else holds open probes as unlocked."""
+    target = tmp_path / "romulus.log"
+    target.write_text("seed", encoding="utf-8")
+    assert _log_file_is_locked(target) is False
+
+
+def test_log_file_is_locked_returns_true_on_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulate the Windows "file held by another process" condition.
+
+    POSIX renames of open files always succeed, so the real-world
+    locking behaviour can't be reproduced cross-platform here; we
+    monkeypatch ``os.rename`` to raise the same error the Windows
+    kernel would throw.
+    """
+    import os
+
+    target = tmp_path / "romulus.log"
+    target.write_text("seed", encoding="utf-8")
+
+    def fake_rename(src: str, dst: str) -> None:
+        raise PermissionError(32, "fake")
+
+    monkeypatch.setattr(os, "rename", fake_rename)
+    assert _log_file_is_locked(target) is True
+
+
+def test_setup_logging_raises_when_log_file_is_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The custom error must replace the silent PermissionError-on-rotate."""
+    import os
+
+    target = tmp_path / "romulus.log"
+    target.write_text("seed", encoding="utf-8")
+
+    def fake_rename(src: str, dst: str) -> None:
+        raise PermissionError(32, "fake")
+
+    monkeypatch.setattr(os, "rename", fake_rename)
+    with pytest.raises(LogFileLockedError):
+        setup_logging(target)
+
+
+def test_setup_logging_passes_through_other_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Non-locking OS errors during the rename probe should NOT mask as locked."""
+    import os
+
+    target = tmp_path / "romulus.log"
+    target.write_text("seed", encoding="utf-8")
+
+    def fake_rename(src: str, dst: str) -> None:
+        raise OSError(30, "read-only fs")
+
+    monkeypatch.setattr(os, "rename", fake_rename)
+    # Probe returns False; setup_logging proceeds normally (the
+    # underlying handler construction would then raise its own error).
+    assert _log_file_is_locked(target) is False

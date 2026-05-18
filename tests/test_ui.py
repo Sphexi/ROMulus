@@ -611,7 +611,7 @@ class TestSettingsDialog:
         assert get_config(seeded_db, "screenscraper_username") == "user1"
 
     def test_diagnostics_tab_persists_and_applies_log_level(
-        self, qapp, seeded_db
+        self, qapp, seeded_db, tmp_path
     ) -> None:
         import logging as _logging
 
@@ -619,7 +619,11 @@ class TestSettingsDialog:
         from romulus.ui.settings_dialog import SettingsDialog
 
         seed_defaults(seeded_db)
-        setup_logging()  # establish a baseline root level
+        # Use tmp_path so the test doesn't share the user's real
+        # DEFAULT_LOG_PATH — a running ROMulus instance would otherwise
+        # hold that path locked and the new lock-detection guard would
+        # fire here.
+        setup_logging(tmp_path / "romulus.log")
         dialog = SettingsDialog(seeded_db)
         dialog.diagnostics.level.setCurrentText("WARNING")
         dialog._accept_and_save()
