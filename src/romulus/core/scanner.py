@@ -748,7 +748,38 @@ def scan_library(
         )
     conn.commit()
 
-    for system_id in systems_seen:
+    # Self-heal: a previous scan may have crashed (e.g. the v0.3.0
+    # ``too many SQL variables`` regression in ``mark_missing_under_root``)
+    # after upserting roms but BEFORE reaching this game-grouping step,
+    # leaving the affected system's roms with NULL ``game_id`` forever
+    # — they can't be enriched, can't be exported, and the right-click
+    # menu had nothing to bind to.
+    #
+    # ``systems_seen`` only catches systems whose roms were walked
+    # this scan; that's the happy path. The query below catches the
+    # crash-recovery case: any system with at least one rom that has
+    # a fuzzy_key but no linked game. ``group_into_games`` is
+    # idempotent — it re-uses existing game rows when the fuzzy_key
+    # already maps to one — so the union doesn't cause duplication.
+    unlinked_systems_rows = conn.execute(
+        """
+        SELECT DISTINCT system_id
+        FROM roms
+        WHERE game_id IS NULL
+          AND system_id IS NOT NULL
+          AND fuzzy_key IS NOT NULL
+          AND fuzzy_key != ''
+        """
+    ).fetchall()
+    systems_to_group = set(systems_seen)
+    systems_to_group.update(row[0] for row in unlinked_systems_rows)
+    if unlinked_systems_rows:
+        logger.info(
+            "scan: self-heal — grouping %d system(s) with unlinked roms "
+            "from a prior partial scan",
+            len(unlinked_systems_rows),
+        )
+    for system_id in systems_to_group:
         group_into_games(conn, system_id)
 
     finished_at = datetime.now(UTC).isoformat()

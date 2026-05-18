@@ -535,3 +535,77 @@ class TestMarkMissingScalesPastVariableLimit:
         # the previously-flagged 500 are missing=1 so they're filtered
         # out by the ``WHERE missing = 0`` guard.
         assert flagged_again == 0
+
+
+# ---------------------------------------------------------------------------
+# Scanner self-heal — repairs unlinked roms left by a prior partial scan
+# ---------------------------------------------------------------------------
+
+
+class TestScannerSelfHealsUnlinkedRoms:
+    """A previous Quick Scan that crashed before ``group_into_games`` ran
+    leaves roms with ``game_id IS NULL``. Re-running Quick Scan should
+    detect the orphans and create the missing game rows automatically.
+    """
+
+    def test_rescan_links_orphaned_roms(self, seeded_db, tmp_path) -> None:
+        """Simulate the partial-scan damage, then verify a re-scan repairs it."""
+        import time
+
+        # Stage two ROMs on disk so the scanner can see them.
+        _make_rom(tmp_path, "snes", "Mario.sfc")
+        _make_rom(tmp_path, "snes", "Zelda.sfc")
+
+        # Hand-insert "before" state: roms exist with fuzzy_keys but no
+        # linked games — exactly what a partial-scan crash leaves.
+        rid1 = q.upsert_rom(
+            seeded_db,
+            {
+                "path": str(tmp_path / "snes" / "Mario.sfc"),
+                "filename": "Mario.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "fuzzy_key": "mario",
+                "match_confidence": "fuzzy",
+            },
+        )
+        rid2 = q.upsert_rom(
+            seeded_db,
+            {
+                "path": str(tmp_path / "snes" / "Zelda.sfc"),
+                "filename": "Zelda.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "fuzzy_key": "zelda",
+                "match_confidence": "fuzzy",
+            },
+        )
+        seeded_db.commit()
+
+        before = seeded_db.execute(
+            "SELECT COUNT(*) FROM roms WHERE game_id IS NULL "
+            "AND system_id = 'snes'"
+        ).fetchone()[0]
+        assert before == 2, "fixture should leave both roms unlinked"
+
+        # Re-run the scanner against the same directory.
+        scan_library(seeded_db, tmp_path)
+
+        after = seeded_db.execute(
+            "SELECT COUNT(*) FROM roms WHERE game_id IS NULL "
+            "AND system_id = 'snes'"
+        ).fetchone()[0]
+        assert after == 0, (
+            "self-heal pass must group orphaned roms into games"
+        )
+        # The original rom ids should still exist (UPSERT, not insert)
+        # and now carry valid game_ids.
+        for rid in (rid1, rid2):
+            row = seeded_db.execute(
+                "SELECT game_id FROM roms WHERE id = ?", (rid,)
+            ).fetchone()
+            assert row["game_id"] is not None

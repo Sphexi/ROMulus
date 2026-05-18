@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
 )
 
 from romulus.db import queries as q
+
+logger = logging.getLogger(__name__)
 
 # Column indices — keep in sync with COLUMNS tuple.
 _COL_NAME = 0
@@ -538,10 +541,68 @@ class GameTable(QWidget):
         return self.model.row_at(source_index.row())
 
     def _on_context_menu(self, point: object) -> None:
-        game_id = self.selected_game_id()
-        if game_id is None:
+        # Resolve the row under the cursor rather than the previously-
+        # selected row. Right-clicking in Qt does NOT auto-select the
+        # underlying row (only left-click does), so the old
+        # ``selected_game_id`` path returned None whenever the user
+        # right-clicked without left-clicking first — the menu silently
+        # didn't appear and looked like a regression.
+        proxy_index = self.view.indexAt(point)  # type: ignore[arg-type]
+        logger.debug(
+            "context-menu: point=%s proxy_index_valid=%s proxy_row=%s",
+            point,
+            proxy_index.isValid(),
+            proxy_index.row() if proxy_index.isValid() else None,
+        )
+        if not proxy_index.isValid():
             return
+        source_index = self.proxy.mapToSource(proxy_index)
+        if not source_index.isValid():
+            logger.debug(
+                "context-menu: proxy.mapToSource returned invalid index "
+                "(proxy row %d)",
+                proxy_index.row(),
+            )
+            return
+        row = self.model.row_at(source_index.row())
+        game_id = row.game_id
+        logger.debug(
+            "context-menu: source_row=%d rom_id=%s game_id=%s name=%r",
+            source_index.row(),
+            row.rom_id,
+            game_id,
+            row.name,
+        )
+
+        # Mirror left-click behaviour: promote the right-clicked row to
+        # current so the detail panel + any subsequent action operate on
+        # the row the user actually clicked, not whatever was selected
+        # before.
+        self.view.setCurrentIndex(proxy_index)
         menu = QMenu(self.view)
+
+        # Rows with no linked game (the scanner's ``group_into_games``
+        # step didn't fire for that system, or fired before the rom
+        # row existed) can't participate in any of the per-game
+        # actions below. Show a disabled placeholder so the user sees
+        # SOMETHING happen on right-click rather than wondering if the
+        # input was lost; the wording points them at a fix.
+        if game_id is None:
+            placeholder = QAction(
+                "This ROM isn't linked to a game yet — re-run Quick Scan",
+                menu,
+            )
+            placeholder.setEnabled(False)
+            menu.addAction(placeholder)
+            logger.info(
+                "context-menu: showing unlinked-rom placeholder "
+                "(rom_id=%s system=%s)",
+                row.rom_id,
+                row.system_id,
+            )
+            menu.exec(self.view.viewport().mapToGlobal(point))  # type: ignore[arg-type]
+            return
+
 
         fav_action = QAction("Add to Favorites", menu)
         fav_action.triggered.connect(
