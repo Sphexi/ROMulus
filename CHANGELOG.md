@@ -9,7 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 The v0.3.0 cycle reshapes the project for actual real-world use. Major
 themes: a destination sync engine, single-library cleanup semantics, a
-single-binary portable Windows build, and a debug-logging overhaul.
+single-binary portable Windows build, a debug-logging overhaul, and —
+in the later wave — bundled offline metadata sources, a metadata /
+cover-art workflow split, and a redesigned detail panel.
 
 ### Added
 
@@ -104,6 +106,131 @@ single-binary portable Windows build, and a debug-logging overhaul.
   Settings → Diagnostics tab.
 - WBM Classic theme.
 
+**Offline metadata layer (later-wave v0.3.0):**
+- **GameDB JSON snapshots bundled** (`data/gamedb/<system_id>.json`,
+  42 consoles, ~17 MB). Pulled by the one-shot
+  `scripts/download_gamedb.py` from <https://github.com/niemasd/GameDB>.
+  Provides offline CRC32 → (canonical release_name, region,
+  publisher, release_date) mappings for cartridge-based systems
+  where the upstream snapshots carry that data. Tried second in the
+  enrichment chain (after libretro-database).
+- **libretro-database bundled** (`data/libretro-metadat/<dim>/*.dat`,
+  294 clrmamepro DAT files across 7 metadata dimensions, ~20 MB).
+  Pulled by `scripts/download_libretro_metadat.py` from
+  <https://github.com/libretro/libretro-database>. Per-CRC32 genre,
+  developer, publisher, release year, max players, and ESRB rating
+  across ~50 systems. Tried *first* in the enrichment chain — its
+  per-field coverage is the richest of the local sources.
+- **TheGamesDB online client** (`src/romulus/metadata/thegamesdb.py`).
+  Name + platform matching against
+  <https://api.thegamesdb.net/v1/Games/ByGameName> with the user's
+  own API key (set via Settings → Metadata). Tries hard to map: strips
+  parenthesised No-Intro tags before normalising titles, falls back
+  to "candidate contains query" substring matching for series-prefix
+  cases (`"007 - Everything or Nothing"` ↔ `"James Bond 007 - Everything
+  or Nothing"`), resolves integer-id genre / developer / publisher
+  lists to names via the `include=Genres,Developers,Publishers`
+  parameter. Tracks the monthly request allowance and short-circuits
+  when it hits zero. Slotted last in the chain — quota-bound, so we
+  only spend it on games every cheaper source missed.
+- **Enrich chain ordering** (in `_fetch_metadata_for_game`):
+  libretro-database → GameDB → Hasheous → LaunchBox → ScreenScraper
+  → TheGamesDB. Identifier-only local hits intentionally fall through
+  so a game isn't locked out of richer follow-up data.
+- **`metadata.release_year`** column added to the schema. Populated
+  either directly from a year-only source or extracted from a full
+  ISO date. Detail panel "Released" row prefers `release_date` when
+  both are set, else falls back to `release_year`.
+
+**Workflow split — Enrich Metadata + Find Covers (later-wave v0.3.0):**
+- **Enrich** is now **Enrich Metadata**. `enrich_library` no longer
+  touches the cover cache or libretro thumbnails — that work belongs
+  to the separate Find Covers workflow.
+- **Find Local Covers** is now **Find Covers**, with a per-run
+  `CoverOptionsDialog` whose two checkboxes (`Search for local
+  covers` default ON, `Search online for covers` default OFF) let
+  the user pick either mode or both. Cover discovery is now driven
+  by the `CoverFinderWorker` (alias `LocalCoverFinderWorker` kept
+  for back-compat); the new `fetch_online_covers_for_scope` helper
+  walks distinct game_ids in scope and issues one libretro lookup
+  per missing cover type per game.
+- **`EnrichOptionsDialog`** — pre-run prompt for every batch enrich
+  entry point (global, system, collection, single-game). Three
+  checkboxes:
+  - `Also enrich fuzzy-matched games` (default off) — drops the
+    `match_confidence='dat_verified'` filter so fuzzy / header
+    matches reach the providers.
+  - `Re-attempt enrichment on games that already have metadata`
+    (default off) — drops the `m.game_id IS NULL` filter so the
+    user can top up partial enrichments after configuring a new
+    provider.
+  - `Also try online metadata sources` (default on) — gates
+    Hasheous / ScreenScraper / TheGamesDB. Offline-only runs use
+    libretro-database + GameDB + LaunchBox XML; games with no
+    offline match are reported as processed-but-not-enriched.
+- Single-game right-click "Enrich this game" uses the same dialog
+  scoped to one game id.
+- Per-game right-click "Find covers for this game" uses
+  `CoverOptionsDialog` scoped to one game.
+
+**Detail panel redesign (later-wave v0.3.0):**
+- Description is now a hide-when-empty `QLabel`, not a fixed-height
+  scrollable text box — it used to reserve a third of the panel even
+  on un-enriched libraries.
+- Metadata fields render through a compact key/value `QFormLayout`
+  grid: Region, Revision, ROM size, SHA-1, DAT name, Genre, Developer,
+  Publisher, Released, Players, Rating. Empty rows hide so the grid
+  stays tight.
+- Per-platform console logo replaces the small text system indicator
+  under the cover-nav row. 48 px tall, dark / light variants swapped
+  on theme change. Display-name text fallback for the ~10 systems
+  with no bundled logo file.
+
+**Bundled per-platform console logos (later-wave v0.3.0):**
+- 140 PNG files under `src/romulus/ui/artwork/systems/<id>-{dark,light}.png`,
+  extracted from the v2.1 Recommended Versions (Normal) set of Dan
+  Patrick's *Console Logos — Professionally Redrawn + Official
+  Versions* via `scripts/extract_system_logos.py`. Credited in
+  `docs/CREDITS.md`.
+- `SystemDef.logo_dark` / `logo_light` fields in `systems/builtin.yaml`
+  + the in-code fallback registry point each system at its bundled
+  paths.
+- `romulus.ui.artwork.resolve_system_logo` returns the absolute path
+  per (system_id, theme).
+- System sidebar shows a 22 px logo next to each row, composited onto
+  a fixed-width 120 × 22 canvas so the text column aligns regardless
+  of source aspect ratio (narrow logos like MSX get transparent
+  padding; ultra-wide logos like Super Cassette Vision shrink on the
+  long axis to fit).
+- Detail panel shows a 48 px logo where the text system indicator used
+  to live.
+- `PyInstaller` `romulus.spec` bundles the artwork directory.
+
+**UX polish (later-wave v0.3.0):**
+- **Selection preserved across `refresh_all`.** Every worker-finished
+  signal funnels through `refresh_all`; model resets in
+  `sidebar.populate` and `game_table.set_rows` used to clear the
+  current row in both widgets, so selecting a game, clicking Enrich,
+  and waiting for the run to finish always landed users back at "All"
+  with the detail panel blank. `refresh_all` now captures
+  (`_selected_system`, `_selected_collection`,
+  `detail_panel.current_game_id`) before the refresh and restores
+  them after via new `SystemSidebar.select_system` /
+  `select_collection` and `GameTable.select_game` helpers.
+- **Heavy Scan "cache up to date" messaging.** When the hash cache
+  is fully warm (no pending hashes, no unverified ROMs), the
+  progress dialog now reads `Heavy Scan complete — cache up to date.
+  No ROMs needed re-hashing and every existing hash is already
+  DAT-matched.` plus a note explaining that Quick Scan must run first
+  to detect file changes. INFO-level log lines around DAT-load and
+  hash result give visibility even at default log level.
+- **Log-file lock detection.** Starting a second copy of ROMulus
+  while the first is still open used to dump a `PermissionError`
+  traceback on every log rotation attempt and continue running with
+  silently-dropped log messages. `setup_logging` now probes for the
+  lock via `rename(p, p)` and raises `LogFileLockedError`; the
+  entry point prints a friendly stderr message and exits with code 1.
+
 ### Renamed
 
 - Project: `Romulus` → `ROMulus` across 34 user-facing files (window
@@ -143,6 +270,40 @@ single-binary portable Windows build, and a debug-logging overhaul.
   preview "Apply" → "Close" button after completion, collapsed
   destination row in sync preview.
 
+**Later-wave v0.3.0 fixes:**
+- **`mark_missing_under_root` ran out of SQL variables** on libraries
+  larger than 999 ROMs. The naive `NOT IN (?, ?, ?, ...)` template
+  bound one parameter per visited ROM and tripped SQLite's stock
+  Windows variable limit. Replaced with a temp-table strategy
+  (`CREATE TEMP TABLE _visited_rom_ids` + `executemany` insert +
+  subquery diff). Scales arbitrarily.
+- **Scanner self-heal for unlinked ROMs.** A scan that crashed at the
+  pre-fix `mark_missing_under_root` step left ROMs inserted but with
+  `game_id IS NULL` forever (game-grouping runs AFTER the missing
+  sweep). `scan_library` now finalises with an idempotent self-heal
+  pass that runs `group_into_games` for any system with at least one
+  rom matching `game_id IS NULL AND fuzzy_key IS NOT NULL`. Logged
+  at INFO when it kicks in.
+- **TheGamesDB title-match was too strict** — exact normalised
+  comparison missed series-prefix differences (`"007 - Everything or
+  Nothing"` vs TGDB's `"James Bond 007 - Everything or Nothing"`).
+  `_normalise_title` now strips parenthesised tags first, and a
+  substring fallback fires when normalised query length ≥ 12.
+- **TheGamesDB list-id fields were stored as raw integers.** Genre /
+  developer / publisher came back as `"8, 12"` instead of
+  `"Platformer, Adventure"`. The request now includes
+  `include=Genres,Developers,Publishers` and the parser resolves IDs
+  via the include block's lookup table.
+- **Right-click on rows with unlinked game_id silently killed the
+  menu.** The handler now shows a disabled placeholder
+  `This ROM isn't linked to a game yet — re-run Quick Scan` so the
+  click is visibly acknowledged.
+- **Right-click on rows that weren't previously left-clicked
+  silently killed the menu.** The handler now resolves the row
+  under the cursor via `indexAt(point)` rather than the previous
+  selection, and promotes that row to current so subsequent actions
+  bind to it.
+
 ### Removed
 
 - Pre-v0.3.0 schema migration helper. ROMulus is pre-1.0 with no
@@ -154,18 +315,24 @@ single-binary portable Windows build, and a debug-logging overhaul.
 
 - **Database schema:** `roms.library_root` (TEXT) and `roms.missing`
   (INTEGER NOT NULL DEFAULT 0) columns added; `sync_destinations`,
-  `dest_inventory`, `sync_plans` tables added. Pre-v0.3.0 databases
-  are NOT migrated — wipe and rescan.
+  `dest_inventory`, `sync_plans` tables added. Later-wave: also
+  `metadata.release_year` (INTEGER) and per-system YAML carrying
+  `logo_dark` / `logo_light` / `gamedb_file` fields. Pre-v0.3.0
+  databases are NOT migrated — wipe and rescan.
 - **Installation layout:** v0.2.0 portable build had an `_internal/`
   subfolder next to the exe. v0.3.0 collapses that into a single
-  binary — re-extract the ZIP for the new layout.
+  binary, and ships two new sibling folders alongside `dats/` /
+  `profiles/` / `systems/`:
+  - `gamedb/*.json` — bundled GameDB snapshots
+  - `libretro-metadat/<dim>/*.dat` — bundled libretro-database metadata
+  Re-extract the ZIP for the new layout.
 - **Project name in window titles / profile YAML descriptions / etc.**
   changed `Romulus` → `ROMulus`. Has no functional effect; called out
   for completeness.
 
 ### Test suite
 
-**838 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
+**908 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
 Coverage expanded to include:
 - Sync engine: all five modes, identity matching tiers 1–4,
   region-distinct match, conflict policies, atomic delete via
@@ -175,7 +342,21 @@ Coverage expanded to include:
   path-mismatch dest_id threading.
 - Library cleanup: scanner sweep, reconnect un-tombstone,
   library-root change detection + wipe, FK-cascade delete,
-  orphan-game prune, upsert resets missing.
+  orphan-game prune, upsert resets missing, `mark_missing_under_root`
+  scaling past the 999 SQLite variable limit, scanner self-heal
+  for unlinked roms.
+- Metadata clients: libretro-metadat clrmamepro parser + per-system
+  dimension merge + chain placement, GameDB CRC32 + fuzzy-title
+  lookup + identifier-only fall-through, TheGamesDB title
+  normalisation + substring fallback + include-block ID resolution
+  + monthly-allowance gating, online-vs-offline flag gating on the
+  remote providers, `fetch_online_covers_for_scope` walking a scope
+  → game_id list.
+- UI: log-file lock detection, selection preservation across
+  `refresh_all`, sidebar fixed-canvas logo composition, Heavy Scan
+  cache-up-to-date messaging, CoverOptionsDialog default state +
+  OK-disabled-when-both-unchecked, EnrichOptionsDialog three-flag
+  plumbing.
 - Logging precedence (env var vs Settings vs default).
 - Packaging: install-dir resolution, three-tier profile loading,
   system YAML round-trip, ensure_user_editable_files.

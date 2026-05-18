@@ -10,10 +10,25 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
 
 ## Current State (as of v0.3.0 in development)
 
-- **838 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
-- Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich → Organize → Export / Sync.
+- **908 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
+- Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich
+  Metadata → Find Covers → Organize → Export / Sync.
+- Enrichment is now metadata-only; cover discovery is a separate
+  "Find Covers" workflow with a per-run dialog (local files /
+  online thumbnails / both).
+- Five-source enrichment chain, **local first**: libretro-database
+  (bundled clrmamepro DATs) → GameDB (bundled JSON) → Hasheous (remote)
+  → LaunchBox XML (local, user-supplied) → ScreenScraper (remote, opt-in)
+  → TheGamesDB (remote, monthly quota). User toggles online vs offline
+  per batch.
 - Single library at a time model — switching library_path wipes prior rows; tombstone-missing rather than delete-missing for un-tombstone-on-reconnect.
-- 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging + Heavy Scan UI + real DATs; v0.3.0 added destination sync, library cleanup, single-binary build, DEBUG breadcrumbs, plus many fixes.
+- 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging
+  + Heavy Scan UI + real DATs; early v0.3.0 added destination sync,
+  library cleanup, single-binary build, DEBUG breadcrumbs; later v0.3.0
+  added bundled offline metadata sources (GameDB + libretro-database),
+  TheGamesDB, the metadata/covers workflow split, the redesigned
+  detail panel with per-platform logos, the enrich-options dialog, and
+  a stack of UX polish + bug fixes.
 - Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db` and rescan if you have a pre-v0.3.0 DB lying around.
 
 See `CHANGELOG.md` for the full per-release breakdown.
@@ -51,12 +66,13 @@ Do not load reference documents into context every turn — read them when neede
 │                     PySide6 UI                           │
 │  ┌─────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │ System  │  │  Game Table  │  │   Game Detail Panel │ │
-│  │ Sidebar │  │  (sortable,  │  │   (cover, desc,     │ │
-│  │         │  │   filterable)│  │    metadata, tags)  │ │
+│  │ Sidebar │  │  (sortable,  │  │   (cover, logo,     │ │
+│  │ (logos) │  │   filterable)│  │    grid, desc)      │ │
 │  └─────────┘  └──────────────┘  └─────────────────────┘ │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
-│  │          Enrich | Export/Sync | Settings             ││
+│  │   Enrich Metadata | Find Covers | Export/Sync |      ││
+│  │   Settings                                           ││
 │  │ Tools menu: Clean Missing Entries…                   ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
@@ -64,13 +80,19 @@ Do not load reference documents into context every turn — read them when neede
 ┌──────────────┴───────────────────────────────────────────┐
 │                    Core Engine                           │
 │                                                          │
-│  Scanner (+missing sweep) ──→ Identifier ──→ SQLite DB   │
-│                              (L1 fuzzy, L2 header,       │
-│                               L3 hash+DAT)               │
+│  Scanner (+missing sweep, self-heal) ──→ Identifier ──→  │
+│  SQLite DB   (L1 fuzzy, L2 header, L3 hash+DAT)          │
 │                                                          │
 │  DAT Parser (bundled No-Intro + user)                    │
-│  Metadata Clients (libretro-thumbnails, Hasheous,        │
-│                    LaunchBox, ScreenScraper optional)    │
+│                                                          │
+│  Metadata chain (Enrich Metadata):                       │
+│    libretro-database ──→ GameDB ──→ Hasheous ──→         │
+│    LaunchBox ──→ ScreenScraper ──→ TheGamesDB            │
+│    (local-first, online toggleable per batch)            │
+│                                                          │
+│  Cover chain (Find Covers):                              │
+│    local image walk (offline) + libretro thumbnails      │
+│    (online), independently toggled per batch             │
 │                                                          │
 │  Organizer (preview/commit, atomic move, SAVEPOINT)      │
 │  Export Engine (dest profiles, copy, gamelist.xml, .m3u) │
@@ -82,14 +104,18 @@ Do not load reference documents into context every turn — read them when neede
 │                ── dest_inventory cache (per destination) │
 │                ── sync_plans persisted JSON per apply    │
 │                                                          │
-│  Cover Cache (<install_dir>/data/covers/)                │
-│  SQLite DB   (<install_dir>/data/romulus.db)             │
+│  Cover Cache    (<install_dir>/data/covers/)             │
+│  GameDB JSON    (<install_dir>/data/gamedb/)             │
+│  libretro DATs  (<install_dir>/data/libretro-metadat/)   │
+│  SQLite DB      (<install_dir>/data/romulus.db)          │
 └──────────────────────────────────────────────────────────┘
 ```
 
 **Key architecture notes:**
 - Single-process desktop app, no server, no Docker.
-- Distributed as a single-binary portable Windows ZIP (PyInstaller `--onefile`); data folders (`dats/`, `profiles/`, `systems/`) ship alongside the exe in the ZIP.
+- Distributed as a single-binary portable Windows ZIP (PyInstaller
+  `--onefile`); data folders (`dats/`, `gamedb/`, `libretro-metadat/`,
+  `profiles/`, `systems/`) ship alongside the exe in the ZIP.
 - SQLite for all persistent state (library, config, metadata, scan history, dest inventory, sync plans).
 - QThread workers for scanner / heavy-scan / enricher / organizer / exporter / sync / dest-inventory-scan / local-cover-finder with cooperative cancel via private exception raised inside the progress callback.
 - Quick scan (L1+L2, seconds-to-minutes) vs Heavy scan (L3, minutes-to-hours).
@@ -122,14 +148,22 @@ ROMulous/
 ├── romulus.spec                  # PyInstaller spec (--onefile)
 ├── build-portable.ps1            # Windows portable-ZIP builder
 ├── scripts/
-│   └── generate_icon.py          # CD-ROM disc icon generator (QPainter)
+│   ├── generate_icon.py             # CD-ROM disc icon generator (QPainter)
+│   ├── extract_system_logos.py      # One-shot logo extractor (Dan Patrick zip)
+│   ├── download_gamedb.py           # One-shot GameDB JSON downloader
+│   └── download_libretro_metadat.py # One-shot libretro DAT downloader
 ├── .github/workflows/
 │   ├── ci.yml                    # Lint + test on push/PR
 │   └── release.yml               # Tag-driven portable ZIP build
 ├── profiles/                     # 7 built-in destination profiles (YAML)
 ├── systems/                      # System registry YAML (builtin.yaml)
 ├── data/
-│   └── dats/                     # 106 bundled No-Intro DAT files
+│   ├── dats/                     # 106 bundled No-Intro DAT files
+│   ├── gamedb/                   # 42 bundled GameDB JSON snapshots (~17 MB)
+│   └── libretro-metadat/         # 294 bundled libretro DAT files (~20 MB),
+│                                 # nested by dimension (genre / developer /
+│                                 # publisher / releaseyear / maxusers / esrb /
+│                                 # franchise)
 ├── docs/
 │   ├── TECHNICAL_PLAN.md
 │   ├── sync-design.md            # Destination sync engine spec
@@ -142,7 +176,8 @@ ROMulous/
 │   ├── __init__.py
 │   ├── __main__.py               # Entry point
 │   ├── app.py                    # QApplication setup, log + DB init,
-│   │                             # data-dir resolution, first-launch seeding
+│   │                             # data-dir resolution, first-launch seeding,
+│   │                             # log-file lock detection
 │   ├── db/
 │   │   ├── connection.py         # SQLite connection manager
 │   │   ├── schema.py             # Table definitions, migration helpers
@@ -150,6 +185,7 @@ ROMulous/
 │   │   └── config.py             # Default config + accessors
 │   ├── core/
 │   │   ├── scanner.py            # Filesystem walk + L1/L2 + missing sweep
+│   │   │                         # + self-heal for unlinked roms
 │   │   ├── identifier.py         # L2 header extraction
 │   │   ├── hasher.py             # SHA-1/CRC32 + header stripping + archives
 │   │   ├── dat_parser.py         # Logiqx XML DAT parser + match_hashes
@@ -161,10 +197,18 @@ ROMulous/
 │   │   ├── atomic.py             # tempfile.mkstemp + os.replace helpers
 │   │   └── _no_intro_tokens.py   # FILENAME_REGION_TOKENS, REVISION_RE
 │   ├── metadata/
+│   │   ├── __init__.py           # enrich_library + chain orchestrator +
+│   │   │                         # fetch_online_covers_for_scope
+│   │   ├── libretro_metadat.py   # Bundled libretro-database (offline,
+│   │   │                         # tried first — broadest per-field coverage)
+│   │   ├── gamedb.py             # Bundled GameDB JSON (offline, tried second)
 │   │   ├── libretro.py           # libretro-thumbnails cover art
-│   │   ├── hasheous.py           # Hasheous API client
-│   │   ├── launchbox.py          # LaunchBox XML parser
-│   │   └── screenscraper.py      # ScreenScraper API client (optional)
+│   │   ├── hasheous.py           # Hasheous API client (online, hash-keyed)
+│   │   ├── launchbox.py          # LaunchBox XML parser (offline,
+│   │   │                         # user-supplied)
+│   │   ├── screenscraper.py      # ScreenScraper API client (online, opt-in)
+│   │   └── thegamesdb.py         # TheGamesDB API client (online,
+│   │                             # name+platform, monthly quota)
 │   ├── models/
 │   │   ├── system.py             # SYSTEM_REGISTRY + YAML loader
 │   │   ├── rom.py
@@ -172,19 +216,27 @@ ROMulous/
 │   │   └── profile.py            # DestinationProfile + SystemMapping
 │   └── ui/
 │       ├── main_window.py        # Window, menu, toolbar, all workflow hooks
-│       ├── system_sidebar.py
+│       ├── system_sidebar.py     # Logo + name + count per system
 │       ├── game_table.py
-│       ├── detail_panel.py
+│       ├── detail_panel.py       # Cover + system logo + key/value grid +
+│       │                         # hide-when-empty description
 │       ├── settings_dialog.py    # General / DATs / Metadata / Scan / Diagnostics
+│       ├── enrich_options_dialog.py # Fuzzy / re-enrich / online checkboxes
+│       ├── cover_options_dialog.py  # Local-files / online-thumbnails checkboxes
 │       ├── scan_progress.py      # Quick / Heavy / DestScan dialogs
+│       ├── enrich_progress.py    # Enrich Metadata progress
+│       ├── local_cover_progress.py # Find Covers progress (dual phase)
 │       ├── organize_preview.py
 │       ├── export_dialog.py
 │       ├── sync_preview.py       # Sync preview + apply UI
 │       ├── workers.py            # QThread workers (Scan / HeavyScan / Enrich /
 │       │                          # Organize / Export / Sync / DestInventory /
-│       │                          # LocalCover)
+│       │                          # CoverFinder)
+│       ├── artwork/              # Bundled per-platform logos (dark + light)
+│       │   ├── __init__.py       # resolve_system_logo(system_id, theme)
+│       │   └── systems/          # <system_id>-{dark,light}.png × 70 systems
 │       ├── icons/cdrom.{png,ico}
-│       └── themes/                # light, dark, wbm_classic .qss
+│       └── themes/               # light, dark, wbm_classic .qss
 └── tests/
     ├── conftest.py                # db / seeded_db / qapp fixtures
     ├── test_scanner.py
@@ -201,7 +253,7 @@ ROMulous/
     ├── test_library_cleanup.py    # tombstone, root-change, FK cascade,
     │                              # logging precedence
     ├── test_packaging.py          # install-dir, three-tier profile loading
-    └── ...                        # 838 tests total, 1 skipped
+    └── ...                        # 908 tests total, 1 skipped
 ```
 
 ## Git Policy
@@ -247,6 +299,10 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 14. **No pre-v0.3.0 DB migration support.** ROMulus is pre-1.0 with no production user base; legacy DBs get wiped, not migrated. Re-introduce migration framework when v1.0 ships.
 15. **Sync identity matching anchors on system_id.** Tier-2 fuzzy match keys on `(fuzzy_key, region, system_id)` so cross-platform fuzzy-key collisions (e.g. Game Boy vs Game Boy Color "Pac-Man") never match. Tier-1 path equivalence and tier-4 SHA-1 are also gated correctly.
 16. **Plan.dest_id is authoritative.** Sync apply uses `plan.dest_id` directly; do NOT re-derive from `str(target_path)` because Path stringification can diverge from the value stored at destination-creation time (UNC trailing slash, separator normalization).
+17. **Metadata enrichment is local-first.** Order: libretro-database → GameDB → Hasheous → LaunchBox → ScreenScraper → TheGamesDB. The two bundled offline sources (`data/libretro-metadat/` and `data/gamedb/`) run before any network call. The "Also try online metadata sources" checkbox on `EnrichOptionsDialog` gates the three remote providers; offline-only runs commit nothing for games the local sources missed (no API quota burnt, no surprise network traffic).
+18. **Metadata and cover-art are separate workflows.** `enrich_library` writes to the `metadata` table only. Cover discovery is driven by `CoverFinderWorker` via `CoverOptionsDialog`, which lets the user pick local-file walk and/or libretro-thumbnail fetch independently per batch. `fetch_online_covers_for_scope` is the orchestrator's per-game cover fetcher.
+19. **Bundled offline metadata is content-addressed by CRC32.** Both `libretro_metadat` and `gamedb` index by lowercase 8-char CRC32 (stripping any `0x` prefix). `roms.hashes` populated by Heavy Scan is what unlocks them. Quick-scan-only games fall through to title-fuzzy fallback paths in both clients.
+20. **TheGamesDB has a monthly quota.** ~1000 requests/month for public keys, 6000 lifetime for private keys. The client logs `remaining_monthly_allowance` per response, persists it to `thegamesdb_remaining_allowance` in config, and short-circuits future calls when it hits zero. Slot it last in the chain so we only spend on games every cheaper source missed.
 
 ## Scan Types
 

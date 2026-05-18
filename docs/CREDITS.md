@@ -22,7 +22,7 @@ only one that requires an account, and it's opt-in.
 | **Hasheous** | Game metadata by SHA-1 / CRC32 | Free, no account; community-run | <https://hasheous.org/> |
 | **LaunchBox Games Database (offline XML)** | Genres, descriptions, players, release dates | Free download; consult [LaunchBox terms](https://forums.launchbox-app.com/terms/) for redistribution | <https://gamesdb.launchbox-app.com/> |
 | **ScreenScraper** | Extended metadata, region-specific descriptions, additional artwork (opt-in) | Free account required; rate-limited; see their [terms](https://www.screenscraper.fr/) | <https://www.screenscraper.fr/> |
-| **TheGamesDB (TGDB)** | Name+platform metadata fallback when hash-keyed sources miss | Free with user-supplied API key — public keys cap at ~1000 requests/month/IP, private lifetime keys cap at 6000 total. See [terms](https://thegamesdb.net/) | <https://thegamesdb.net/> |
+| **TheGamesDB (TGDB)** | Name+platform metadata fallback when every cheaper source (libretro-database, GameDB, Hasheous, LaunchBox, ScreenScraper) missed. Tried last because of the strict monthly quota. | Free with user-supplied API key — public keys cap at ~1000 requests/month/IP, private lifetime keys cap at 6000 total. See [terms](https://thegamesdb.net/) | <https://thegamesdb.net/> |
 
 ROMulus uses `httpx` for every outbound HTTP request, never logs request
 or response bodies (URL + status only), and never sends user credentials
@@ -43,8 +43,8 @@ DATs → Add folder.
 | **Redump** | Logiqx XML DATs for disc-based systems (PS1, Saturn, Dreamcast, PC Engine CD) | <http://redump.org/> |
 | **TOSEC** | Optional supplementary DATs for older / less-mainstream platforms | <https://www.tosecdev.org/> |
 | **Logiqx XML DAT format** | The DAT schema ROMulus parses | <https://www.logiqx.com/> |
-| **GameDB** (Niema Moshiri) | Per-console JSON snapshots used as the offline first-pass enrichment source (publisher, release date, canonical release name, CRC32). Bundled under `data/gamedb/` in dev clones and `gamedb/` in portable releases. | <https://github.com/niemasd/GameDB> |
-| **libretro-database** (Libretro / RetroArch project) | clrmamepro DAT files providing per-CRC32 genre, developer, publisher, release year, max players, and ESRB rating across ~50 systems. Bundled under `data/libretro-metadat/<dimension>/` in dev clones and `libretro-metadat/` in portable releases. | <https://github.com/libretro/libretro-database> |
+| **libretro-database** (Libretro / RetroArch project) | clrmamepro DAT files providing per-CRC32 genre, developer, publisher, release year, max players, and ESRB rating across ~50 systems. **First in the enrichment chain** — the broadest per-field coverage of any local source. Bundled under `data/libretro-metadat/<dimension>/` in dev clones and `libretro-metadat/` in portable releases. | <https://github.com/libretro/libretro-database> |
+| **GameDB** (Niema Moshiri) | Per-console JSON snapshots used as the offline second-pass enrichment source (publisher, release date, canonical release name, CRC32). Bundled under `data/gamedb/` in dev clones and `gamedb/` in portable releases. Covers consoles libretro-database doesn't reach (PSX, GameCube, Wii, etc.). | <https://github.com/niemasd/GameDB> |
 
 DAT files describe ROM dumps by SHA-1 / CRC32 hash; ROMulus uses them for
 canonical naming and Heavy Scan identity matching. The DAT files

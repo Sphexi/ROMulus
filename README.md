@@ -43,6 +43,16 @@ a single desktop app that:
 
 - **Stays local.** No phoning home, no upload, no required login. SQLite +
   files on disk, nothing else.
+- **Bundles offline metadata.** Bundled snapshots of [libretro-database][lrdb]
+  (~20 MB across 7 metadata dimensions × ~50 systems — genre, developer,
+  publisher, release year, max players, ESRB, franchise) and
+  [GameDB][gamedb] (~17 MB across 42 systems — canonical names, regions,
+  publisher / release date for the systems that carry them) are
+  consulted *before* any network call. Most cartridge-based titles fill
+  out without ever touching the internet.
+- **Online sources are opt-in per batch.** The Enrich Metadata dialog
+  has an "Also try online metadata sources" checkbox; uncheck it and
+  Hasheous, ScreenScraper, and TheGamesDB stay quiet.
 - **Respects your files.** The Organizer and Exporter both show a preview
   before doing anything irreversible. Nothing is moved, renamed, or deleted
   until you explicitly confirm.
@@ -54,6 +64,8 @@ a single desktop app that:
   API key. ScreenScraper credentials are optional.
 
 [libretro]: https://github.com/libretro-thumbnails/libretro-thumbnails
+[lrdb]: https://github.com/libretro/libretro-database
+[gamedb]: https://github.com/niemasd/GameDB
 
 ---
 
@@ -74,7 +86,12 @@ ROMulus\
                             + every DLL packed inside)
   profiles\*.yaml          (destination profiles — edit freely)
   systems\*.yaml           (system registry — drop in extra YAMLs to extend)
-  dats\*.dat               (bundled No-Intro DAT files)
+  dats\*.dat               (bundled No-Intro DAT files, ~457k entries)
+  gamedb\*.json            (bundled GameDB snapshots, 42 systems, ~17 MB)
+  libretro-metadat\        (bundled libretro-database metadata DATs,
+    <dimension>\*.dat       sorted by dimension — genre, developer,
+                            publisher, releaseyear, maxusers, esrb,
+                            franchise — ~50 systems, ~20 MB)
   data\                    (romulus.db + covers cache — everything live)
   logs\                    (rotating log file)
 ```
@@ -153,16 +170,37 @@ is:
    and enrichment survive a temporarily-unmounted network share.
 3. **Heavy Scan** (toolbar). Computes SHA-1/CRC32 with header stripping
    and matches against No-Intro DATs for canonical naming. Bundled DATs
-   cover ~106 systems out of the box.
-4. **Enrich** (toolbar). Pulls cover art from libretro-thumbnails and
-   metadata from Hasheous / LaunchBox. Adds genres, descriptions, players,
-   release dates, and cached PNG thumbnails. Free, no account required.
-   ScreenScraper is queried only if you've supplied credentials in Settings.
-5. **Organize** (toolbar). Previews proposed library cleanups — alias folder
+   cover ~106 systems out of the box. Subsequent Heavy Scans are
+   nearly free thanks to the (path, mtime, size) hash cache.
+4. **Enrich Metadata** (toolbar). Walks DAT-verified games and fills
+   in genre / developer / publisher / release date / players / rating
+   from a chain of sources, **local first**:
+   - **libretro-database** (bundled, offline) — per-CRC32 metadata
+     DATs from the upstream community-curated set.
+   - **GameDB** (bundled, offline) — per-CRC32 JSON snapshots.
+   - **Hasheous** (online, no key) — SHA-1 keyed.
+   - **LaunchBox XML** (local, user-supplied via Settings → DATs).
+   - **ScreenScraper** (online, opt-in via Settings → Metadata).
+   - **TheGamesDB** (online, opt-in via Settings → Metadata; monthly
+     quota tracked + respected).
+
+   A pre-run dialog lets you tick "Also enrich fuzzy-matched games",
+   "Re-attempt enrichment on games that already have metadata", and
+   "Also try online metadata sources" (default on). Uncheck the last
+   to run completely offline. The chain stops at the first source
+   that has user-facing data for the game.
+5. **Find Covers** (toolbar). Separate workflow from metadata. A
+   dialog lets you tick "Search for local covers" (default on —
+   walks the library tree for `.png/.jpg` files matching enrolled
+   ROMs) and/or "Search online for covers" (default off — fetches
+   libretro thumbnails for games still missing a cover). Either,
+   neither, or both per run; the dialog disables OK when both are
+   unchecked.
+7. **Organize** (toolbar). Previews proposed library cleanups — alias folder
    merges, canonical-name renames, duplicate removal, cross-extension
    dedup. You see every action and approve them individually before
    anything moves.
-6. **Export / Sync** (toolbar). Pick a destination profile (Batocera,
+8. **Export / Sync** (toolbar). Pick a destination profile (Batocera,
    RetroPie, MiSTer, Anbernic RGLauncher, etc.), pick a target folder,
    and run a one-shot **Export** (mirror the library to a fresh target)
    or a **Sync** with one of five modes:
@@ -179,14 +217,19 @@ is:
    Every sync produces a preview with per-action counts and totals, a
    double-confirm before destructive actions, and per-action SAVEPOINT
    rollback if anything fails mid-run.
-7. **Tools → Clean Missing Entries** removes tombstoned rows the user is
+9. **Tools → Clean Missing Entries** removes tombstoned rows the user is
    confident are gone for good (and their dependent `hashes` /
    `dest_inventory` rows + orphan `games` rows).
 
 Right-click any game in the table for **Add to Favorites** / **Add to
-Collection...** / **Heavy Scan (this game)** / **Enrich (this game)** /
-**Find Local Covers (this game)**. Click a game to see its detail panel
-(cover, description, metadata, tags). The system sidebar on the left
+Collection...** / **Heavy Scan this game's ROMs** / **Enrich this
+game** (opens the same options dialog scoped to the row) /
+**Find covers for this game** (opens the cover options dialog scoped
+to the row). Click a game to see its detail panel — cover art with
+prev/next cycling, the platform's official logo, a compact key/value
+grid of region/revision/size/SHA-1/genre/developer/publisher/release
+date/etc., and the description (when one's available). The system
+sidebar on the left shows each console's logo next to its name and
 filters the table by console or by user-defined collection.
 
 ---
@@ -198,12 +241,13 @@ filters the table by console or by user-defined collection.
 │                     PySide6 UI                           │
 │  ┌─────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │ System  │  │  Game Table  │  │   Game Detail Panel │ │
-│  │ Sidebar │  │  (sortable,  │  │   (cover, desc,     │ │
-│  │         │  │   filterable)│  │    metadata, tags)  │ │
+│  │ Sidebar │  │  (sortable,  │  │   (cover, logo,     │ │
+│  │ (logos) │  │   filterable)│  │    grid, desc)      │ │
 │  └─────────┘  └──────────────┘  └─────────────────────┘ │
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
-│  │          Enrich | Export/Sync | Settings             ││
+│  │   Enrich Metadata | Find Covers | Export/Sync |      ││
+│  │   Settings                                           ││
 │  │ Tools menu: Clean Missing Entries…                   ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
@@ -212,11 +256,19 @@ filters the table by console or by user-defined collection.
 │                    Core Engine                           │
 │                                                          │
 │  Scanner ──→ Identifier Pipeline ──→ SQLite DB           │
-│  (+ missing  (L1 fuzzy, L2 header,     │                 │
-│     sweep)    L3 hash+DAT)        Metadata Client        │
-│                                   (libretro-thumbnails,  │
-│  DAT Parser (bundled No-Intro       Hasheous, LaunchBox, │
-│   + user)    DATs, ~106 systems)    ScreenScraper opt.)  │
+│  (+ missing  (L1 fuzzy, L2 header, L3 hash+DAT)          │
+│   sweep +                                                │
+│   self-heal)                                             │
+│                                                          │
+│  DAT Parser (bundled No-Intro DATs, ~106 systems)        │
+│                                                          │
+│  Enrich Metadata chain (local-first):                    │
+│    libretro-database ──→ GameDB ──→ Hasheous ──→         │
+│    LaunchBox ──→ ScreenScraper ──→ TheGamesDB            │
+│    (online providers gated by per-batch checkbox)        │
+│                                                          │
+│  Find Covers (independent per-batch toggles):            │
+│    local image walk + libretro-thumbnails fetch          │
 │                                                          │
 │  Organizer  Export Engine    Sync Engine                 │
 │  (preview/  (dest profiles,  (5 modes: push merge/       │
@@ -225,8 +277,10 @@ filters the table by console or by user-defined collection.
 │                               match; dest_inventory      │
 │                               cache; SAVEPOINT rollback) │
 │                                                          │
-│  Cover Cache (<install_dir>/data/covers/)                │
-│  SQLite DB   (<install_dir>/data/romulus.db)             │
+│  Cover Cache    (<install_dir>/data/covers/)             │
+│  GameDB JSON    (<install_dir>/data/gamedb/)             │
+│  libretro DATs  (<install_dir>/data/libretro-metadat/)   │
+│  SQLite DB      (<install_dir>/data/romulus.db)          │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -248,19 +302,21 @@ when the install folder isn't writable). There is no config file to
 hand-edit — everything is editable through **File → Settings...** in the
 app. The full set of keys, taken from `romulus.db.config.DEFAULT_CONFIG`:
 
-| Key                       | Default                                    | Meaning                                                   |
-|---------------------------|--------------------------------------------|-----------------------------------------------------------|
-| `library_path`            | `""` (unset)                               | Root folder of your ROM library                            |
-| `dat_paths`               | `["dats"]` (JSON)                          | Folders scanned for No-Intro / Redump XML DAT files       |
-| `cover_cache_path`        | `<data_dir>/covers`                        | Where libretro / Hasheous covers are cached on disk       |
-| `screenscraper_username`  | `""`                                       | Optional ScreenScraper account username                    |
-| `screenscraper_password`  | `""`                                       | Optional ScreenScraper account password (see Security)    |
-| `theme`                   | `system`                                   | UI theme: `system`, `light`, `dark`, or `wbm_classic`     |
-| `log_level`               | `INFO`                                     | `DEBUG`, `INFO`, `WARNING`, or `ERROR` (live-applied)     |
-| `default_view`            | `table`                                    | Default view mode for the game list                        |
-| `scan_threads`            | `8`                                        | Worker threads used by Heavy Scan / hashing                |
-| `last_scan_type`          | `""`                                       | Diagnostic — last scan type that completed                 |
-| `last_scan_time`          | `""`                                       | Diagnostic — ISO timestamp of last scan                    |
+| Key                              | Default                                    | Meaning                                                   |
+|----------------------------------|--------------------------------------------|-----------------------------------------------------------|
+| `library_path`                   | `""` (unset)                               | Root folder of your ROM library                            |
+| `dat_paths`                      | `["dats"]` (JSON)                          | Folders scanned for No-Intro / Redump XML DAT files       |
+| `cover_cache_path`               | `<data_dir>/covers`                        | Where libretro / Hasheous covers are cached on disk       |
+| `screenscraper_username`         | `""`                                       | Optional ScreenScraper account username                    |
+| `screenscraper_password`         | `""`                                       | Optional ScreenScraper account password (see Security)    |
+| `thegamesdb_api_key`             | `""`                                       | Optional TheGamesDB API key (public or private); blank disables the provider |
+| `thegamesdb_remaining_allowance` | `""`                                       | Diagnostic — last seen monthly quota counter from TGDB    |
+| `theme`                          | `system`                                   | UI theme: `system`, `light`, `dark`, or `wbm_classic`     |
+| `log_level`                      | `INFO`                                     | `DEBUG`, `INFO`, `WARNING`, or `ERROR` (live-applied)     |
+| `default_view`                   | `table`                                    | Default view mode for the game list                        |
+| `scan_threads`                   | `8`                                        | Worker threads used by Heavy Scan / hashing                |
+| `last_scan_type`                 | `""`                                       | Diagnostic — last scan type that completed                 |
+| `last_scan_time`                 | `""`                                       | Diagnostic — ISO timestamp of last scan                    |
 
 `dat_paths` is JSON-encoded in storage. Use the **DATs** tab in Settings to
 add or remove folders rather than editing the value directly.
