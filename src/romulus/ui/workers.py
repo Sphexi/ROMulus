@@ -317,13 +317,37 @@ class HeavyScanWorker(_DbWorker):
         self._scope_rom_ids = scope_rom_ids
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
+        scope_kind = (
+            "scoped" if self._scope_rom_ids is not None else "library-wide"
+        )
+        logger.info(
+            "HeavyScan start: %s scope (rom_ids=%s) workers=%d dats_path=%s",
+            scope_kind,
+            (
+                None
+                if self._scope_rom_ids is None
+                else f"{len(self._scope_rom_ids)} ids"
+            ),
+            self._workers,
+            self._bundled_dats_path,
+        )
+
         # Load DATs on first run (empty dat_entries table).
         dat_count = conn.execute(
             "SELECT COUNT(*) FROM dat_entries"
         ).fetchone()[0]
         if dat_count == 0:
+            logger.info(
+                "HeavyScan: loading bundled DATs (empty dat_entries table)"
+            )
             self.progress.emit(0, 0, "Loading DATs…")
-            load_all_dats(conn, [self._bundled_dats_path])
+            inserted = load_all_dats(conn, [self._bundled_dats_path])
+            logger.info("HeavyScan: loaded %d DAT entries", inserted)
+        else:
+            logger.info(
+                "HeavyScan: dat_entries already populated (%d rows) — skipping DAT load",
+                dat_count,
+            )
 
         errors = 0
 
@@ -331,13 +355,28 @@ class HeavyScanWorker(_DbWorker):
             self._check_cancel()
             self.progress.emit(done, total, path)
 
+        # Surface "scanning..." even when there's no work to do so the
+        # dialog isn't blank during the rapid scan -> finished_ok flip.
+        self.progress.emit(0, 0, "Checking for ROMs needing hashing…")
         total_hashed = hash_library(
             conn,
             progress_callback=_progress,
             workers=self._workers,
             scope_rom_ids=self._scope_rom_ids,
         )
+        logger.info(
+            "HeavyScan: hashed %d ROM(s) (rest were already cached)",
+            total_hashed,
+        )
+
+        self.progress.emit(0, 0, "Matching against DAT database…")
         total_matched = match_hashes(conn)
+        logger.info(
+            "HeavyScan complete: hashed=%d matched=%d errors=%d",
+            total_hashed,
+            total_matched,
+            errors,
+        )
         self.finished_ok.emit(total_hashed, total_matched, errors)
 
 

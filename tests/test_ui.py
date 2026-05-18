@@ -1759,6 +1759,23 @@ class TestProgressDialogSpinners:
         assert dlg.value() > 0
         assert "✓" in dlg.labelText()
 
+    def test_heavy_scan_zero_zero_zero_shows_cache_up_to_date_message(
+        self, qapp
+    ) -> None:
+        """The 'cache up to date' case needs a clearer message than 0/0/0.
+
+        Otherwise users running heavy scan against an already-hashed
+        library see a blank-looking dialog and assume nothing happened.
+        """
+        from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
+
+        dlg = HeavyScanProgressDialog()
+        dlg.on_finished(0, 0, 0)
+        text = dlg.labelText()
+        assert "cache up to date" in text.lower()
+        # Numeric-zero noise must NOT be displayed in the no-op case.
+        assert "ROMs hashed: 0" not in text
+
     def test_heavy_scan_on_failed_stops_spinner(self, qapp) -> None:
         from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
 

@@ -36,15 +36,33 @@ class HeavyScanProgressDialog(QProgressDialog):
         total_matched: int,
         errors: int,
     ) -> None:
-        """Slot — stop the spinner, show the final summary, switch to Close."""
+        """Slot — stop the spinner, show the final summary, switch to Close.
+
+        The "cache up to date" case (no new hashes, no new matches, no
+        errors) gets explicit wording so the user knows nothing was
+        broken — heavy scan reuses cached hashes by (path, mtime, size)
+        and silent no-ops on subsequent runs are normal.
+        """
         self.setRange(0, 1)
         self.setValue(1)
-        self.setLabelText(
-            f"✓ Heavy Scan complete.\n"
-            f"ROMs hashed: {total_hashed}\n"
-            f"DAT matches found: {total_matched}\n"
-            f"Errors: {errors}"
-        )
+        if total_hashed == 0 and total_matched == 0 and errors == 0:
+            self.setLabelText(
+                "✓ Heavy Scan complete — cache up to date.\n"
+                "No ROMs needed re-hashing and every existing hash is "
+                "already DAT-matched.\n\n"
+                "If you expected work to happen here, the most likely "
+                "cause is that your ROMs were hashed by a previous run. "
+                "Modifying a file (mtime change) or running Quick Scan "
+                "to re-enrol it will queue it for re-hashing."
+            )
+        else:
+            error_line = f"\nErrors: {errors}" if errors else ""
+            self.setLabelText(
+                f"✓ Heavy Scan complete.\n"
+                f"ROMs hashed: {total_hashed}\n"
+                f"New DAT matches: {total_matched}"
+                f"{error_line}"
+            )
         self.setCancelButtonText("Close")
 
     def on_failed(self, message: str) -> None:
