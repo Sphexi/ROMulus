@@ -428,6 +428,14 @@ class TestScanWorker:
         worker.finished.connect(loop.quit)
         worker.start()
         loop.exec()
+        # Wait for the underlying QThread to fully terminate before the
+        # Python wrapper goes out of scope at function exit. ``loop.exec``
+        # returns as soon as the queued ``finished`` slot fires on the main
+        # thread, but the C++ thread can still be unwinding from run() at
+        # that point. GC'ing the QThread mid-unwind segfaults Qt on Linux
+        # CI (Windows was forgiving); ``wait`` blocks until run() truly
+        # returns. 5s is the upper bound for a 2-file SNES library.
+        assert worker.wait(5000), "ScanWorker did not finish within 5s"
 
         assert not failed
         assert finished, "finished_ok was not emitted"
@@ -455,6 +463,7 @@ class TestScanWorker:
         worker.finished.connect(loop.quit)
         worker.start()
         loop.exec()
+        assert worker.wait(5000), "ScanWorker did not finish within 5s"
 
         # The scanner walks an empty/missing tree without raising; expect a clean
         # finish with zero files rather than a failure here. Either way, no crash.
@@ -485,6 +494,7 @@ class TestEnrichWorker:
         worker.finished.connect(loop.quit)
         worker.start()
         loop.exec()
+        assert worker.wait(5000), "EnrichWorker did not finish within 5s"
 
         assert not failed
         assert finished
@@ -511,6 +521,7 @@ class TestEnrichWorker:
         worker.finished.connect(loop.quit)
         worker.start()
         loop.exec()
+        assert worker.wait(5000), "EnrichWorker did not finish within 5s"
 
         assert failed or finished  # must not crash silently
 
