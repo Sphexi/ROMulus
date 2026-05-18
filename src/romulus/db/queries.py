@@ -224,18 +224,41 @@ def mark_missing_under_root(
     Entries" action.
     """
     ids = excluded_rom_ids or set()
-    if ids:
-        placeholders = ",".join("?" for _ in ids)
-        sql = (
-            f"UPDATE roms SET missing = 1 "
-            f"WHERE missing = 0 AND id NOT IN ({placeholders})"
+    if not ids:
+        cursor = conn.execute(
+            "UPDATE roms SET missing = 1 WHERE missing = 0"
         )
-        params: tuple = tuple(ids)
-    else:
-        sql = "UPDATE roms SET missing = 1 WHERE missing = 0"
-        params = ()
-    cursor = conn.execute(sql, params)
-    return cursor.rowcount
+        return cursor.rowcount
+
+    # Stash the visited-id set in a temp table and let SQLite do the
+    # set difference. The previous ``NOT IN (?, ?, ?, ...)`` form bound
+    # one parameter per visited ROM, which trips
+    # ``OperationalError: too many SQL variables`` once the library
+    # crosses ``SQLITE_MAX_VARIABLE_NUMBER`` (999 on the stock Windows
+    # Python build, 32766 on newer ones). ``executemany`` binds at
+    # most one variable per statement so we can feed any size set.
+    #
+    # The temp table is named with a stable identifier so concurrent
+    # use within a single connection still funnels through here; it's
+    # dropped at the end of the call rather than relying on connection
+    # close so a long-lived app session can't accumulate temp objects.
+    conn.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _visited_rom_ids "
+        "(id INTEGER PRIMARY KEY)"
+    )
+    conn.execute("DELETE FROM _visited_rom_ids")
+    conn.executemany(
+        "INSERT INTO _visited_rom_ids (id) VALUES (?)",
+        ((rom_id,) for rom_id in ids),
+    )
+    cursor = conn.execute(
+        "UPDATE roms SET missing = 1 "
+        "WHERE missing = 0 "
+        "AND id NOT IN (SELECT id FROM _visited_rom_ids)"
+    )
+    rowcount = cursor.rowcount
+    conn.execute("DROP TABLE _visited_rom_ids")
+    return rowcount
 
 
 def count_missing_roms(conn: sqlite3.Connection) -> int:

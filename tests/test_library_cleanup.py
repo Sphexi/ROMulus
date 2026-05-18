@@ -448,3 +448,90 @@ class TestLoggingPrecedence:
         log_file = tmp_path / "test.log"
         setup_logging(log_file)
         assert logging.getLogger().level == logging.INFO
+
+
+# ---------------------------------------------------------------------------
+# mark_missing_under_root — temp-table strategy avoids SQLite param limit
+# ---------------------------------------------------------------------------
+
+
+class TestMarkMissingScalesPastVariableLimit:
+    """Quick Scan against >999 ROMs used to trip ``too many SQL variables``.
+
+    The stock Windows Python build pins ``SQLITE_MAX_VARIABLE_NUMBER`` at
+    999. The naive ``id NOT IN (?, ?, ?, ...)`` binding allocated one
+    placeholder per visited ROM and crashed once libraries crossed that
+    threshold. The fixed implementation streams the IDs through a temp
+    table so the variable count is bounded by the executemany call.
+    """
+
+    def test_visiting_two_thousand_roms_does_not_raise(
+        self, seeded_db
+    ) -> None:
+        """Push 2000 rows in, mark them all as visited, no exception."""
+        import time
+
+        # Seed 2000 ROMs spanning two systems so we cross the 999 limit
+        # comfortably AND have rows on multiple system ids to make sure
+        # the temp-table strategy doesn't accidentally narrow by system.
+        rom_ids: list[int] = []
+        for i in range(2000):
+            system_id = "snes" if i % 2 == 0 else "gb"
+            rom_id = q.upsert_rom(
+                seeded_db,
+                {
+                    "path": f"/lib/{system_id}/rom_{i:05d}.bin",
+                    "filename": f"rom_{i:05d}.bin",
+                    "extension": ".bin",
+                    "size_bytes": 1024,
+                    "mtime": time.time(),
+                    "system_id": system_id,
+                },
+            )
+            rom_ids.append(rom_id)
+        seeded_db.commit()
+
+        # Visit every single ROM — nothing should be marked missing.
+        flagged = q.mark_missing_under_root(
+            seeded_db, library_root="/lib", excluded_rom_ids=set(rom_ids)
+        )
+        assert flagged == 0
+        assert q.count_missing_roms(seeded_db) == 0
+
+    def test_excluded_set_correctly_tombstones_others(
+        self, seeded_db
+    ) -> None:
+        """Half-visited sweep must mark only the unvisited half as missing."""
+        import time
+
+        rom_ids: list[int] = []
+        for i in range(1500):
+            rom_id = q.upsert_rom(
+                seeded_db,
+                {
+                    "path": f"/lib/snes/rom_{i:05d}.bin",
+                    "filename": f"rom_{i:05d}.bin",
+                    "extension": ".bin",
+                    "size_bytes": 1024,
+                    "mtime": time.time(),
+                    "system_id": "snes",
+                },
+            )
+            rom_ids.append(rom_id)
+        seeded_db.commit()
+
+        visited = set(rom_ids[:1000])
+        flagged = q.mark_missing_under_root(
+            seeded_db, library_root="/lib", excluded_rom_ids=visited
+        )
+        assert flagged == 500
+        assert q.count_missing_roms(seeded_db) == 500
+        # The temp table must be dropped at the end of the call so a
+        # second invocation can recreate it cleanly.
+        flagged_again = q.mark_missing_under_root(
+            seeded_db, library_root="/lib", excluded_rom_ids=visited
+        )
+        # Second pass: the previously-visited 1000 are still missing=0,
+        # the previously-flagged 500 are missing=1 so they're filtered
+        # out by the ``WHERE missing = 0`` guard.
+        assert flagged_again == 0
