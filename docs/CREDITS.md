@@ -44,6 +44,7 @@ DATs → Add folder.
 | **TOSEC** | Optional supplementary DATs for older / less-mainstream platforms | <https://www.tosecdev.org/> |
 | **Logiqx XML DAT format** | The DAT schema ROMulus parses | <https://www.logiqx.com/> |
 | **GameDB** (Niema Moshiri) | Per-console JSON snapshots used as the offline first-pass enrichment source (publisher, release date, canonical release name, CRC32). Bundled under `data/gamedb/` in dev clones and `gamedb/` in portable releases. | <https://github.com/niemasd/GameDB> |
+| **libretro-database** (Libretro / RetroArch project) | clrmamepro DAT files providing per-CRC32 genre, developer, publisher, release year, max players, and ESRB rating across ~50 systems. Bundled under `data/libretro-metadat/<dimension>/` in dev clones and `libretro-metadat/` in portable releases. | <https://github.com/libretro/libretro-database> |
 
 DAT files describe ROM dumps by SHA-1 / CRC32 hash; ROMulus uses them for
 canonical naming and Heavy Scan identity matching. The DAT files

@@ -24,6 +24,7 @@ from romulus.metadata import (
     hasheous,
     launchbox,
     libretro,
+    libretro_metadat,
     screenscraper,
     thegamesdb,
 )
@@ -163,6 +164,46 @@ def _get_crc32_for_game(conn: sqlite3.Connection, game_id: int) -> str | None:
     return row[0] if row else None
 
 
+def _try_libretro_metadat(
+    conn: sqlite3.Connection,
+    game_id: int,
+    system_id: str | None,
+    crc32: str | None,
+) -> bool:
+    """CRC32-keyed libretro-database lookup. Returns True on a useful hit.
+
+    Libretro carries per-dimension metadata (genre, developer, publisher,
+    releaseyear, players, rating) for ~50 systems. Coverage is broader
+    per-field than GameDB so this fires *first* in the enrichment
+    chain — if a CRC matches and at least one user-facing dimension
+    populates, we commit and stop. Identifier-only hits never happen
+    here because the lookup is *per-dimension*: if no dimension carried
+    the CRC, the merged dict is empty and we fall through.
+    """
+    if not system_id or not crc32:
+        return False
+    index = libretro_metadat.get_index_for_system(system_id)
+    if index is None:
+        return False
+    entry = libretro_metadat.lookup_by_crc32(crc32, index)
+    if entry is None:
+        return False
+    payload = libretro_metadat.entry_to_metadata(entry)
+    # Defensive: empty payload (e.g. an only-franchise hit, which we
+    # don't surface in the UI yet) should fall through to the next
+    # provider rather than locking the game out of further enrichment.
+    if not any(
+        payload.get(k)
+        for k in (
+            "genre", "developer", "publisher",
+            "release_year", "players", "rating",
+        )
+    ):
+        return False
+    queries.upsert_metadata(conn, game_id, payload, source="libretro_metadat")
+    return True
+
+
 def _try_gamedb(
     conn: sqlite3.Connection,
     game_id: int,
@@ -217,15 +258,22 @@ def _fetch_metadata_for_game(
 
     Order is deliberate:
 
-    0. GameDB — bundled JSON, offline, free; CRC32 + fuzzy title match.
-       Tried *first* so we never burn API quota on games that the
-       offline source can answer.
-    1. Hasheous — hash-keyed lookup, free, no quota; precise match.
-    2. LaunchBox — offline XML, no network at all; precise when present.
-    3. ScreenScraper — hash-keyed but requires a (free) user account.
-    4. TheGamesDB — name+platform, monthly quota — *last* so we only
+    0. libretro-database (metadat) — bundled clrmamepro DATs, offline.
+       CRC32-keyed; carries genre, developer, publisher, release year,
+       players, rating across ~50 systems. Tried *first* because per-
+       field coverage is the richest of the local sources.
+    1. GameDB — bundled JSON, offline, free; CRC32 + fuzzy title.
+       Covers consoles libretro doesn't (PSX, GC, Wii). May supply
+       publisher / release_date for the systems where libretro missed.
+    2. Hasheous — hash-keyed lookup, free, no quota; precise match.
+    3. LaunchBox — offline XML, no network at all; precise when present.
+    4. ScreenScraper — hash-keyed but requires a (free) user account.
+    5. TheGamesDB — name+platform, monthly quota — *last* so we only
        spend quota on games every cheaper source missed.
     """
+    if _try_libretro_metadat(conn, game_id, system_id, crc32):
+        return True
+
     if _try_gamedb(conn, game_id, title, system_id, crc32, canonical_name):
         return True
 
@@ -484,6 +532,7 @@ __all__ = [
     "hasheous",
     "launchbox",
     "libretro",
+    "libretro_metadat",
     "screenscraper",
     "thegamesdb",
 ]

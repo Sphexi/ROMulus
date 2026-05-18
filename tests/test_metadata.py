@@ -20,6 +20,7 @@ from romulus.metadata import (
     hasheous,
     launchbox,
     libretro,
+    libretro_metadat,
     screenscraper,
     thegamesdb,
 )
@@ -1534,6 +1535,18 @@ class TestGameDBLoadIndex:
 
 
 class TestGameDBEnrichmentChain:
+    """Tests asserting GameDB behaves correctly when libretro doesn't match.
+
+    Each test patches ``libretro_metadat.get_index_for_system`` to return
+    ``None`` so the chain falls through to GameDB unambiguously. Real
+    libretro-database bundled files would otherwise win for many CRC32s.
+    """
+
+    def _disable_libretro(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            libretro_metadat, "get_index_for_system", lambda _sid: None
+        )
+
     def test_gamedb_fires_first_when_crc32_matches(
         self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1542,6 +1555,7 @@ class TestGameDBEnrichmentChain:
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
         gamedb.reset_cache_for_tests()
+        self._disable_libretro(monkeypatch)
 
         game_id = _seed_verified_game(
             seeded_db, title="Dezaemon 3D", system_id="n64", sha1="a" * 40
@@ -1603,6 +1617,7 @@ class TestGameDBEnrichmentChain:
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
         gamedb.reset_cache_for_tests()
+        self._disable_libretro(monkeypatch)
 
         _seed_verified_game(
             seeded_db, title="Super Mario 64", system_id="n64", sha1="b" * 40
@@ -1647,6 +1662,7 @@ class TestGameDBEnrichmentChain:
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
         gamedb.reset_cache_for_tests()
+        self._disable_libretro(monkeypatch)
 
         # Force-enrich pathway (include_already_enriched=True equivalent
         # not needed here; we just use a verified game with no CRC).
@@ -1672,3 +1688,307 @@ class TestGameDBEnrichmentChain:
         assert meta is not None
         assert meta["source"] == "gamedb"
         assert meta["release_year"] == 1998
+
+
+# ---------------------------------------------------------------------------
+# libretro-database metadat client
+# ---------------------------------------------------------------------------
+
+
+_LIBRETRO_GENRE_DAT = """\
+clrmamepro (
+\tname "Test System"
+\tdescription "Test System"
+)
+
+game (
+\tcomment "Game One (USA)"
+\tgenre "Shooter"
+\trom ( crc 56C83C16 )
+)
+
+game (
+\tcomment "Game Two (Japan)"
+\tgenre "Sports"
+\trom ( crc C8CDB4ED )
+)
+"""
+
+_LIBRETRO_DEVELOPER_DAT = """\
+clrmamepro (
+\tname "Test System"
+)
+
+game (
+\tcomment "Game One (USA)"
+\tdeveloper "Studio X"
+\trom ( crc 56C83C16 )
+)
+"""
+
+_LIBRETRO_PUBLISHER_DAT = """\
+clrmamepro (
+\tname "Test System"
+)
+
+game (
+\tcomment "Game One (USA)"
+\tpublisher "Big Pub"
+\trom ( crc 56C83C16 )
+)
+"""
+
+_LIBRETRO_RELEASEYEAR_DAT = """\
+clrmamepro (
+\tname "Test System"
+)
+
+game (
+\tcomment "Game One (USA)"
+\treleaseyear "2003"
+\trom ( crc 56C83C16 )
+)
+"""
+
+_LIBRETRO_MAXUSERS_DAT = """\
+clrmamepro (
+\tname "Test System"
+)
+
+game (
+\tcomment "Game One (USA)"
+\tmaxusers "2"
+\trom ( crc 56C83C16 )
+)
+"""
+
+
+def _stage_libretro_metadat(root: Path, libretro_name: str) -> None:
+    """Write fixture dat files under root/data/libretro-metadat/<dim>/."""
+    base = root / "data" / "libretro-metadat"
+    fixtures = {
+        "genre": _LIBRETRO_GENRE_DAT,
+        "developer": _LIBRETRO_DEVELOPER_DAT,
+        "publisher": _LIBRETRO_PUBLISHER_DAT,
+        "releaseyear": _LIBRETRO_RELEASEYEAR_DAT,
+        "maxusers": _LIBRETRO_MAXUSERS_DAT,
+    }
+    for dim, content in fixtures.items():
+        (base / dim).mkdir(parents=True, exist_ok=True)
+        (base / dim / f"{libretro_name}.dat").write_text(
+            content, encoding="utf-8"
+        )
+
+
+class TestLibretroMetadatParser:
+    def test_parse_genre_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "g.dat"
+        path.write_text(_LIBRETRO_GENRE_DAT, encoding="utf-8")
+        table = libretro_metadat.parse_metadat_file(path, "genre")
+        assert table == {
+            "56c83c16": "Shooter",
+            "c8cdb4ed": "Sports",
+        }
+
+    def test_parse_ignores_blocks_without_crc(self, tmp_path: Path) -> None:
+        bad = "game (\n\tcomment \"No CRC\"\n\tgenre \"Action\"\n)\n"
+        path = tmp_path / "g.dat"
+        path.write_text(bad, encoding="utf-8")
+        assert libretro_metadat.parse_metadat_file(path, "genre") == {}
+
+    def test_parse_ignores_blocks_without_dimension(self, tmp_path: Path) -> None:
+        bad = (
+            "game (\n\tcomment \"Has CRC but no genre\"\n"
+            "\trom ( crc 12345678 )\n)\n"
+        )
+        path = tmp_path / "g.dat"
+        path.write_text(bad, encoding="utf-8")
+        assert libretro_metadat.parse_metadat_file(path, "genre") == {}
+
+
+class TestLibretroMetadatIndex:
+    def test_lookup_merges_across_dimensions(self) -> None:
+        idx = libretro_metadat.LibretroMetadatIndex({
+            "genre": {"56c83c16": "Shooter"},
+            "developer": {"56c83c16": "Studio X"},
+            "releaseyear": {"56c83c16": "2003"},
+        })
+        merged = idx.lookup("56c83c16")
+        assert merged == {
+            "genre": "Shooter",
+            "developer": "Studio X",
+            "releaseyear": "2003",
+        }
+
+    def test_lookup_returns_empty_for_unknown_crc(self) -> None:
+        idx = libretro_metadat.LibretroMetadatIndex({
+            "genre": {"56c83c16": "Shooter"},
+        })
+        assert idx.lookup("deadbeef") == {}
+
+    def test_entry_to_metadata_maps_dimensions_to_payload_keys(self) -> None:
+        entry = {
+            "genre": "Shooter",
+            "developer": "Studio X",
+            "publisher": "Big Pub",
+            "releaseyear": "2003",
+            "maxusers": "2",
+            "esrb": "T",
+            # Stored but not currently surfaced in MetadataPayload.
+            "franchise": "Big Franchise",
+        }
+        payload = libretro_metadat.entry_to_metadata(entry)
+        assert payload["genre"] == "Shooter"
+        assert payload["developer"] == "Studio X"
+        assert payload["publisher"] == "Big Pub"
+        assert payload["release_year"] == 2003
+        assert payload["players"] == "2"
+        assert payload["rating"] == "T"
+        # franchise isn't mapped to a payload key today.
+        assert "franchise" not in payload
+
+
+class TestLibretroMetadatLoad:
+    def test_load_via_resolve_for_gba(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stage fixture files + patch install dir so the resolver finds them."""
+        libretro_metadat.reset_cache_for_tests()
+        _stage_libretro_metadat(tmp_path, "Nintendo - Game Boy Advance")
+        monkeypatch.setattr(
+            "romulus.app._resolve_install_dir", lambda: tmp_path
+        )
+        idx = libretro_metadat.get_index_for_system("gba")
+        assert idx is not None
+        assert sorted(idx.by_dim) == [
+            "developer", "genre", "maxusers", "publisher", "releaseyear"
+        ]
+        hit = libretro_metadat.lookup_by_crc32("56C83C16", idx)
+        assert hit is not None
+        assert hit["genre"] == "Shooter"
+        assert hit["developer"] == "Studio X"
+        assert hit["releaseyear"] == "2003"
+
+    def test_no_files_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        libretro_metadat.reset_cache_for_tests()
+        monkeypatch.setattr(
+            "romulus.app._resolve_install_dir", lambda: tmp_path
+        )
+        assert libretro_metadat.get_index_for_system("gba") is None
+
+
+class TestLibretroMetadatEnrichmentChain:
+    def test_libretro_fires_before_gamedb(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When libretro has a match, GameDB / Hasheous / TGDB never get called."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        libretro_metadat.reset_cache_for_tests()
+        gamedb.reset_cache_for_tests()
+
+        # Stage libretro fixture and point the resolver at it.
+        _stage_libretro_metadat(tmp_path, "Nintendo - Game Boy Advance")
+        monkeypatch.setattr(
+            "romulus.app._resolve_install_dir", lambda: tmp_path
+        )
+
+        # Seed a GBA game with CRC32 matching the fixture entry.
+        game_id = _seed_verified_game(
+            seeded_db, title="Game One", system_id="gba", sha1="a" * 40
+        )
+        q.upsert_hash(
+            seeded_db, 1, crc32="56c83c16", sha1="a" * 40, md5=None
+        )
+        seeded_db.commit()
+
+        # Track non-libretro provider hits.
+        gamedb_hits = []
+        monkeypatch.setattr(
+            gamedb,
+            "get_index_for_system",
+            lambda sid: gamedb_hits.append(sid) or None,
+        )
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+
+        assert stats["metadata_added"] == 1
+        meta = q.get_metadata(seeded_db, game_id)
+        assert meta is not None
+        assert meta["source"] == "libretro_metadat"
+        assert meta["genre"] == "Shooter"
+        assert meta["developer"] == "Studio X"
+        assert meta["publisher"] == "Big Pub"
+        assert meta["release_year"] == 2003
+        assert meta["players"] == "2"
+        # GameDB resolver was never asked because libretro committed first.
+        assert gamedb_hits == []
+
+    def test_libretro_miss_falls_through_to_gamedb(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty libretro payload (e.g. franchise-only hit) must not lock the chain."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        libretro_metadat.reset_cache_for_tests()
+        gamedb.reset_cache_for_tests()
+
+        # Stage ONLY a franchise file (not mapped to any MetadataPayload key)
+        # so libretro returns a non-empty raw entry but an empty payload.
+        franchise_dir = tmp_path / "data" / "libretro-metadat" / "franchise"
+        franchise_dir.mkdir(parents=True)
+        (franchise_dir / "Nintendo - Game Boy Advance.dat").write_text(
+            'game (\n\trom ( crc 56C83C16 )\n\tfranchise "Big Franchise"\n)\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "romulus.app._resolve_install_dir", lambda: tmp_path
+        )
+
+        game_id = _seed_verified_game(
+            seeded_db, title="Game", system_id="gba", sha1="b" * 40
+        )
+        q.upsert_hash(
+            seeded_db, 1, crc32="56c83c16", sha1="b" * 40, md5=None
+        )
+        seeded_db.commit()
+
+        # GameDB resolver returns a stub index with publisher data.
+        stub_index = gamedb.GameDBIndex([
+            {
+                "crc32": "0x56c83c16",
+                "publisher": "GameDB Pub",
+                "release_date": "2003-01-01",
+                "title": "Game",
+            }
+        ])
+        monkeypatch.setattr(
+            gamedb,
+            "get_index_for_system",
+            lambda sid: stub_index if sid == "gba" else None,
+        )
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+
+        meta = q.get_metadata(seeded_db, game_id)
+        assert meta is not None
+        # Libretro had only franchise (no user-facing payload), so the
+        # chain progressed to GameDB which had publisher data.
+        assert meta["source"] == "gamedb"
+        assert meta["publisher"] == "GameDB Pub"

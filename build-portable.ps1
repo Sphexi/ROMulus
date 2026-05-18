@@ -11,6 +11,7 @@
 #     romulus.exe
 #     dats/*.dat                        — bundled No-Intro DAT files
 #     gamedb/*.json                     — bundled GameDB metadata files
+#     libretro-metadat/<dim>/*.dat      — bundled libretro-database metadata
 #     profiles/*.yaml                   — destination profiles
 #     systems/*.yaml                    — system registry
 #   dist/romulus-windows-x64.zip        — the shippable artifact
@@ -79,6 +80,19 @@ foreach ($folder in $dataFolders) {
               -Destination $targetPath -ErrorAction SilentlyContinue
     $count = (Get-ChildItem -Path $targetPath -File).Count
     Write-Host "    $($folder.Target)/ — $count file(s)" -ForegroundColor Gray
+}
+
+# libretro-metadat is structured as <dimension>/<libretro_name>.dat, so a
+# flat Copy-Item with a single filter doesn't work — preserve the
+# directory tree instead.
+$libretroSource = Join-Path $PSScriptRoot "data\libretro-metadat"
+$libretroTarget = Join-Path $bundleDir   "libretro-metadat"
+if (Test-Path $libretroSource) {
+    Copy-Item -Path $libretroSource -Destination $libretroTarget -Recurse
+    $count = (Get-ChildItem -Path $libretroTarget -File -Recurse).Count
+    Write-Host "    libretro-metadat/ — $count file(s)" -ForegroundColor Gray
+} else {
+    Write-Host "    skipping data\libretro-metadat (does not exist)" -ForegroundColor Yellow
 }
 
 Write-Host "==> Creating dist/romulus-windows-x64.zip" -ForegroundColor Cyan
