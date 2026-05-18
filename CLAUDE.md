@@ -10,26 +10,35 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
 
 ## Current State (as of v0.3.0 in development)
 
-- **908 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
+- **918 tests passing, 1 skipped** (POSIX-only chmod test on Windows
+  CI; 919 collected total). Ruff clean. CI runs on `windows-latest`.
 - Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich
   Metadata → Find Covers → Organize → Export / Sync.
-- Enrichment is now metadata-only; cover discovery is a separate
-  "Find Covers" workflow with a per-run dialog (local files /
-  online thumbnails / both).
-- Five-source enrichment chain, **local first**: libretro-database
+- Enrichment is metadata-only; cover discovery is a separate "Find
+  Covers" workflow with a per-run dialog (local files / online
+  thumbnails / both).
+- Six-source enrichment chain, **local first**: libretro-database
   (bundled clrmamepro DATs) → GameDB (bundled JSON) → Hasheous (remote)
   → LaunchBox XML (local, user-supplied) → ScreenScraper (remote, opt-in)
   → TheGamesDB (remote, monthly quota). User toggles online vs offline
   per batch.
-- Single library at a time model — switching library_path wipes prior rows; tombstone-missing rather than delete-missing for un-tombstone-on-reconnect.
+- Single library at a time — switching library_path wipes prior rows;
+  tombstone-missing rather than delete-missing for un-tombstone-on-reconnect.
+- Quick Scan can be scoped per-system via sidebar right-click;
+  post-walk DB phases surface progress and disable Cancel so a
+  mid-rebuild cancel can't leave the DB inconsistent with disk.
+- Game-table right-click adds **Reveal in Explorer** and **Delete this
+  ROM (permanent)…** actions, bound to rom_id (not game_id).
 - 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging
   + Heavy Scan UI + real DATs; early v0.3.0 added destination sync,
   library cleanup, single-binary build, DEBUG breadcrumbs; later v0.3.0
   added bundled offline metadata sources (GameDB + libretro-database),
   TheGamesDB, the metadata/covers workflow split, the redesigned
   detail panel with per-platform logos, the enrich-options dialog, and
-  a stack of UX polish + bug fixes.
-- Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db` and rescan if you have a pre-v0.3.0 DB lying around.
+  UX polish. Final-wave v0.3.0 shipped scoped Quick Scan + post-walk
+  progress + per-game Reveal/Delete + the CI Windows switch.
+- Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db`
+  and rescan if you have a pre-v0.3.0 DB lying around.
 
 See `CHANGELOG.md` for the full per-release breakdown.
 
@@ -49,12 +58,15 @@ Claude Code MUST follow the tasks in the current session file (when one applies)
 
 | Document | Purpose | When to Read |
 |---|---|---|
+| `docs/architecture.md` | Architecture diagram, design rules, schema overview, config reference, packaging, known limitations | When orienting on the system as a whole or making cross-cutting changes |
 | `docs/sessions/NN-slug.md` | Per-session task list, context, acceptance criteria (sessions 00–11 are done) | When the user resumes a numbered session |
-| `docs/TECHNICAL_PLAN.md` | Full API details, schema, implementation pseudocode | On-demand for edge cases not covered elsewhere |
+| `docs/TECHNICAL_PLAN.md` | Full API details, schema column-by-column, implementation pseudocode | On-demand for edge cases not covered in architecture.md |
 | `docs/sync-design.md` | Destination sync engine spec (modes, identity matcher, dest_inventory, sync_plans) | When touching `core/sync.py` or `core/dest_inventory.py` |
+| `docs/import-design.md` | Import ROMs feature design (future) | When implementing the staging-folder → library importer |
 | `docs/ROM-FORMATS-REFERENCE.md` | Extension tables, naming conventions, folder aliases | When implementing scanner or system registry |
 | `docs/ROM-DEDUP-METHODOLOGY.md` | Three-layer identification pipeline methodology | When implementing identifier pipeline |
 | `docs/ROM-LIBRARY-ANALYSIS-REPORT.md` | Real-world library stats, test validation data | When writing tests or validating assumptions |
+| `docs/forking-with-claude-code.md` | How to fork ROMulus and continue building it with Claude Code | When mentoring a fork-and-extend workflow |
 | `CHANGELOG.md` | Per-release feature + fix history with breaking-change callouts | When orienting on what shipped when |
 
 Do not load reference documents into context every turn — read them when needed.

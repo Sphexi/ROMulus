@@ -9,9 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 The v0.3.0 cycle reshapes the project for actual real-world use. Major
 themes: a destination sync engine, single-library cleanup semantics, a
-single-binary portable Windows build, a debug-logging overhaul, and —
-in the later wave — bundled offline metadata sources, a metadata /
-cover-art workflow split, and a redesigned detail panel.
+single-binary portable Windows build, a debug-logging overhaul, bundled
+offline metadata sources, a metadata / cover-art workflow split, a
+redesigned detail panel, and a final pass of Quick-Scan UX fixes
+(per-system scope, post-walk progress with safe-cancel, per-game
+Explorer / Delete actions).
 
 ### Added
 
@@ -206,6 +208,79 @@ cover-art workflow split, and a redesigned detail panel.
   to live.
 - `PyInstaller` `romulus.spec` bundles the artwork directory.
 
+**Quick Scan UX (final-wave v0.3.0):**
+- **Scoped Quick Scan.** Sidebar right-click → "Quick Scan: <system>"
+  now actually scopes to that system end-to-end. `scan_library` accepts
+  `scope_system_id`; the walk drops files whose resolved system_id
+  doesn't match (counted as `files_skipped`); `mark_missing_under_root`
+  accepts a `scope_system_id` kwarg and adds it to the WHERE clause so
+  rows from other systems aren't tombstoned by a scoped rescan;
+  `group_into_games` only fires for the scope system; the unlinked-roms
+  self-heal is skipped in scoped mode (could touch other systems'
+  rows). Progress dialog title shows `"Quick Scan: <system>"` when
+  scoped.
+- **Post-walk progress with safe-cancel.** The end of a Quick Scan
+  used to be a 1–5 minute black box: file walk finished, dialog froze,
+  Cancel button stayed enabled but clicking it did nothing. The scanner
+  now emits explicit progress events at each post-walk phase boundary
+  — `"Marking missing entries…"`, `"Linking ROMs to games: <system>…"`,
+  `"Finalising scan history…"`. `ScanProgressDialog.on_progress`
+  detects the Unicode-ellipsis suffix and calls `setCancelButton(None)`;
+  the worker sets a `_post_walk` flag on the same condition and stops
+  honouring `_check_cancel`. Mid-rebuild cancel would leave the DB
+  inconsistent with disk, so post-walk phases are deliberately
+  uncancellable. (Initial design used a dedicated `walk_finished` Qt
+  signal but that triggered a C-level segfault on Linux PySide6;
+  detection lives entirely in the dialog now.)
+- **Per-game Reveal in Explorer + Delete actions.** Game-table
+  right-click gains two file-system actions, bound to the row's
+  rom_id (not game_id — so multi-disc games don't drag siblings into
+  the action target):
+  - **Reveal in Explorer** — opens the OS file manager with the ROM
+    highlighted. Windows uses `ShellExecuteW` via ctypes with the
+    canonical `/select,"<native-path>"` parameter form
+    (`subprocess.Popen(['explorer', '/select,', path])` quotes the
+    combined token and silently opens Documents instead). Non-Windows
+    falls back to `QDesktopServices.openUrl` on the parent folder.
+  - **Delete this ROM (permanent)…** — confirmation dialog with
+    explicit path display before removing the file from disk and
+    tombstoning the row.
+- **Progress dialog widths pinned.** All five progress dialogs (Scan,
+  Heavy Scan, Enrich, Find Covers, Destination Scan) now route through
+  a shared `_progress_layout.apply_progress_dialog_layout` helper so
+  long status labels don't make the dialog jitter mid-run.
+- **`mark_missing_under_root` skips the temp-table dance for small
+  visited sets.** The temp-table path scales past the 999 SQL-variable
+  limit but adds overhead the common case doesn't need; small scopes
+  use a regular `NOT IN (?, ?, ...)` template.
+
+**Quick Scan tests (final-wave v0.3.0):**
+- `TestScopedQuickScan` — enrolled set is system-restricted; no
+  cross-system tombstoning; in-scope deletions still tombstone
+  correctly.
+- `TestScannerPostWalkProgressMessages` — verifies the three phase
+  labels reach the progress callback.
+- `test_worker_emits_progress_and_finishes` was modified to join the
+  QThread before test exit to dodge a Linux CI segfault.
+
+**CI runner switched to `windows-latest` (final-wave v0.3.0):**
+- ROMulus is a Windows-first desktop app; running CI on the same OS
+  we ship for means lint + tests exercise the same Qt/SQLite/PySide6
+  stack end users will run.
+- Also sidesteps a flaky Linux + PySide6 + sqlite3 segfault in
+  `test_worker_emits_progress_and_finishes` that couldn't be pinned to
+  a specific Python-level cause (deepest visible frame was inside the
+  C-level `conn.close()` of the worker thread).
+- The POSIX-only chmod test (`test_get_connection_restricts_db_file_permissions`)
+  is skipped on Windows because NTFS ACLs are inherited from the parent
+  directory.
+
+**Import ROMs design captured (final-wave v0.3.0):**
+- `docs/import-design.md` — design notes for a future staging-folder
+  → library importer with conflict resolution. Not implemented yet;
+  captured so the next session has the requirements + an obvious
+  implementation path instead of re-deriving them.
+
 **UX polish (later-wave v0.3.0):**
 - **Selection preserved across `refresh_all`.** Every worker-finished
   signal funnels through `refresh_all`; model resets in
@@ -332,7 +407,8 @@ cover-art workflow split, and a redesigned detail panel.
 
 ### Test suite
 
-**908 tests passing, 1 skipped** (POSIX-only chmod test). Ruff clean.
+**918 tests passing, 1 skipped** (POSIX-only chmod test on Windows CI;
+runs on POSIX checkouts). 919 collected total. Ruff clean.
 Coverage expanded to include:
 - Sync engine: all five modes, identity matching tiers 1–4,
   region-distinct match, conflict policies, atomic delete via
@@ -360,6 +436,10 @@ Coverage expanded to include:
 - Logging precedence (env var vs Settings vs default).
 - Packaging: install-dir resolution, three-tier profile loading,
   system YAML round-trip, ensure_user_editable_files.
+- Scoped Quick Scan (system-restricted enrolment, cross-system
+  tombstone guard, in-scope deletion tombstone), post-walk progress
+  message stream, per-game Reveal/Delete actions, and the temp-table
+  scaling fast-path in `mark_missing_under_root`.
 
 ---
 

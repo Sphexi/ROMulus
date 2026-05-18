@@ -200,3 +200,4 @@ logs/*.log.*
 # scripts/extract_system_logos.py. The PNGs are checked in under
 # src/romulus/ui/artwork/systems/; the source zips are not.
 v2.1_*.zip
+.claude/settings.local.json

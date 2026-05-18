@@ -29,24 +29,78 @@
 
 ## Current State
 
-**As of v0.3.0 (in development; last reviewed 2026-05-17):**
+**As of v0.3.0 (in development; last reviewed 2026-05-18):**
 
-- **838 tests passing, 1 skipped.** Ruff clean.
-- All 11 numbered build sessions (00–11) are complete. v0.1.0 shipped the full Quick/Heavy/Enrich/Organize/Export pipeline. v0.2.0 added portable Windows packaging + Heavy Scan UI + real bundled DATs. v0.3.0 (in development) adds destination sync, library cleanup, single-binary build, and a debug-logging overhaul.
-- Subsequent work after Session 11 is committed directly via `feat(scope):` / `fix(scope):` / `refactor(scope):` style commits without a numbered session file.
+- **918 tests passing, 1 skipped** (919 collected total; the POSIX-only
+  chmod test is skipped on the `windows-latest` CI runner). Ruff clean.
+- **CI runs on `windows-latest`.** ROMulus is a Windows-first desktop
+  app; running CI on the same OS we ship for exercises the same
+  Qt/SQLite/PySide6 stack end users will run. Also dodges a Linux
+  PySide6+sqlite3 segfault in `test_worker_emits_progress_and_finishes`.
+- All 11 numbered build sessions (00–11) are complete. v0.1.0 shipped
+  the full Quick/Heavy/Enrich/Organize/Export pipeline. v0.2.0 added
+  portable Windows packaging + Heavy Scan UI + real bundled DATs.
+  v0.3.0 (in development) adds destination sync, library cleanup,
+  single-binary build, a debug-logging overhaul, bundled offline
+  metadata, a metadata/covers workflow split, scoped Quick Scan with
+  post-walk progress, and per-game Reveal/Delete actions.
+- Subsequent work after Session 11 is committed directly via
+  `feat(scope):` / `fix(scope):` / `refactor(scope):` style commits
+  without a numbered session file.
 - See `CHANGELOG.md` for the per-release feature + fix log.
+- For the cross-cutting "how is this built" view, see
+  `docs/architecture.md` — this file is the deeper implementation
+  reference.
 
 **v0.3.0 deltas worth knowing when reading the rest of this doc:**
 
-- **Sync engine** (sections [Destination Sync Engine](#destination-sync-engine) below; full spec `docs/sync-design.md`) — five modes (push merge/mirror/wipe, pull merge, two-way), four-tier identity matcher keyed on `(fuzzy_key, region, system_id)`, `dest_inventory` cache, `sync_plans` persistence, SAVEPOINT-per-action rollback.
-- **Library cleanup** ([section](#library-cleanup-tombstone-missing) below) — `roms.library_root` + `roms.missing` columns; single-library design (switching `library_path` prompts to wipe prior rows); scanner sweep marks any unvisited row missing; **Tools → Clean Missing Entries** drops them with FK cascade.
-- **Single-binary portable build** ([section](#packaging--distribution)) — PyInstaller `--onefile` produces `romulus.exe` containing Python + PySide6 + every transitive DLL. Data folders (`dats/`, `profiles/`, `systems/`) ship as real folders next to the exe in the ZIP.
-- **Logging precedence fixed:** `ROMULUS_LOG_LEVEL` env var beats stored `config.log_level`. DEBUG breadcrumbs added across `dat_parser`, `identifier`, `hasher`, `local_cover_finder`, `exporter`, `organizer`, and every metadata client.
-- **Schema migrations removed.** Pre-v0.3.0 databases are not migrated; wipe `data/romulus.db` and rescan.
-- **Real DATs bundled.** 106 No-Intro DATs covering ~80 systems live in `data/dats/` (dev) and `dats/` (portable build).
-- **Rename: Romulus → ROMulus.** Python package import path `romulus` (lowercase) preserved; only display-name strings changed.
+- **Sync engine** ([Destination Sync Engine](#destination-sync-engine)
+  below; full spec `docs/sync-design.md`) — five modes (push
+  merge/mirror/wipe, pull merge, two-way), four-tier identity matcher
+  keyed on `(fuzzy_key, region, system_id)`, `dest_inventory` cache,
+  `sync_plans` persistence, SAVEPOINT-per-action rollback.
+- **Library cleanup** ([section](#library-cleanup-tombstone-missing)
+  below) — `roms.library_root` + `roms.missing` columns; single-library
+  design (switching `library_path` prompts to wipe prior rows); scanner
+  sweep marks any unvisited row missing; **Tools → Clean Missing
+  Entries** drops them with FK cascade.
+- **Single-binary portable build** ([section](#packaging--distribution))
+  — PyInstaller `--onefile` produces `romulus.exe` containing Python +
+  PySide6 + every transitive DLL. Data folders (`dats/`, `profiles/`,
+  `systems/`, `gamedb/`, `libretro-metadat/`) ship as real folders next
+  to the exe in the ZIP.
+- **Logging precedence fixed:** `ROMULUS_LOG_LEVEL` env var beats
+  stored `config.log_level`. DEBUG breadcrumbs added across
+  `dat_parser`, `identifier`, `hasher`, `local_cover_finder`,
+  `exporter`, `organizer`, and every metadata client.
+- **Schema migrations removed.** Pre-v0.3.0 databases are not
+  migrated; wipe `data/romulus.db` and rescan.
+- **Real DATs bundled.** 106 No-Intro DATs covering ~80 systems in
+  `data/dats/` (dev) and `dats/` (portable build).
+- **Bundled offline metadata** — `data/gamedb/` (42 GameDB JSON
+  snapshots, ~17 MB) and `data/libretro-metadat/` (294 clrmamepro DATs
+  across 7 dimensions, ~20 MB). Both are tried before any network call
+  in the enrichment chain.
+- **Metadata / cover-art workflow split.** `enrich_library` writes to
+  the `metadata` table only. Cover discovery is now driven by
+  `CoverFinderWorker` via `CoverOptionsDialog`. Pre-batch
+  `EnrichOptionsDialog` adds three flags (fuzzy / re-enrich /
+  online-providers).
+- **Detail panel redesign.** Hide-when-empty description, compact
+  key/value `QFormLayout` grid, per-platform console logos in the
+  sidebar + detail panel.
+- **Scoped Quick Scan + post-walk progress + safe-cancel.**
+  `scan_library` accepts `scope_system_id`; sidebar right-click invokes
+  scoped scans. End-of-scan DB phases emit Unicode-ellipsis-suffixed
+  progress labels; the dialog detects them and disables Cancel so the
+  DB can't be left mid-rebuild.
+- **Per-game Reveal in Explorer + Delete actions** on the game-table
+  right-click menu, bound to rom_id (not game_id).
+- **Rename: Romulus → ROMulus.** Python package import path `romulus`
+  (lowercase) preserved; only display-name strings changed.
 
-These deltas don't invalidate the sections that follow — they extend them.
+These deltas don't invalidate the sections that follow — they extend
+them.
 
 ---
 
