@@ -156,23 +156,65 @@ class ScanWorker(_DbWorker):
     this by running in indeterminate mode for scan and determinate mode for
     the others. Standardizing on ``(current, total | None, label)`` is
     tracked as a v0.3.0 follow-up.
+
+    During the post-walk DB phases (missing sweep, game grouping, scan
+    history finalisation) the scanner emits progress events with phase
+    labels — so the user sees "Marking missing entries…" / "Linking
+    ROMs to games: snes…" / "Finalising scan history…" instead of a
+    frozen Cancel button. Cancel itself is disabled once the walk
+    finishes (cancelling mid-rebuild would leave the DB partial) via
+    the :pyattr:`walk_finished` signal.
+
+    ``scope_system_id`` restricts the scan to one platform — see
+    :func:`romulus.core.scanner.scan_library`. Wired to the sidebar
+    right-click "Quick Scan <system>" action.
     """
 
     progress = Signal(int, str)
+    walk_finished = Signal()
     finished_ok = Signal(int, int, int, int, list)
 
     _operation_name = "Scan"
 
-    def __init__(self, db_path: Path | str, library_path: Path | str) -> None:
+    def __init__(
+        self,
+        db_path: Path | str,
+        library_path: Path | str,
+        *,
+        scope_system_id: str | None = None,
+    ) -> None:
         super().__init__(db_path)
         self._library_path = str(library_path)
+        self._scope_system_id = scope_system_id
+        self._walk_finished_emitted = False
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
         def _progress(count: int, filename: str) -> None:
-            self._check_cancel()
+            # Post-walk phases emit text labels — see scanner.py. The
+            # first such label means the walk is done and the DB
+            # rebuild has started; surface that to the dialog so it
+            # can disable the Cancel button (a mid-rebuild cancel
+            # would leave the DB partial).
+            if (
+                not self._walk_finished_emitted
+                and _looks_like_post_walk_label(filename)
+            ):
+                self._walk_finished_emitted = True
+                self.walk_finished.emit()
+            # Only honour cancel during the file-walk phase. Post-walk
+            # work doesn't have safe abort points; the Cancel button
+            # is disabled visually but if a stray cancel arrived
+            # somehow we just ignore it.
+            if not self._walk_finished_emitted:
+                self._check_cancel()
             self.progress.emit(count, filename)
 
-        result = scan_library(conn, self._library_path, _progress)
+        result = scan_library(
+            conn,
+            self._library_path,
+            _progress,
+            scope_system_id=self._scope_system_id,
+        )
         self.finished_ok.emit(
             result.scan_id,
             result.files_found,
@@ -180,6 +222,17 @@ class ScanWorker(_DbWorker):
             result.files_skipped,
             sorted(result.systems_seen),
         )
+
+
+# Heuristic: post-walk phase labels are the explicit messages the
+# scanner emits AFTER the file walk completes (see scanner.py:
+# "Marking missing entries…", "Linking ROMs to games: …",
+# "Finalising scan history…"). The trailing ellipsis "…" is the
+# distinguishing marker — actual filenames may or may not contain it
+# but it's never both leading-ASCII AND ends with the literal Unicode
+# ellipsis in normal usage. Cheap, no false positives in practice.
+def _looks_like_post_walk_label(text: str) -> bool:
+    return text.endswith("…")
 
 
 class EnrichWorker(_DbWorker):

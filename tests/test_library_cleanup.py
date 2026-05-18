@@ -763,3 +763,123 @@ class TestGetRomPath:
 
     def test_returns_none_for_unknown_id(self, seeded_db) -> None:
         assert q.get_rom_path(seeded_db, 999_999) is None
+
+
+# ---------------------------------------------------------------------------
+# Scoped scan — sidebar right-click "Quick Scan <system>"
+# ---------------------------------------------------------------------------
+
+
+class TestScopedQuickScan:
+    """``scan_library(scope_system_id=...)`` walks the same library but only
+    enrols / tombstones / groups within the chosen system. Other systems'
+    rows must be left strictly alone.
+    """
+
+    def test_scope_only_enrols_matching_system(
+        self, seeded_db, tmp_path
+    ) -> None:
+        """A scoped scan must not insert roms for other systems."""
+        _make_rom(tmp_path, "snes", "Mario.sfc")
+        _make_rom(tmp_path, "megadrive", "Sonic.md")
+
+        scan_library(seeded_db, tmp_path, scope_system_id="snes")
+
+        rows = seeded_db.execute(
+            "SELECT filename, system_id FROM roms"
+        ).fetchall()
+        assert {r["system_id"] for r in rows} == {"snes"}
+        assert {r["filename"] for r in rows} == {"Mario.sfc"}
+
+    def test_scope_does_not_tombstone_other_systems(
+        self, seeded_db, tmp_path
+    ) -> None:
+        """A scoped rescan that finds nothing must NOT mark NES roms missing.
+
+        Regression guard: the old library-wide sweep would tombstone
+        every row not visited by the current walk, so a sidebar
+        right-click "Quick Scan: atari7800" rescan against a library
+        with no 7800 ROMs would silently wipe every other system.
+        """
+        import time
+
+        # Seed an NES row directly so it predates the scan we're about
+        # to run; the scoped scan shouldn't touch it.
+        nes_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/nes/Zelda.nes",
+                "filename": "Zelda.nes",
+                "extension": ".nes",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "nes",
+            },
+        )
+        seeded_db.commit()
+
+        # Empty library on disk under a *different* system scope.
+        scan_library(seeded_db, tmp_path, scope_system_id="atari7800")
+
+        nes_row = seeded_db.execute(
+            "SELECT missing FROM roms WHERE id = ?", (nes_id,)
+        ).fetchone()
+        assert nes_row["missing"] == 0, (
+            "Scoped scan must not tombstone rows outside its scope"
+        )
+
+    def test_scope_tombstones_only_missing_rows_within_scope(
+        self, seeded_db, tmp_path
+    ) -> None:
+        """When a scoped rescan misses a row IN-scope, that row tombstones.
+
+        Two SNES roms exist; one is removed from disk; the scoped scan
+        should tombstone the missing one and leave the present one.
+        """
+        rom1 = _make_rom(tmp_path, "snes", "Present.sfc")
+        rom2 = _make_rom(tmp_path, "snes", "Gone.sfc")
+        scan_library(seeded_db, tmp_path)
+        # Confirm both enrolled.
+        assert seeded_db.execute(
+            "SELECT COUNT(*) FROM roms WHERE missing = 0"
+        ).fetchone()[0] == 2
+
+        rom2.unlink()  # noqa: F841
+        scan_library(seeded_db, tmp_path, scope_system_id="snes")
+
+        present = seeded_db.execute(
+            "SELECT missing FROM roms WHERE filename = ?", ("Present.sfc",)
+        ).fetchone()
+        gone = seeded_db.execute(
+            "SELECT missing FROM roms WHERE filename = ?", ("Gone.sfc",)
+        ).fetchone()
+        assert present["missing"] == 0
+        assert gone["missing"] == 1
+        assert str(rom1)  # silence unused-var lint
+
+
+class TestScannerPostWalkProgressMessages:
+    """The scanner emits progress events at phase transitions so the UI
+    dialog can show ``Marking missing entries…`` / ``Linking ROMs to
+    games…`` / ``Finalising scan history…`` instead of a frozen Cancel
+    button while the post-walk DB work runs.
+    """
+
+    def test_emits_phase_labels_after_walk(
+        self, seeded_db, tmp_path
+    ) -> None:
+        _make_rom(tmp_path, "snes", "Mario.sfc")
+
+        events: list[tuple[int, str]] = []
+        scan_library(
+            seeded_db,
+            tmp_path,
+            progress_callback=lambda c, name: events.append((c, name)),
+        )
+
+        labels = [name for _, name in events]
+        assert "Marking missing entries…" in labels
+        assert any(
+            label.startswith("Linking ROMs to games: ") for label in labels
+        )
+        assert "Finalising scan history…" in labels

@@ -139,10 +139,8 @@ class MainWindow(QMainWindow):
         self.game_table.delete_rom_requested.connect(self._on_delete_rom)
 
         # Scoped sidebar actions — system.
-        # Quick Scan for a system triggers a full library quick scan (path
-        # filtering is not implemented at the scan engine level yet).
         self.sidebar.quick_scan_system_requested.connect(
-            lambda _sid: self._on_quick_scan()
+            lambda sid: self._quick_scan_scoped(scope_system_id=sid)
         )
         self.sidebar.heavy_scan_system_requested.connect(
             lambda sid: self._heavy_scan_scoped(system_id=sid)
@@ -654,6 +652,18 @@ class MainWindow(QMainWindow):
         self._sync_worker = None
 
     def _on_quick_scan(self) -> None:
+        """Toolbar / menu entry — runs a global library-wide quick scan."""
+        self._quick_scan_scoped(scope_system_id=None)
+
+    def _quick_scan_scoped(self, scope_system_id: str | None) -> None:
+        """Start a quick scan, optionally narrowed to one system_id.
+
+        ``scope_system_id=None`` walks the entire library (toolbar /
+        menu entry). When set the scan only enrols files resolving to
+        that system, the missing-sweep is scoped to that system's rows,
+        and ``group_into_games`` only runs for that system — wired to
+        the sidebar's right-click "Quick Scan <system>" action.
+        """
         if self._scan_worker is not None and self._scan_worker.isRunning():
             QMessageBox.information(
                 self,
@@ -671,9 +681,16 @@ class MainWindow(QMainWindow):
             return
 
         self._scan_dialog = ScanProgressDialog(self)
-        self._scan_worker = ScanWorker(DEFAULT_DB_PATH, library_path)
+        if scope_system_id is not None:
+            self._scan_dialog.setWindowTitle(f"Quick Scan: {scope_system_id}")
+        self._scan_worker = ScanWorker(
+            DEFAULT_DB_PATH, library_path, scope_system_id=scope_system_id
+        )
 
         self._scan_worker.progress.connect(self._scan_dialog.on_progress)
+        self._scan_worker.walk_finished.connect(
+            self._scan_dialog.on_walk_finished
+        )
         self._scan_worker.finished_ok.connect(self._scan_dialog.on_finished)
         self._scan_worker.failed.connect(self._scan_dialog.on_failed)
         self._scan_worker.finished_ok.connect(self._on_scan_finished_ok)

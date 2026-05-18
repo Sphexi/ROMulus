@@ -198,6 +198,8 @@ def mark_missing_under_root(
     conn: sqlite3.Connection,
     library_root: str,  # noqa: ARG001 — kept for backward compat
     excluded_rom_ids: set[int] | None = None,
+    *,
+    scope_system_id: str | None = None,
 ) -> int:
     """Flag every row NOT in ``excluded_rom_ids`` as missing. Returns count.
 
@@ -206,6 +208,11 @@ def mark_missing_under_root(
     (a) a file that disappeared from under the current library since the
     last scan, or (b) a stale row from a previous library the user has
     since switched away from. Either way, it gets ``missing = 1``.
+
+    ``scope_system_id`` narrows the sweep to a single system, used by
+    the right-click "Quick Scan this system" action. Rows from other
+    systems are left alone — a single-system rescan should never
+    tombstone a NES rom just because the user is rescanning Atari 7800.
 
     Design note — single-library assumption: the sweep deliberately does
     NOT filter by ``library_root``. ROMulus treats one library folder at
@@ -224,10 +231,16 @@ def mark_missing_under_root(
     Entries" action.
     """
     ids = excluded_rom_ids or set()
+
+    where_clauses = ["missing = 0"]
+    params: list[object] = []
+    if scope_system_id is not None:
+        where_clauses.append("system_id = ?")
+        params.append(scope_system_id)
+
     if not ids:
-        cursor = conn.execute(
-            "UPDATE roms SET missing = 1 WHERE missing = 0"
-        )
+        sql = "UPDATE roms SET missing = 1 WHERE " + " AND ".join(where_clauses)
+        cursor = conn.execute(sql, params)
         return cursor.rowcount
 
     # Stash the visited-id set in a temp table and let SQLite do the
@@ -251,11 +264,9 @@ def mark_missing_under_root(
         "INSERT INTO _visited_rom_ids (id) VALUES (?)",
         ((rom_id,) for rom_id in ids),
     )
-    cursor = conn.execute(
-        "UPDATE roms SET missing = 1 "
-        "WHERE missing = 0 "
-        "AND id NOT IN (SELECT id FROM _visited_rom_ids)"
-    )
+    where_clauses.append("id NOT IN (SELECT id FROM _visited_rom_ids)")
+    sql = "UPDATE roms SET missing = 1 WHERE " + " AND ".join(where_clauses)
+    cursor = conn.execute(sql, params)
     rowcount = cursor.rowcount
     conn.execute("DROP TABLE _visited_rom_ids")
     return rowcount

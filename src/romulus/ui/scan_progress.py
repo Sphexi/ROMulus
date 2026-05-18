@@ -24,6 +24,21 @@ class ScanProgressDialog(QProgressDialog):
         """Slot — update the label with the latest scan tick."""
         self.setLabelText(f"Scanned {count} files\n{filename}")
 
+    def on_walk_finished(self) -> None:
+        """Slot — disable Cancel once the post-walk DB rebuild starts.
+
+        Cancelling mid-rebuild (missing sweep, game grouping, scan
+        history update) would leave the DB inconsistent with disk —
+        rom rows present but unlinked, sweep half-done, etc. The
+        scanner has no safe abort points inside those phases, so the
+        button is removed for the duration. ``on_finished`` /
+        ``on_failed`` flip it back to a "Close" button via
+        ``setCancelButtonText``, which creates a fresh button.
+        """
+        # QProgressDialog doesn't expose its cancel button directly;
+        # ``setCancelButton(None)`` removes the button entirely.
+        self.setCancelButton(None)
+
     def on_finished(
         self,
         scan_id: int,  # noqa: ARG002 - signature mirrors worker signal

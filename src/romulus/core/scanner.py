@@ -598,11 +598,24 @@ def scan_library(
     conn: sqlite3.Connection,
     library_path: str | os.PathLike[str],
     progress_callback: Callable[[int, str], None] | None = None,
+    scope_system_id: str | None = None,
 ) -> ScanResult:
     """Walk `library_path`, enroll ROMs, and group them into logical games.
 
     `progress_callback(files_so_far, current_filename)` is invoked once per
-    enrolled ROM. The callback is optional; in tests we usually leave it None.
+    enrolled ROM during the walk, AND once per phase transition during the
+    post-walk DB work ("Marking missing entries…", "Linking ROMs to games:
+    <system>…", "Finalising scan history…") so the user sees activity
+    rather than a frozen Cancel button. The callback is optional; in
+    tests we usually leave it None.
+
+    ``scope_system_id`` restricts the scan to one platform. When set:
+
+    * Files whose resolved system_id doesn't match are skipped during
+      the walk (counted as ``files_skipped``, not ``files_with_system``).
+    * The missing-row sweep only flags rows belonging to that system.
+    * ``group_into_games`` only runs for that system — other systems'
+      unlinked roms are left alone for a global scan to pick up.
 
     Returns a `ScanResult` summarizing the run. A `scan_history` row is also
     written and finalized before returning. `errors` counts files that were
@@ -679,6 +692,14 @@ def scan_library(
                 files_skipped += 1
                 continue
 
+            # Scoped scan: drop any file whose resolved system isn't the
+            # caller's chosen scope. Counted as a skip, not an error —
+            # the file is presumably valid for some OTHER system in the
+            # library and a global scan would enroll it normally.
+            if scope_system_id is not None and system_id != scope_system_id:
+                files_skipped += 1
+                continue
+
             file_path = root_path / filename
             try:
                 stat = file_path.stat()
@@ -731,14 +752,27 @@ def scan_library(
 
     conn.commit()
 
+    # Post-walk DB phases — emit a progress label for each so the user
+    # sees activity instead of a frozen Cancel button. The file count
+    # stays at ``files_found``; only the second-line text changes.
+    if progress_callback is not None:
+        progress_callback(files_found, "Marking missing entries…")
+
     # Tombstone sweep: any row under THIS library_root that we didn't visit is
     # a file that's gone missing since the last scan (deleted, moved, drive
     # unmounted). Mark them missing=1 so the UI can show a "N missing entries"
     # badge and the user can choose to clean them up. Re-scanning after a
     # reconnect will flip missing back to 0 via upsert_rom's path-keyed UPSERT,
     # so this is non-destructive.
+    #
+    # In a scoped scan we restrict the sweep to roms belonging to the
+    # scope system, so other systems' rows aren't tombstoned by a
+    # single-system rescan.
     files_newly_missing = queries.mark_missing_under_root(
-        conn, library_root_str, visited_rom_ids
+        conn,
+        library_root_str,
+        visited_rom_ids,
+        scope_system_id=scope_system_id,
     )
     if files_newly_missing:
         logger.info(
@@ -761,16 +795,24 @@ def scan_library(
     # a fuzzy_key but no linked game. ``group_into_games`` is
     # idempotent — it re-uses existing game rows when the fuzzy_key
     # already maps to one — so the union doesn't cause duplication.
-    unlinked_systems_rows = conn.execute(
-        """
-        SELECT DISTINCT system_id
-        FROM roms
-        WHERE game_id IS NULL
-          AND system_id IS NOT NULL
-          AND fuzzy_key IS NOT NULL
-          AND fuzzy_key != ''
-        """
-    ).fetchall()
+    # Self-heal is intentionally library-wide on a global scan (catches
+    # damage from older partial-scan crashes regardless of which systems
+    # the user walked this time), but a SCOPED scan should only touch
+    # its own system — we don't want a "rescan Atari 7800" to start
+    # rewriting linkage rows for NES.
+    if scope_system_id is None:
+        unlinked_systems_rows = conn.execute(
+            """
+            SELECT DISTINCT system_id
+            FROM roms
+            WHERE game_id IS NULL
+              AND system_id IS NOT NULL
+              AND fuzzy_key IS NOT NULL
+              AND fuzzy_key != ''
+            """
+        ).fetchall()
+    else:
+        unlinked_systems_rows = []
     systems_to_group = set(systems_seen)
     systems_to_group.update(row[0] for row in unlinked_systems_rows)
     if unlinked_systems_rows:
@@ -780,7 +822,14 @@ def scan_library(
             len(unlinked_systems_rows),
         )
     for system_id in systems_to_group:
+        if progress_callback is not None:
+            progress_callback(
+                files_found, f"Linking ROMs to games: {system_id}…"
+            )
         group_into_games(conn, system_id)
+
+    if progress_callback is not None:
+        progress_callback(files_found, "Finalising scan history…")
 
     finished_at = datetime.now(UTC).isoformat()
     queries.update_scan_history(

@@ -399,9 +399,18 @@ class TestFullScan:
             tmp_path,
             progress_callback=lambda n, name: seen.append((n, name)),
         )
-        assert len(seen) == 6
-        # Each call should report a strictly increasing count.
-        assert [n for n, _ in seen] == list(range(1, 7))
+        # The scanner now also emits phase-transition labels during
+        # the post-walk DB rebuild ("Marking missing entries…",
+        # "Linking ROMs to games: …", "Finalising scan history…") so
+        # the UI dialog can show activity instead of a frozen Cancel
+        # button. Filter those out — they all end with the literal
+        # Unicode ellipsis — and check only the per-file ticks.
+        file_events = [
+            (n, name) for n, name in seen if not name.endswith("…")
+        ]
+        assert len(file_events) == 6
+        # Each per-file call should report a strictly increasing count.
+        assert [n for n, _ in file_events] == list(range(1, 7))
 
     def test_rescan_is_idempotent(self, seeded_db, tmp_path):
         _make_tree(tmp_path)
