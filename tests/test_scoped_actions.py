@@ -745,12 +745,25 @@ class TestMainWindowScopedEnrich:
             "romulus.ui.enrich_progress.EnrichProgressDialog.exec",
             lambda self: None,
         )
+        # Batch-scoped enrich now opens EnrichOptionsDialog first; auto-accept
+        # so the test reaches the worker-construction path.
+        from romulus.ui.enrich_options_dialog import EnrichOptionsDialog
+
+        monkeypatch.setattr(
+            EnrichOptionsDialog,
+            "exec",
+            lambda self: EnrichOptionsDialog.DialogCode.Accepted,
+        )
         monkeypatch.setattr(EnrichWorker, "start", lambda self: None)
 
-        window._enrich_scoped(game_ids=[42])
+        # Use the actual seeded game id; the new pre-flight narrows the
+        # eligibility check to the requested scope so a fake id would
+        # legitimately bail "no eligible games" before constructing a
+        # worker — verifying kwarg propagation needs a real id.
+        window._enrich_scoped(game_ids=[gid])
 
         assert created_workers, "EnrichWorker was never constructed"
-        assert created_workers[0]["game_ids"] == [42]
+        assert created_workers[0]["game_ids"] == [gid]
         assert created_workers[0]["system_id"] is None
         assert created_workers[0]["collection_id"] is None
 
@@ -795,6 +808,13 @@ class TestMainWindowScopedEnrich:
         monkeypatch.setattr(
             "romulus.ui.enrich_progress.EnrichProgressDialog.exec",
             lambda self: None,
+        )
+        from romulus.ui.enrich_options_dialog import EnrichOptionsDialog
+
+        monkeypatch.setattr(
+            EnrichOptionsDialog,
+            "exec",
+            lambda self: EnrichOptionsDialog.DialogCode.Accepted,
         )
         monkeypatch.setattr(EnrichWorker, "start", lambda self: None)
 

@@ -296,6 +296,9 @@ def enrich_library(
     game_ids: list[int] | None = None,
     system_id: str | None = None,
     collection_id: int | None = None,
+    *,
+    include_fuzzy: bool = False,
+    include_already_enriched: bool = False,
 ) -> EnrichmentStats:
     """Walk DAT-verified games that have no metadata and try each source.
 
@@ -308,6 +311,11 @@ def enrich_library(
         collection_id: Limit enrichment to games in this collection.
     When multiple are supplied game_ids wins, then system_id, then collection_id.
     When none are supplied the full library is enriched.
+
+    Filter-loosening flags (forwarded to ``get_games_needing_enrichment``):
+        include_fuzzy: also enrich fuzzy/header matched games.
+        include_already_enriched: re-enrich games that already have a
+            metadata row (e.g. to top up after adding a new provider).
     """
     cache_dir = _resolve_cache_dir(conn, cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -326,7 +334,11 @@ def enrich_library(
         launchbox_index = launchbox.build_index(entries)
         logger.info("loaded launchbox entries: count=%d", len(entries))
 
-    rows = queries.get_games_needing_enrichment(conn)
+    rows = queries.get_games_needing_enrichment(
+        conn,
+        include_fuzzy=include_fuzzy,
+        include_already_enriched=include_already_enriched,
+    )
 
     # Apply scope filter — narrow the candidate list to the requested scope.
     if game_ids is not None:

@@ -151,16 +151,37 @@ def _respect_rate_limit() -> None:
     _rate_limiter.wait()  # type: ignore[attr-defined]
 
 
+# Parenthesised / bracketed segments stripped from the title before
+# normalising. Catches all of No-Intro ``(USA)``, ``(Disc 1)``,
+# language tags ``(En,Fr,De)``, GoodTools ``[!]``, TOSEC ``[demo]`` etc
+# in one sweep. The DAT-derived game title carries these tags, but TGDB
+# titles never do.
+_PARENTHESISED_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]\s*", re.UNICODE)
+
 # Punctuation we strip before title comparison. Apostrophes and dashes
 # are real differentiators in some titles (e.g. "Mario's" vs "Marios")
 # but the inverse — a TGDB row that punctuates differently from the
 # DAT name — is far more common in practice, so we collapse them.
 _TITLE_NOISE_RE = re.compile(r"[\W_]+", re.UNICODE)
 
+# Minimum normalised-length for the substring fallback to fire. Short
+# titles like "Tetris" (6 chars) would substring-match into "Tetris
+# Worlds", "New Tetris", "Tetris Plus" etc — wrong games. 12 chars is
+# enough to make a "the candidate contains our query" rule safe.
+_SUBSTRING_FALLBACK_MIN_LEN = 12
+
 
 def _normalise_title(title: str) -> str:
-    """Lowercase + strip punctuation/whitespace for fuzzy title equality."""
-    return _TITLE_NOISE_RE.sub("", title.lower())
+    """Lowercase + strip parenthesised tags + strip punctuation/whitespace.
+
+    Run the parenthesised-segment strip first so the punctuation removal
+    that follows doesn't fuse the inside of e.g. ``(USA)`` with the
+    surrounding title text (``Super Mario World (USA)`` ->
+    ``Super Mario World `` -> ``supermarioworld`` rather than
+    ``supermarioworldusa``).
+    """
+    stripped = _PARENTHESISED_RE.sub(" ", title)
+    return _TITLE_NOISE_RE.sub("", stripped.lower())
 
 
 def _unwrap_data(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -175,21 +196,77 @@ def _unwrap_data(payload: dict[str, Any]) -> dict[str, Any] | None:
     return data
 
 
-def _coalesce_field(game: dict[str, Any], keys: tuple[str, ...]) -> Any:
+# Map from our flat metadata key -> (TGDB field for ids, the matching
+# include-block key under data.include or top-level include). TGDB's
+# response shape varies between API versions; we tolerate both.
+_LIST_FIELD_INCLUDES: dict[str, tuple[str, str]] = {
+    "genre": ("genres", "genres"),
+    "developer": ("developers", "developers"),
+    "publisher": ("publishers", "publishers"),
+}
+
+
+def _extract_include_lookup(
+    payload: dict[str, Any], data: dict[str, Any], include_key: str
+) -> dict[str, str]:
+    """Build an ``{id_str -> name}`` table for one include block.
+
+    TGDB has nested the include block under both ``data.include.<key>``
+    (older) and top-level ``include.<key>`` (newer) at various points;
+    we accept either. Returns an empty dict when the block isn't
+    present — that's normal when the caller didn't request includes.
+    """
+    candidates: list[Any] = [
+        data.get("include"),
+        payload.get("include"),
+    ]
+    for raw in candidates:
+        if not isinstance(raw, dict):
+            continue
+        block = raw.get(include_key)
+        if not isinstance(block, dict):
+            continue
+        # TGDB nests the real lookup under ``data:`` within each block.
+        inner = block.get("data") if isinstance(block.get("data"), dict) else block
+        if not isinstance(inner, dict):
+            continue
+        result: dict[str, str] = {}
+        for key, entry in inner.items():
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str) and name:
+                    result[str(key)] = name
+        if result:
+            return result
+    return {}
+
+
+def _coalesce_field(
+    game: dict[str, Any],
+    keys: tuple[str, ...],
+    *,
+    name_lookup: dict[str, str] | None = None,
+) -> Any:
     """Return the first non-empty value among ``game[k]`` for k in keys.
 
-    Lists (TGDB returns ``genres``, ``developers``, ``publishers`` as
-    lists of integer ids — we don't resolve those names; users get the
-    raw id list joined with commas, which is at least sortable) are
-    folded into ``", "``-joined strings so they fit our flat schema.
+    Lists of integer ids (TGDB returns genres/developers/publishers this
+    way) are resolved through ``name_lookup`` when one is supplied —
+    that's how we turn "8, 12" into "Platformer, Adventure". When no
+    lookup is given, or an id isn't in the table, we fall back to the
+    raw id string so the row still carries *something* identifiable.
     """
     for key in keys:
         value = game.get(key)
         if value in (None, "", []):
             continue
         if isinstance(value, list):
-            # Ids are ints; cast to str for joining. Skips empty list members.
-            return ", ".join(str(v) for v in value if v not in (None, ""))
+            parts: list[str] = []
+            for v in value:
+                if v in (None, ""):
+                    continue
+                resolved = name_lookup.get(str(v)) if name_lookup else None
+                parts.append(resolved if resolved else str(v))
+            return ", ".join(parts) if parts else None
         return value
     return None
 
@@ -215,11 +292,18 @@ def _log_remaining_allowance(payload: dict[str, Any]) -> int | None:
 def parse_response(payload: dict[str, Any], title: str) -> MetadataPayload | None:
     """Extract one game's metadata from a Games/ByGameName response.
 
-    Returns the first game whose title matches *title* under
-    :func:`_normalise_title`, or ``None`` if no exact match is in the
-    page. Caller is responsible for paginating if needed (we don't —
-    one page is 20 candidates which is plenty for unique platform+title
-    combinations).
+    Matching is two-phase: an exact normalised-equality pass, then a
+    substring fallback (TGDB candidate normalised *contains* our query
+    normalised, or vice versa) for titles long enough that the
+    substring rule is safe — see :data:`_SUBSTRING_FALLBACK_MIN_LEN`.
+
+    The substring pass exists because TGDB often carries series-prefix
+    names (``"James Bond 007 - Everything or Nothing"``) while ROMulus
+    has the disc-tin name (``"007 - Everything or Nothing"``); without
+    it the exact pass misses every such pair.
+
+    Returns ``None`` on any envelope shape mismatch — treated as a miss
+    rather than an error to keep the enrich run resilient.
     """
     data = _unwrap_data(payload)
     if data is None:
@@ -227,20 +311,57 @@ def parse_response(payload: dict[str, Any], title: str) -> MetadataPayload | Non
     games = data.get("games")
     if not isinstance(games, list):
         return None
+
     target = _normalise_title(title)
+
+    # Build the candidate list once, with both raw + normalised forms.
+    candidates: list[tuple[dict[str, Any], str]] = []
     for game in games:
         if not isinstance(game, dict):
             continue
-        candidate = game.get("game_title") or game.get("title")
-        if not isinstance(candidate, str):
+        title_raw = game.get("game_title") or game.get("title")
+        if not isinstance(title_raw, str):
             continue
-        if _normalise_title(candidate) != target:
-            continue
-        return {  # type: ignore[return-value]
-            key: _coalesce_field(game, synonyms)
-            for key, synonyms in _FIELD_SYNONYMS
-        }
-    return None
+        candidates.append((game, _normalise_title(title_raw)))
+
+    matched: dict[str, Any] | None = None
+    for game, candidate_norm in candidates:
+        if candidate_norm == target:
+            matched = game
+            break
+
+    if matched is None and len(target) >= _SUBSTRING_FALLBACK_MIN_LEN:
+        for game, candidate_norm in candidates:
+            if len(candidate_norm) < _SUBSTRING_FALLBACK_MIN_LEN:
+                continue
+            if target in candidate_norm or candidate_norm in target:
+                matched = game
+                logger.debug(
+                    "thegamesdb substring match: query=%r candidate=%r",
+                    title,
+                    game.get("game_title") or game.get("title"),
+                )
+                break
+
+    if matched is None:
+        return None
+
+    # Build the include lookup tables once per response. Empty when the
+    # caller didn't request them via ``include=`` — in which case
+    # _coalesce_field falls back to raw ids.
+    name_lookups: dict[str, dict[str, str]] = {
+        key: _extract_include_lookup(payload, data, include_key)
+        for key, (_field, include_key) in _LIST_FIELD_INCLUDES.items()
+    }
+
+    result: MetadataPayload = {}  # type: ignore[typeddict-item]
+    for key, synonyms in _FIELD_SYNONYMS:
+        result[key] = _coalesce_field(  # type: ignore[literal-required]
+            matched,
+            synonyms,
+            name_lookup=name_lookups.get(key),
+        )
+    return result
 
 
 def lookup_game(
@@ -285,10 +406,12 @@ def lookup_game(
         # TGDB accepts a comma-separated platform id list under
         # ``filter[platform]``; we only ever filter on one.
         "filter[platform]": str(platform_id),
-        # Pull a wider results set than the 20-default; TGDB's name
-        # matching is loose ("Mario" returns dozens) so we want more
-        # candidates to filter through _normalise_title.
+        # Request every per-game field we ever surface in the UI.
         "fields": "overview,players,publishers,genres,developers,release_date,rating",
+        # ``include`` returns the lookup tables for the integer-id
+        # fields (genres/developers/publishers) alongside the games
+        # payload — without it those fields are unusable raw ids.
+        "include": "boxart,platform,Genres,Developers,Publishers",
     }
     logger.debug(
         "thegamesdb lookup: title=%s system_id=%s platform_id=%d",
@@ -346,10 +469,24 @@ def lookup_game(
                     system_id,
                 )
             else:
-                logger.debug(
-                    "thegamesdb miss: title=%s system_id=%s",
+                # Sample the first few candidate titles so the user can
+                # see *why* it didn't match (typically a series-prefix
+                # mismatch we couldn't auto-resolve).
+                data = payload.get("data")
+                sample: list[str] = []
+                if isinstance(data, dict):
+                    raw_games = data.get("games")
+                    if isinstance(raw_games, list):
+                        for g in raw_games[:3]:
+                            if isinstance(g, dict):
+                                t = g.get("game_title") or g.get("title")
+                                if isinstance(t, str):
+                                    sample.append(t)
+                logger.info(
+                    "thegamesdb miss: title=%s system_id=%s candidates=%s",
                     title,
                     system_id,
+                    sample,
                 )
             return parsed, remaining
 

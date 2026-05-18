@@ -1516,8 +1516,21 @@ class TestEnrichProgressDialog:
         self, qapp, seeded_db, monkeypatch
     ) -> None:
         """_on_enrich shows an info dialog and returns without starting a worker
-        when no DAT-verified games are present."""
+        when no DAT-verified games are present.
+
+        Batch enrich now opens :class:`EnrichOptionsDialog` first so the user
+        can opt into looser filters; we stub its ``exec`` to auto-accept
+        with both defaults (unchecked) so the flow proceeds to the
+        pre-flight count, which then triggers the zero-eligibility info box.
+        """
+        from romulus.ui.enrich_options_dialog import EnrichOptionsDialog
         from romulus.ui.main_window import MainWindow
+
+        monkeypatch.setattr(
+            EnrichOptionsDialog,
+            "exec",
+            lambda self: EnrichOptionsDialog.DialogCode.Accepted,
+        )
 
         window = MainWindow(seeded_db)
 
@@ -1564,7 +1577,15 @@ class TestEnrichProgressDialog:
 
         window = MainWindow(seeded_db)
 
-        # Stub out the dialog so exec() returns immediately.
+        # Stub out the options dialog so it auto-accepts without blocking.
+        from romulus.ui.enrich_options_dialog import EnrichOptionsDialog
+
+        monkeypatch.setattr(
+            EnrichOptionsDialog,
+            "exec",
+            lambda self: EnrichOptionsDialog.DialogCode.Accepted,
+        )
+        # Stub out the progress dialog so exec() returns immediately.
         monkeypatch.setattr(
             "romulus.ui.enrich_progress.EnrichProgressDialog.exec",
             lambda self: None,

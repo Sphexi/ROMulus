@@ -860,24 +860,46 @@ def has_cover(conn: sqlite3.Connection, game_id: int, cover_type: str) -> bool:
     return row is not None
 
 
-def get_games_needing_enrichment(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return games with DAT-verified ROMs but no metadata row yet.
+def get_games_needing_enrichment(
+    conn: sqlite3.Connection,
+    *,
+    include_fuzzy: bool = False,
+    include_already_enriched: bool = False,
+) -> list[sqlite3.Row]:
+    """Return games that should be considered for enrichment.
 
-    Joins games -> roms (filtered to dat_verified matches) -> LEFT JOIN metadata
-    so we only surface games that have a canonical hit but haven't been enriched.
+    Two opt-in flags loosen the default filters:
+
+    * ``include_fuzzy`` — when False (default) only games with at least
+      one ``match_confidence='dat_verified'`` rom are returned. When True
+      every confidence level (fuzzy, header, dat_verified) is eligible.
+      The risky case is fuzzy: name-based metadata lookups can attach
+      *wrong* metadata when the canonical name was guessed.
+    * ``include_already_enriched`` — when False (default) games that
+      already carry a metadata row are excluded. When True they are kept,
+      so a user-triggered re-run can top up partial enrichments after a
+      new provider (e.g. TheGamesDB) has been configured.
+
+    The two flags are independent and combine multiplicatively. Setting
+    both to True returns the broadest possible candidate set — used by
+    the "force re-enrich this one game" path in the UI.
     """
-    return conn.execute(
-        """
-        SELECT DISTINCT g.id, g.title, g.system_id, g.canonical_name,
-               r.dat_match AS dat_match
-        FROM games g
-        JOIN roms r ON r.game_id = g.id
-        LEFT JOIN metadata m ON m.game_id = g.id
-        WHERE r.match_confidence = 'dat_verified'
-          AND m.game_id IS NULL
-        ORDER BY g.system_id, g.title
-        """
-    ).fetchall()
+    sql = [
+        "SELECT DISTINCT g.id, g.title, g.system_id, g.canonical_name,",
+        "       r.dat_match AS dat_match",
+        "FROM games g",
+        "JOIN roms r ON r.game_id = g.id",
+        "LEFT JOIN metadata m ON m.game_id = g.id",
+    ]
+    where: list[str] = []
+    if not include_fuzzy:
+        where.append("r.match_confidence = 'dat_verified'")
+    if not include_already_enriched:
+        where.append("m.game_id IS NULL")
+    if where:
+        sql.append("WHERE " + " AND ".join(where))
+    sql.append("ORDER BY g.system_id, g.title")
+    return conn.execute("\n".join(sql)).fetchall()
 
 
 # ---------------------------------------------------------------------------

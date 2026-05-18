@@ -205,6 +205,8 @@ class EnrichWorker(_DbWorker):
         game_ids: list[int] | None = None,
         system_id: str | None = None,
         collection_id: int | None = None,
+        include_fuzzy: bool = False,
+        include_already_enriched: bool = False,
     ) -> None:
         super().__init__(db_path)
         self._cache_dir = cache_dir
@@ -212,6 +214,8 @@ class EnrichWorker(_DbWorker):
         self._game_ids = game_ids
         self._system_id = system_id
         self._collection_id = collection_id
+        self._include_fuzzy = include_fuzzy
+        self._include_already_enriched = include_already_enriched
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
         def _progress(idx: int, total: int, title: str) -> None:
@@ -226,6 +230,8 @@ class EnrichWorker(_DbWorker):
             game_ids=self._game_ids,
             system_id=self._system_id,
             collection_id=self._collection_id,
+            include_fuzzy=self._include_fuzzy,
+            include_already_enriched=self._include_already_enriched,
         )
         self.finished_ok.emit(
             stats["games_processed"],

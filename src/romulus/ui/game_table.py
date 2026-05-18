@@ -508,7 +508,6 @@ class GameTable(QWidget):
         game_id = self.selected_game_id()
         if game_id is None:
             return
-        row = self._selected_row()
         menu = QMenu(self.view)
 
         fav_action = QAction("Add to Favorites", menu)
@@ -543,10 +542,12 @@ class GameTable(QWidget):
         # Scoped actions — operate on this game only.
         menu.addSeparator()
 
-        enrich_action = QAction("Enrich this game", menu)
-        # Disable if already fully enriched (has both cover and metadata).
-        already_enriched = row is not None and row.has_cover and row.has_metadata
-        enrich_action.setEnabled(not already_enriched)
+        # Always enabled — single-game enrich is the explicit force path,
+        # so the user can re-enrich a game that already has metadata or
+        # cover art (e.g. to top it up via a newly-configured provider).
+        # MainWindow translates this signal into a worker call with both
+        # silent filters bypassed.
+        enrich_action = QAction("Enrich this game (force)", menu)
         enrich_action.triggered.connect(
             lambda: self.enrich_game_requested.emit(game_id)
         )

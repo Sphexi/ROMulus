@@ -21,6 +21,7 @@ from romulus.db import DEFAULT_DB_PATH, get_config, set_config
 from romulus.db import queries as q
 from romulus.ui.dest_scan_progress import DestScanProgressDialog
 from romulus.ui.detail_panel import DetailPanel
+from romulus.ui.enrich_options_dialog import EnrichOptionsDialog
 from romulus.ui.enrich_progress import EnrichProgressDialog
 from romulus.ui.export_dialog import ExportDialog
 from romulus.ui.game_table import GameTable, load_rom_rows
@@ -119,8 +120,15 @@ class MainWindow(QMainWindow):
         self.detail_panel.favorite_toggled.connect(self._on_favorite_toggled)
 
         # Scoped game-table actions.
+        # Single-game enrich is the *force* path — it bypasses both
+        # silent filters so the user can re-enrich a fuzzy or already-
+        # metadata-bearing game without first deleting any rows.
         self.game_table.enrich_game_requested.connect(
-            lambda gid: self._enrich_scoped(game_ids=[gid])
+            lambda gid: self._enrich_scoped(
+                game_ids=[gid],
+                include_fuzzy=True,
+                include_already_enriched=True,
+            )
         )
         self.game_table.heavy_scan_game_requested.connect(
             lambda gid: self._heavy_scan_scoped(game_id=gid)
@@ -696,13 +704,63 @@ class MainWindow(QMainWindow):
     def _on_enrich(self) -> None:
         self._enrich_scoped()
 
+    def _prompt_for_enrich_options(
+        self,
+        *,
+        game_ids: list[int] | None,
+        system_id: str | None,
+        collection_id: int | None,
+    ) -> tuple[bool, bool] | None:
+        """Show :class:`EnrichOptionsDialog`; return (fuzzy, already_enriched) or None.
+
+        ``None`` means the user cancelled. The scope label fed into the
+        dialog is the same human-readable phrase used on the progress
+        dialog title so the user sees consistent wording in both places.
+        """
+        if game_ids is not None:
+            scope_label = (
+                "the selected game"
+                if len(game_ids) == 1
+                else f"the {len(game_ids)} selected games"
+            )
+        elif system_id is not None:
+            scope_label = f"every game on {system_id}"
+        elif collection_id is not None:
+            # No first-class get_collection_by_id helper; a one-shot SELECT
+            # for the display name is fine and avoids adding a query for
+            # this single label.
+            row = self._conn.execute(
+                "SELECT name FROM collections WHERE id = ?", (collection_id,)
+            ).fetchone()
+            name = row["name"] if row is not None else f"collection {collection_id}"
+            scope_label = f'every game in the "{name}" collection'
+        else:
+            scope_label = "the entire library"
+
+        dialog = EnrichOptionsDialog(scope_label, parent=self)
+        if dialog.exec() != EnrichOptionsDialog.DialogCode.Accepted:
+            return None
+        return dialog.include_fuzzy, dialog.include_already_enriched
+
     def _enrich_scoped(
         self,
         game_ids: list[int] | None = None,
         system_id: str | None = None,
         collection_id: int | None = None,
+        *,
+        include_fuzzy: bool = False,
+        include_already_enriched: bool = False,
     ) -> None:
-        """Start enrichment, optionally scoped to a game / system / collection."""
+        """Start enrichment, optionally scoped to a game / system / collection.
+
+        ``include_fuzzy`` / ``include_already_enriched`` loosen the silent
+        filters in :func:`get_games_needing_enrichment`. Callers reaching
+        this method directly with both flags True bypass the per-batch
+        prompt — that's the single-game right-click "force" path. Every
+        other call path (system, collection, global toolbar) goes through
+        :meth:`_prompt_for_enrich_options` first, which surfaces the two
+        flags as user checkboxes.
+        """
         if self._enrich_worker is not None and self._enrich_worker.isRunning():
             QMessageBox.information(
                 self,
@@ -711,14 +769,56 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Pre-flight: enrichment only works on DAT-verified games.
-        eligible = len(q.get_games_needing_enrichment(self._conn))
-        if eligible == 0:
+        # Single-game force path skips the batch-options prompt entirely;
+        # the user explicitly chose "enrich this game" so the gates are
+        # already deliberately ignored. Every other path asks first.
+        is_single_force = (
+            game_ids is not None
+            and len(game_ids) == 1
+            and include_fuzzy
+            and include_already_enriched
+        )
+        if not is_single_force:
+            chosen = self._prompt_for_enrich_options(
+                game_ids=game_ids,
+                system_id=system_id,
+                collection_id=collection_id,
+            )
+            if chosen is None:
+                return
+            include_fuzzy, include_already_enriched = chosen
+
+        # Pre-flight: count using the same filters the run will apply.
+        # Without this the user could opt in to "re-enrich existing" and
+        # still hit the "no games" bail-out because the default filters
+        # excluded everything.
+        eligible_rows = q.get_games_needing_enrichment(
+            self._conn,
+            include_fuzzy=include_fuzzy,
+            include_already_enriched=include_already_enriched,
+        )
+        # If the caller scoped to specific ids, narrow the eligibility
+        # check to that scope too — otherwise a system-scoped run reports
+        # eligibility for the whole library and may erroneously bail.
+        if game_ids is not None:
+            allowed = frozenset(game_ids)
+            eligible_rows = [r for r in eligible_rows if r["id"] in allowed]
+        elif system_id is not None:
+            eligible_rows = [
+                r for r in eligible_rows if r["system_id"] == system_id
+            ]
+        elif collection_id is not None:
+            coll_ids = frozenset(
+                q.get_collection_games(self._conn, collection_id)
+            )
+            eligible_rows = [r for r in eligible_rows if r["id"] in coll_ids]
+        if not eligible_rows:
             QMessageBox.information(
                 self,
                 "No games ready for enrichment",
-                "Enrichment requires DAT-verified ROMs, and none were found.\n\n"
-                "Run Heavy Scan first to match your ROMs against the DAT database.",
+                "No eligible games found for this scope and option set.\n\n"
+                "Run Heavy Scan to match more ROMs against the DAT database, "
+                "or tick the looser-filter checkboxes when prompted.",
             )
             return
 
@@ -746,6 +846,8 @@ class MainWindow(QMainWindow):
             game_ids=game_ids,
             system_id=system_id,
             collection_id=collection_id,
+            include_fuzzy=include_fuzzy,
+            include_already_enriched=include_already_enriched,
         )
 
         self._enrich_worker.progress.connect(self._enrich_dialog.on_progress)

@@ -635,6 +635,109 @@ class TestMetadataQueries:
         seeded_db.commit()
         assert q.get_games_needing_enrichment(seeded_db) == []
 
+    def test_include_fuzzy_surfaces_fuzzy_matches(self, seeded_db) -> None:
+        """include_fuzzy=True must drop the dat_verified filter."""
+        game_id = q.upsert_game(
+            seeded_db, {"title": "Mystery", "system_id": "gb"}
+        )
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Mystery.gb",
+                "filename": "Mystery.gb",
+                "extension": ".gb",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "match_confidence": "fuzzy",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        # Default: excluded.
+        assert q.get_games_needing_enrichment(seeded_db) == []
+        # Loosened: surfaced.
+        rows = q.get_games_needing_enrichment(seeded_db, include_fuzzy=True)
+        assert len(rows) == 1
+        assert rows[0]["id"] == game_id
+
+    def test_include_already_enriched_keeps_metadata_rows(self, seeded_db) -> None:
+        """include_already_enriched=True must drop the m.game_id IS NULL filter."""
+        game_id = q.upsert_game(
+            seeded_db,
+            {"title": "Tetris", "system_id": "gb", "canonical_name": "Tetris"},
+        )
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Tetris.gb",
+                "filename": "Tetris.gb",
+                "extension": ".gb",
+                "size_bytes": 32768,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "dat_match": "Tetris",
+                "match_confidence": "dat_verified",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_id, game_id)
+        q.upsert_metadata(
+            seeded_db, game_id, {"description": "x"}, source="hasheous"
+        )
+        seeded_db.commit()
+
+        # Default: excluded (already has metadata).
+        assert q.get_games_needing_enrichment(seeded_db) == []
+        # Loosened: surfaced for a re-run.
+        rows = q.get_games_needing_enrichment(
+            seeded_db, include_already_enriched=True
+        )
+        assert len(rows) == 1
+        assert rows[0]["id"] == game_id
+
+    def test_both_flags_combine_multiplicatively(self, seeded_db) -> None:
+        """Both flags True must return fuzzy AND already-enriched rows."""
+        # A fuzzy game that already has metadata.
+        game_id = q.upsert_game(
+            seeded_db, {"title": "Forced", "system_id": "gb"}
+        )
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Forced.gb",
+                "filename": "Forced.gb",
+                "extension": ".gb",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "match_confidence": "fuzzy",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_id, game_id)
+        q.upsert_metadata(
+            seeded_db, game_id, {"description": "x"}, source="hasheous"
+        )
+        seeded_db.commit()
+
+        # Either flag alone leaves it filtered out.
+        assert q.get_games_needing_enrichment(seeded_db) == []
+        assert q.get_games_needing_enrichment(seeded_db, include_fuzzy=True) == []
+        assert (
+            q.get_games_needing_enrichment(
+                seeded_db, include_already_enriched=True
+            )
+            == []
+        )
+        # Both together: surfaced.
+        rows = q.get_games_needing_enrichment(
+            seeded_db,
+            include_fuzzy=True,
+            include_already_enriched=True,
+        )
+        assert len(rows) == 1
+        assert rows[0]["id"] == game_id
+
 
 # ---------------------------------------------------------------------------
 # enrich_library orchestrator
@@ -815,6 +918,93 @@ class TestEnrichLibrary:
         assert stats["metadata_added"] == 0
         assert stats["covers_added"] == 0
 
+    def test_include_fuzzy_flag_processes_fuzzy_games(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """enrich_library must honour the include_fuzzy flag end-to-end."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+
+        game_id = q.upsert_game(
+            seeded_db, {"title": "Fuzzy", "system_id": "gb"}
+        )
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Fuzzy.gb",
+                "filename": "Fuzzy.gb",
+                "extension": ".gb",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "match_confidence": "fuzzy",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(lambda r: httpx.Response(404))
+        )
+
+        # Without the flag: zero processed (filter excludes fuzzy).
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+        assert stats["games_processed"] == 0
+
+        # With the flag: the fuzzy game is processed (still no metadata
+        # found because every provider 404s, but the worker reached it).
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+            include_fuzzy=True,
+        )
+        assert stats["games_processed"] == 1
+
+    def test_force_path_re_enriches_existing(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both flags True + scoped game_ids must re-run an already-enriched game."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+
+        game_id = _seed_verified_game(
+            seeded_db, title="Tetris", system_id="gb", sha1="f" * 40
+        )
+        # Seed a stale metadata row from a prior enrich.
+        q.upsert_metadata(
+            seeded_db, game_id, {"description": "stale"}, source="manual"
+        )
+        seeded_db.commit()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                return httpx.Response(
+                    200,
+                    json={"title": "Tetris", "description": "fresh"},
+                )
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+            game_ids=[game_id],
+            include_fuzzy=True,
+            include_already_enriched=True,
+        )
+        assert stats["games_processed"] == 1
+        assert stats["metadata_added"] == 1
+        meta = q.get_metadata(seeded_db, game_id)
+        assert meta is not None
+        assert meta["description"] == "fresh"
+
 
 # Sanity: confirm every network-touching metadata function refuses to reach
 # the real internet when the caller supplies a MockTransport-backed client.
@@ -902,6 +1092,92 @@ class TestTgdbParseResponse:
         assert thegamesdb.parse_response({}, "Tetris") is None
         assert thegamesdb.parse_response({"data": "not-a-dict"}, "Tetris") is None
         assert thegamesdb.parse_response({"data": {"games": "x"}}, "Tetris") is None
+
+    def test_strips_no_intro_tags_before_matching(self) -> None:
+        """``Super Mario World (USA)`` must match TGDB's ``Super Mario World``."""
+        envelope = _tgdb_envelope([
+            {"id": 1, "game_title": "Super Mario World", "overview": "hit"},
+        ])
+        parsed = thegamesdb.parse_response(envelope, "Super Mario World (USA)")
+        assert parsed is not None
+        assert parsed["description"] == "hit"
+
+    def test_substring_fallback_matches_series_prefix(self) -> None:
+        """Query without series prefix should match TGDB's full title."""
+        envelope = _tgdb_envelope([
+            {
+                "id": 25838,
+                "game_title": "James Bond 007 - Everything or Nothing",
+                "overview": "Bond, but tiny.",
+            },
+        ])
+        parsed = thegamesdb.parse_response(
+            envelope, "007 - Everything or Nothing"
+        )
+        assert parsed is not None
+        assert parsed["description"] == "Bond, but tiny."
+
+    def test_substring_fallback_rejects_short_titles(self) -> None:
+        """Short titles must NOT substring-match to avoid false positives."""
+        # ``Tetris`` (6 normalised chars) is below _SUBSTRING_FALLBACK_MIN_LEN
+        # so it must NOT match candidates that merely contain "tetris".
+        envelope = _tgdb_envelope([
+            {"id": 1, "game_title": "The New Tetris", "overview": "wrong"},
+            {"id": 2, "game_title": "Tetris Plus", "overview": "also wrong"},
+        ])
+        assert thegamesdb.parse_response(envelope, "Tetris") is None
+
+    def test_resolves_genre_ids_via_include_block(self) -> None:
+        """When include.genres carries an id->name table, store the name."""
+        envelope = {
+            "code": 200,
+            "data": {
+                "count": 1,
+                "games": [
+                    {
+                        "id": 1,
+                        "game_title": "Super Mario World",
+                        "genres": [8, 12],
+                        "developers": [6037],
+                        "publishers": [6037],
+                    }
+                ],
+                "include": {
+                    "genres": {
+                        "data": {
+                            "8": {"id": 8, "name": "Platformer"},
+                            "12": {"id": 12, "name": "Adventure"},
+                        }
+                    },
+                    "developers": {
+                        "data": {"6037": {"id": 6037, "name": "Nintendo EAD"}}
+                    },
+                    "publishers": {
+                        "data": {"6037": {"id": 6037, "name": "Nintendo"}}
+                    },
+                },
+            },
+            "remaining_monthly_allowance": 999,
+        }
+        parsed = thegamesdb.parse_response(envelope, "Super Mario World")
+        assert parsed is not None
+        assert parsed["genre"] == "Platformer, Adventure"
+        assert parsed["developer"] == "Nintendo EAD"
+        assert parsed["publisher"] == "Nintendo"
+
+    def test_falls_back_to_raw_ids_when_no_include_block(self) -> None:
+        """Without an include block, genres/devs/pubs keep raw id strings."""
+        envelope = _tgdb_envelope([
+            {
+                "id": 1,
+                "game_title": "Super Mario World",
+                "genres": [8, 12],
+            },
+        ])
+        parsed = thegamesdb.parse_response(envelope, "Super Mario World")
+        assert parsed is not None
+        # No lookup table -> ids stringified, joined with ", ".
+        assert parsed["genre"] == "8, 12"
 
 
 class TestTgdbLookupGame:
