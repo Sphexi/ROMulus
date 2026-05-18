@@ -243,12 +243,26 @@ def mark_missing_under_root(
         cursor = conn.execute(sql, params)
         return cursor.rowcount
 
-    # Stash the visited-id set in a temp table and let SQLite do the
-    # set difference. The previous ``NOT IN (?, ?, ?, ...)`` form bound
-    # one parameter per visited ROM, which trips
+    # Fast path for visited sets that fit comfortably under
+    # ``SQLITE_MAX_VARIABLE_NUMBER`` — the stock Windows Python build
+    # ships SQLite with 999, newer builds bump to 32766. We pick 900
+    # to leave headroom for the ``scope_system_id`` parameter and any
+    # future where-clause additions, and to stay below every supported
+    # SQLite build's limit. Using inline ``NOT IN`` here avoids the
+    # temp-table dance below, which was implicated in a Linux CI
+    # segfault during ``conn.close()`` on the worker thread (CI run
+    # against commit 4f42f9f).
+    if len(ids) <= 900:
+        placeholders = ",".join("?" * len(ids))
+        where_clauses.append(f"id NOT IN ({placeholders})")
+        sql = "UPDATE roms SET missing = 1 WHERE " + " AND ".join(where_clauses)
+        cursor = conn.execute(sql, [*params, *ids])
+        return cursor.rowcount
+
+    # Big-library path: stash the visited-id set in a temp table and let
+    # SQLite do the set difference. The inline ``NOT IN`` above trips
     # ``OperationalError: too many SQL variables`` once the library
-    # crosses ``SQLITE_MAX_VARIABLE_NUMBER`` (999 on the stock Windows
-    # Python build, 32766 on newer ones). ``executemany`` binds at
+    # crosses ``SQLITE_MAX_VARIABLE_NUMBER``. ``executemany`` binds at
     # most one variable per statement so we can feed any size set.
     #
     # The temp table is named with a stable identifier so concurrent
