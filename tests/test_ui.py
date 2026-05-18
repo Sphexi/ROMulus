@@ -342,6 +342,35 @@ class TestSystemSidebar:
         sidebar.setCurrentIndex(model.indexFromItem(model.item(0)))
         assert received and received[0] is None
 
+    def test_logo_icons_share_fixed_canvas_size(self, qapp) -> None:
+        """Every returned icon's pixmap must be the canvas dimensions.
+
+        Without the fixed-canvas composite, Qt would render each icon at
+        its natural scaledToHeight width, so the text column would start
+        at a different x for a narrow logo (PC Engine) versus a wide one
+        (GBA / studio2). The user-visible symptom was ragged alignment;
+        this test pins the invariant that all icons are the same size.
+        """
+        from romulus.ui.system_sidebar import (
+            _SIDEBAR_LOGO_HEIGHT,
+            _SIDEBAR_LOGO_WIDTH,
+            _logo_icon_for,
+        )
+
+        # Pick three systems that bracket the width range — the narrow
+        # PC Engine sits well under the canvas width, the average GB
+        # sits around the median, and the ultra-wide Super Cassette
+        # Vision has to be shrunk on the long axis to fit.
+        target_size = (_SIDEBAR_LOGO_WIDTH, _SIDEBAR_LOGO_HEIGHT)
+        for system_id in ("pcengine", "gb", "scv"):
+            icon = _logo_icon_for(system_id, "dark")
+            assert icon is not None, f"missing bundled logo for {system_id}"
+            pix = icon.pixmap(_SIDEBAR_LOGO_WIDTH, _SIDEBAR_LOGO_HEIGHT)
+            assert (pix.width(), pix.height()) == target_size, (
+                f"{system_id} icon pixmap is {pix.width()}x{pix.height()}, "
+                f"expected {target_size}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # GameTable widget — minimal smoke test

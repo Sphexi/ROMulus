@@ -5,7 +5,14 @@ from __future__ import annotations
 import sqlite3
 
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QAction, QIcon, QPixmap, QStandardItem, QStandardItemModel
+from PySide6.QtGui import (
+    QAction,
+    QIcon,
+    QPainter,
+    QPixmap,
+    QStandardItem,
+    QStandardItemModel,
+)
 from PySide6.QtWidgets import QMenu, QTreeView, QWidget
 
 from romulus.db import get_config
@@ -19,12 +26,21 @@ KIND_ALL = "all"
 KIND_SYSTEM = "system"
 KIND_COLLECTION = "collection"
 
-# Logo height in pixels at sidebar zoom; width is whatever preserves the
-# native aspect ratio (these logos are typically ~5:1 letterboxes). Bumped
-# above the default Qt iconSize (16) because below ~20px the wordmarks
-# turn to mush. The QTreeView iconSize cell is square at this height; the
-# pixmap is rendered inside that, letterboxed.
+# Logo display dimensions at sidebar zoom. The pixmap for every system
+# is composited onto a fixed (_SIDEBAR_LOGO_WIDTH x _SIDEBAR_LOGO_HEIGHT)
+# transparent canvas with the source logo scaled to fit (preserving
+# aspect ratio) and centered. The fixed canvas is what makes the text
+# column line up across rows — without it, narrow logos like "MSX"
+# rendered at their native ~50px width while wide ones like "Super
+# Nintendo Entertainment System" rendered at ~180px, leaving the row
+# text column ragged.
+#
+# 22px height is above the default Qt iconSize (16) so wordmarks stay
+# readable; 120px width fits the median (~96px) plus a comfortable
+# margin, and scales down the rare ultra-wide logos (Super Cassette
+# Vision and a handful of others) on the long axis.
 _SIDEBAR_LOGO_HEIGHT = 22
+_SIDEBAR_LOGO_WIDTH = 120
 
 
 def get_rom_counts_by_system(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
@@ -71,10 +87,11 @@ class SystemSidebar(QTreeView):
         self.setHeaderHidden(True)
         self.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
         self.selectionModel().currentChanged.connect(self._on_current_changed)
-        # Give the icon column enough room for the wide logo PNGs. iconSize
-        # only sets the *bounding* box; QStandardItem.setIcon() scales the
-        # source pixmap into it preserving aspect ratio.
-        self.setIconSize(QSize(_SIDEBAR_LOGO_HEIGHT * 3, _SIDEBAR_LOGO_HEIGHT))
+        # Pin the icon slot to the canvas dimensions used by
+        # :func:`_logo_icon_for`. Each icon QPixmap is pre-composited at
+        # exactly this size with transparent padding so the text column
+        # starts at a consistent x-offset for every row.
+        self.setIconSize(QSize(_SIDEBAR_LOGO_WIDTH, _SIDEBAR_LOGO_HEIGHT))
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
@@ -212,20 +229,42 @@ class SystemSidebar(QTreeView):
 
 
 def _logo_icon_for(system_id: str, theme_id: str) -> QIcon | None:
-    """Resolve a bundled platform logo into a sidebar-sized QIcon.
+    """Resolve a bundled platform logo into a fixed-width sidebar QIcon.
 
-    Returns ``None`` when ``system_id`` has no logo for the current theme,
-    or when the resolved PNG fails to decode. Callers must treat ``None``
-    as "skip the icon, show text only".
+    Every returned icon is exactly
+    ``(_SIDEBAR_LOGO_WIDTH x _SIDEBAR_LOGO_HEIGHT)``; the source logo
+    is scaled (preserving aspect ratio) to fit inside that canvas and
+    centered. The transparent padding around narrow logos is what
+    keeps the text column aligned across rows — Qt's default
+    icon-rendering picks the pixmap's natural width when that's
+    smaller than ``iconSize``, which would otherwise leave the row
+    text starting at different x-offsets.
+
+    Returns ``None`` when ``system_id`` has no logo for the current
+    theme, or when the resolved PNG fails to decode. Callers must
+    treat ``None`` as "skip the icon, show text only".
     """
     path = resolve_system_logo(system_id, theme_id)
     if path is None:
         return None
-    pix = QPixmap(str(path))
-    if pix.isNull():
+    source = QPixmap(str(path))
+    if source.isNull():
         return None
-    scaled = pix.scaledToHeight(
+    # ``Qt.AspectRatioMode.KeepAspectRatio`` picks the smaller of
+    # (target_w / source_w, target_h / source_h) so the scaled pixmap
+    # always fits inside the canvas. Tall logos fill the height; ultra-
+    # wide logos fill the width and lose a bit of vertical resolution.
+    scaled = source.scaled(
+        _SIDEBAR_LOGO_WIDTH,
         _SIDEBAR_LOGO_HEIGHT,
+        Qt.AspectRatioMode.KeepAspectRatio,
         Qt.TransformationMode.SmoothTransformation,
     )
-    return QIcon(scaled)
+    canvas = QPixmap(_SIDEBAR_LOGO_WIDTH, _SIDEBAR_LOGO_HEIGHT)
+    canvas.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(canvas)
+    x_offset = (_SIDEBAR_LOGO_WIDTH - scaled.width()) // 2
+    y_offset = (_SIDEBAR_LOGO_HEIGHT - scaled.height()) // 2
+    painter.drawPixmap(x_offset, y_offset, scaled)
+    painter.end()
+    return QIcon(canvas)
