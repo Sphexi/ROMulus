@@ -8,13 +8,15 @@
 # At runtime the bootloader self-extracts the payload into a per-process temp
 # dir (``sys._MEIPASS``); ``romulus.app`` resolves resources relative to that.
 #
-# User-editable data folders (``dats/``, ``profiles/``, ``systems/``) are NOT
-# embedded in the exe — ``build-portable.ps1`` copies them next to the exe in
-# the final ZIP so users can see and edit them on first extract without having
-# to launch the app to trigger seeding. End-user layout::
+# User-editable data folders (``dats/``, ``gamedb/``, ``profiles/``,
+# ``systems/``) are NOT embedded in the exe — ``build-portable.ps1`` copies
+# them next to the exe in the final ZIP so users can see and edit them on
+# first extract without having to launch the app to trigger seeding.
+# End-user layout::
 #
 #   romulus.exe        (single self-contained binary)
 #   dats/*.dat         (bundled No-Intro DAT files — user-editable)
+#   gamedb/*.json      (bundled GameDB metadata snapshots — user-editable)
 #   profiles/*.yaml    (destination profiles — user-editable)
 #   systems/*.yaml     (system registry YAMLs — user-editable)
 #

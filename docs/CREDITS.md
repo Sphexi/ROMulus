@@ -43,6 +43,7 @@ DATs → Add folder.
 | **Redump** | Logiqx XML DATs for disc-based systems (PS1, Saturn, Dreamcast, PC Engine CD) | <http://redump.org/> |
 | **TOSEC** | Optional supplementary DATs for older / less-mainstream platforms | <https://www.tosecdev.org/> |
 | **Logiqx XML DAT format** | The DAT schema ROMulus parses | <https://www.logiqx.com/> |
+| **GameDB** (Niema Moshiri) | Per-console JSON snapshots used as the offline first-pass enrichment source (publisher, release date, canonical release name, CRC32). Bundled under `data/gamedb/` in dev clones and `gamedb/` in portable releases. | <https://github.com/niemasd/GameDB> |
 
 DAT files describe ROM dumps by SHA-1 / CRC32 hash; ROMulus uses them for
 canonical naming and Heavy Scan identity matching. The DAT files

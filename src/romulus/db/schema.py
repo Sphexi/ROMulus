@@ -126,6 +126,7 @@ SCHEMA_STATEMENTS: list[str] = [
         developer    TEXT,
         publisher    TEXT,
         release_date TEXT,
+        release_year INTEGER,
         players      TEXT,
         rating       TEXT,
         source       TEXT NOT NULL

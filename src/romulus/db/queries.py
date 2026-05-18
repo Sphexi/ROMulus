@@ -672,6 +672,7 @@ _METADATA_FIELDS: tuple[str, ...] = (
     "developer",
     "publisher",
     "release_date",
+    "release_year",
     "players",
     "rating",
 )
@@ -693,14 +694,15 @@ def upsert_metadata(
         """
         INSERT INTO metadata (
             game_id, description, genre, developer, publisher,
-            release_date, players, rating, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            release_date, release_year, players, rating, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(game_id) DO UPDATE SET
             description  = excluded.description,
             genre        = excluded.genre,
             developer    = excluded.developer,
             publisher    = excluded.publisher,
             release_date = excluded.release_date,
+            release_year = excluded.release_year,
             players      = excluded.players,
             rating       = excluded.rating,
             source       = excluded.source

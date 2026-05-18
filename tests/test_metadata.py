@@ -16,6 +16,7 @@ from romulus.db import get_config, seed_defaults, set_config
 from romulus.db import queries as q
 from romulus.metadata import (
     enrich_library,
+    gamedb,
     hasheous,
     launchbox,
     libretro,
@@ -1407,3 +1408,267 @@ class TestTgdbEnrichmentChain:
             seeded_db, cache_dir=tmp_path / "covers", http_client=client
         )
         assert tgdb_calls == [], "Persisted zero allowance must skip TGDB"
+
+
+# ---------------------------------------------------------------------------
+# GameDB client (offline, bundled JSON)
+# ---------------------------------------------------------------------------
+
+
+_GAMEDB_SAMPLE: dict[str, dict] = {
+    "NUS-CDZJ-JPN": {
+        "crc32": "0x9e978488",
+        "crc32_128kb": "0xb58305ba",
+        "developer": "Athena",
+        "publisher": "Athena",
+        "region": "NTSC-J",
+        "release_date": "1998-06-26",
+        "release_name": "Dezaemon 3D (Japan)",
+        "serial": "NUS-CDZJ-JPN",
+        "title": "Dezaemon 3D",
+    },
+    "NUS-NSME-USA": {
+        "crc32": "0xbb95e7d5",
+        "region": "NTSC-U",
+        "release_name": "Super Mario 64 (USA)",
+        "title": "Super Mario 64",
+    },
+}
+
+
+def _build_gamedb_index() -> gamedb.GameDBIndex:
+    """Build a GameDBIndex from the in-test sample dict."""
+    return gamedb.GameDBIndex(list(_GAMEDB_SAMPLE.values()))
+
+
+class TestGameDBNormalisation:
+    def test_normalise_crc32_strips_prefix_and_lowercases(self) -> None:
+        assert gamedb._normalise_crc32("0x9E978488") == "9e978488"
+        assert gamedb._normalise_crc32("9e978488") == "9e978488"
+        assert gamedb._normalise_crc32("0X9E978488") == "9e978488"
+
+    def test_normalise_crc32_pads_short_values(self) -> None:
+        assert gamedb._normalise_crc32("0xabc") == "00000abc"
+
+    def test_normalise_crc32_rejects_non_hex(self) -> None:
+        assert gamedb._normalise_crc32("0xZZZ") is None
+        assert gamedb._normalise_crc32(None) is None
+        assert gamedb._normalise_crc32("") is None
+
+    def test_extract_year_from_full_date(self) -> None:
+        assert gamedb._extract_year("1998-06-26") == 1998
+
+    def test_extract_year_from_year_only(self) -> None:
+        assert gamedb._extract_year("1998") == 1998
+
+    def test_extract_year_rejects_garbage(self) -> None:
+        assert gamedb._extract_year("not a date") is None
+        assert gamedb._extract_year(None) is None
+        assert gamedb._extract_year("3500-01-01") is None  # out of range
+
+
+class TestGameDBIndex:
+    def test_lookup_by_crc32_matches(self) -> None:
+        index = _build_gamedb_index()
+        entry = gamedb.lookup_by_crc32("9e978488", index)
+        assert entry is not None
+        assert entry["title"] == "Dezaemon 3D"
+
+    def test_lookup_by_crc32_accepts_dat_form(self) -> None:
+        """ROMulus's hashes.crc32 lacks the ``0x`` prefix that GameDB stores."""
+        index = _build_gamedb_index()
+        entry = gamedb.lookup_by_crc32("bb95e7d5", index)
+        assert entry is not None
+        assert entry["title"] == "Super Mario 64"
+
+    def test_lookup_by_title_normalises(self) -> None:
+        index = _build_gamedb_index()
+        # Region tag should be stripped before comparison.
+        entry = gamedb.lookup_by_title("Super Mario 64 (USA)", index)
+        assert entry is not None
+        assert entry["title"] == "Super Mario 64"
+
+    def test_lookup_by_crc32_returns_none_on_miss(self) -> None:
+        index = _build_gamedb_index()
+        assert gamedb.lookup_by_crc32("deadbeef", index) is None
+
+    def test_entry_to_metadata_extracts_year_from_full_date(self) -> None:
+        entry = _GAMEDB_SAMPLE["NUS-CDZJ-JPN"]
+        payload = gamedb.entry_to_metadata(entry)
+        assert payload["publisher"] == "Athena"
+        assert payload["release_date"] == "1998-06-26"
+        assert payload["release_year"] == 1998
+
+    def test_entry_to_metadata_omits_missing_fields(self) -> None:
+        """Identifier-only entries (no publisher/date) produce a sparse payload."""
+        entry = _GAMEDB_SAMPLE["NUS-NSME-USA"]
+        payload = gamedb.entry_to_metadata(entry)
+        assert payload.get("publisher") is None
+        assert payload.get("release_date") is None
+        assert payload.get("release_year") is None
+
+
+class TestGameDBLoadIndex:
+    def test_load_index_round_trips_a_real_file(self, tmp_path: Path) -> None:
+        import json
+
+        path = tmp_path / "fake.json"
+        path.write_text(json.dumps(_GAMEDB_SAMPLE), encoding="utf-8")
+        index = gamedb.load_index(path)
+        assert index is not None
+        assert index.entry_count == 2
+        assert gamedb.lookup_by_crc32("9e978488", index) is not None
+
+    def test_load_index_returns_none_on_malformed_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.json"
+        path.write_text("not json", encoding="utf-8")
+        assert gamedb.load_index(path) is None
+
+    def test_load_index_returns_none_on_top_level_array(self, tmp_path: Path) -> None:
+        """GameDB files must be dicts of serial -> entry; arrays are unsupported."""
+        import json
+
+        path = tmp_path / "list.json"
+        path.write_text(json.dumps([{"title": "x"}]), encoding="utf-8")
+        assert gamedb.load_index(path) is None
+
+
+class TestGameDBEnrichmentChain:
+    def test_gamedb_fires_first_when_crc32_matches(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GameDB hits short-circuit the chain before any HTTP call fires."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        gamedb.reset_cache_for_tests()
+
+        game_id = _seed_verified_game(
+            seeded_db, title="Dezaemon 3D", system_id="n64", sha1="a" * 40
+        )
+        # Inject a CRC32 on the hash row so GameDB has something to match.
+        q.upsert_hash(
+            seeded_db,
+            1,  # rom_id from _seed_verified_game (single rom)
+            crc32="9e978488",
+            sha1="a" * 40,
+            md5=None,
+        )
+        seeded_db.commit()
+
+        # Point the GameDB resolver at our test fixture by injecting a
+        # patched ``get_index_for_system`` — much simpler than staging a
+        # full data/gamedb/n64.json file in tmp_path.
+        index = _build_gamedb_index()
+        monkeypatch.setattr(
+            gamedb, "get_index_for_system", lambda sid: index if sid == "n64" else None
+        )
+
+        # Cover lookups still hit libretro-thumbnails — that's a separate
+        # concern from metadata. We assert only that no *metadata* provider
+        # was contacted, by counting calls and excluding the libretro CDN.
+        non_cover_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "thumbnails.libretro.com" not in request.url.host:
+                non_cover_calls.append(request.url.host)
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+
+        assert stats["metadata_added"] == 1
+        assert non_cover_calls == [], (
+            f"Expected only libretro cover calls; got: {non_cover_calls}"
+        )
+        meta = q.get_metadata(seeded_db, game_id)
+        assert meta is not None
+        assert meta["source"] == "gamedb"
+        assert meta["publisher"] == "Athena"
+        assert meta["release_date"] == "1998-06-26"
+        assert meta["release_year"] == 1998
+
+    def test_gamedb_skips_when_no_user_facing_fields(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Identifier-only GameDB entries must fall through to later providers.
+
+        Otherwise we'd commit a metadata row with no description/dev/pub/
+        date and the game would be locked out of richer providers on
+        subsequent enrich passes.
+        """
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        gamedb.reset_cache_for_tests()
+
+        _seed_verified_game(
+            seeded_db, title="Super Mario 64", system_id="n64", sha1="b" * 40
+        )
+        q.upsert_hash(
+            seeded_db, 1, crc32="bb95e7d5", sha1="b" * 40, md5=None
+        )
+        seeded_db.commit()
+
+        index = _build_gamedb_index()
+        monkeypatch.setattr(
+            gamedb, "get_index_for_system", lambda sid: index if sid == "n64" else None
+        )
+
+        # Hasheous returns a hit so we can verify the chain progressed.
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                return httpx.Response(
+                    200,
+                    json={"title": "Super Mario 64", "description": "Bowser."},
+                )
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        stats = enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+        assert stats["metadata_added"] == 1
+        meta = q.get_metadata(seeded_db, 1)
+        assert meta is not None
+        # GameDB had only release_name/title (no publisher/date), so chain
+        # progressed to Hasheous which DID return user-facing data.
+        assert meta["source"] == "hasheous"
+        assert meta["description"] == "Bowser."
+
+    def test_gamedb_falls_back_to_title_when_crc_misses(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A quick-scan-only game (no CRC) should still benefit from title match."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        gamedb.reset_cache_for_tests()
+
+        # Force-enrich pathway (include_already_enriched=True equivalent
+        # not needed here; we just use a verified game with no CRC).
+        game_id = _seed_verified_game(
+            seeded_db, title="Dezaemon 3D", system_id="n64", sha1="c" * 40
+        )
+        # No CRC32 written — sha1 only.
+        seeded_db.commit()
+
+        index = _build_gamedb_index()
+        monkeypatch.setattr(
+            gamedb, "get_index_for_system", lambda sid: index if sid == "n64" else None
+        )
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        enrich_library(
+            seeded_db, cache_dir=tmp_path / "covers", http_client=client
+        )
+        meta = q.get_metadata(seeded_db, game_id)
+        assert meta is not None
+        assert meta["source"] == "gamedb"
+        assert meta["release_year"] == 1998

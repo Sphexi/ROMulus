@@ -10,6 +10,7 @@
 #   dist/romulus/                       — assembled portable folder
 #     romulus.exe
 #     dats/*.dat                        — bundled No-Intro DAT files
+#     gamedb/*.json                     — bundled GameDB metadata files
 #     profiles/*.yaml                   — destination profiles
 #     systems/*.yaml                    — system registry
 #   dist/romulus-windows-x64.zip        — the shippable artifact
@@ -61,9 +62,10 @@ Move-Item -Path $exePath -Destination (Join-Path $bundleDir "romulus.exe")
 # Side-by-side user-editable folders. Each is copied from its canonical
 # repo location into the bundle root.
 $dataFolders = @(
-    @{ Source = "data\dats";  Target = "dats"     ; Filter = "*.dat"  },
-    @{ Source = "profiles";   Target = "profiles" ; Filter = "*.yaml" },
-    @{ Source = "systems";    Target = "systems"  ; Filter = "*.yaml" }
+    @{ Source = "data\dats";   Target = "dats"     ; Filter = "*.dat"  },
+    @{ Source = "data\gamedb"; Target = "gamedb"   ; Filter = "*.json" },
+    @{ Source = "profiles";    Target = "profiles" ; Filter = "*.yaml" },
+    @{ Source = "systems";     Target = "systems"  ; Filter = "*.yaml" }
 )
 foreach ($folder in $dataFolders) {
     $sourcePath = Join-Path $PSScriptRoot $folder.Source

@@ -381,7 +381,13 @@ class DetailPanel(QWidget):
             self._set_field("genre", metadata["genre"])
             self._set_field("developer", metadata["developer"])
             self._set_field("publisher", metadata["publisher"])
-            self._set_field("release_date", metadata["release_date"])
+            # Prefer the fuller release_date when present; fall back to the
+            # year-only value GameDB sometimes provides. Either fills the
+            # same "Released" grid row.
+            self._set_field(
+                "release_date",
+                metadata["release_date"] or metadata["release_year"],
+            )
             self._set_field("players", metadata["players"])
             self._set_field("rating", metadata["rating"])
             self._set_description(metadata["description"])

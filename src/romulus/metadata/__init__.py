@@ -19,7 +19,14 @@ import httpx
 
 from romulus.db import get_config, queries, set_config
 from romulus.db.config import DEFAULT_COVER_CACHE_DIR
-from romulus.metadata import hasheous, launchbox, libretro, screenscraper, thegamesdb
+from romulus.metadata import (
+    gamedb,
+    hasheous,
+    launchbox,
+    libretro,
+    screenscraper,
+    thegamesdb,
+)
 from romulus.metadata.launchbox import LaunchBoxIndex
 from romulus.models.system import SYSTEM_REGISTRY
 
@@ -134,12 +141,73 @@ def _get_sha1_for_game(conn: sqlite3.Connection, game_id: int) -> str | None:
     return row[0] if row else None
 
 
+def _get_crc32_for_game(conn: sqlite3.Connection, game_id: int) -> str | None:
+    """Find one CRC32 belonging to any hashed ROM of this game.
+
+    Unlike :func:`_get_sha1_for_game` this does *not* require
+    ``dat_verified`` — GameDB's CRC index is independent of our DAT
+    pipeline, so it's worth trying even on fuzzy-matched games when the
+    caller has opted in to include_fuzzy.
+    """
+    row = conn.execute(
+        """
+        SELECT h.crc32
+        FROM roms r
+        JOIN hashes h ON h.rom_id = r.id
+        WHERE r.game_id = ?
+          AND h.crc32 IS NOT NULL
+        LIMIT 1
+        """,
+        (game_id,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _try_gamedb(
+    conn: sqlite3.Connection,
+    game_id: int,
+    title: str,
+    system_id: str | None,
+    crc32: str | None,
+    canonical_name: str | None,
+) -> bool:
+    """Local-first GameDB lookup. Returns True when metadata was written.
+
+    Match order: CRC32 (precise, only if Heavy Scan has run for this rom)
+    -> canonical_name (closest to GameDB's release_name format) ->
+    game.title (last-ditch fuzzy fallback).
+    """
+    if not system_id:
+        return False
+    index = gamedb.get_index_for_system(system_id)
+    if index is None:
+        return False
+    entry = gamedb.lookup_by_crc32(crc32, index) if crc32 else None
+    if entry is None and canonical_name:
+        entry = gamedb.lookup_by_title(canonical_name, index)
+    if entry is None and title:
+        entry = gamedb.lookup_by_title(title, index)
+    if entry is None:
+        return False
+    payload = gamedb.entry_to_metadata(entry)
+    # GameDB carries identifier-only fields for most consoles; only
+    # commit metadata when at least one user-facing field is populated.
+    # Otherwise we'd insert an effectively-empty row that locks the game
+    # out of subsequent richer providers under the default filters.
+    if not any(payload.get(k) for k in ("publisher", "release_date", "release_year")):
+        return False
+    queries.upsert_metadata(conn, game_id, payload, source="gamedb")
+    return True
+
+
 def _fetch_metadata_for_game(
     conn: sqlite3.Connection,
     game_id: int,
     title: str,
     system_id: str | None,
     sha1: str | None,
+    crc32: str | None,
+    canonical_name: str | None,
     launchbox_index: LaunchBoxIndex | None,
     credentials: dict[str, str] | None,
     http_client: httpx.Client | None,
@@ -149,12 +217,18 @@ def _fetch_metadata_for_game(
 
     Order is deliberate:
 
-    1. Hasheous — hash-keyed lookup, free, no quota; most precise match.
+    0. GameDB — bundled JSON, offline, free; CRC32 + fuzzy title match.
+       Tried *first* so we never burn API quota on games that the
+       offline source can answer.
+    1. Hasheous — hash-keyed lookup, free, no quota; precise match.
     2. LaunchBox — offline XML, no network at all; precise when present.
     3. ScreenScraper — hash-keyed but requires a (free) user account.
     4. TheGamesDB — name+platform, monthly quota — *last* so we only
        spend quota on games every cheaper source missed.
     """
+    if _try_gamedb(conn, game_id, title, system_id, crc32, canonical_name):
+        return True
+
     if sha1:
         result = hasheous.lookup_by_hash(sha1, client=http_client)
         if result:
@@ -364,6 +438,7 @@ def enrich_library(
             progress_callback(idx, total, title)
 
         sha1 = _get_sha1_for_game(conn, game_id)
+        crc32 = _get_crc32_for_game(conn, game_id)
 
         if _fetch_metadata_for_game(
             conn,
@@ -371,6 +446,8 @@ def enrich_library(
             title,
             system_id,
             sha1,
+            crc32,
+            canonical_name,
             launchbox_index,
             credentials,
             http_client,
@@ -403,6 +480,7 @@ def enrich_library(
 __all__ = [
     "EnrichmentStats",
     "enrich_library",
+    "gamedb",
     "hasheous",
     "launchbox",
     "libretro",

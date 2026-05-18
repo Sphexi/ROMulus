@@ -74,6 +74,16 @@ class SystemDef(BaseModel):
             "``src/romulus/ui/artwork/``."
         ),
     )
+    gamedb_file: str | None = Field(
+        default=None,
+        description=(
+            "Filename of the bundled GameDB JSON for this system "
+            "(e.g. ``gba.json``), relative to ``data/gamedb/``. Provides "
+            "an offline first-pass metadata source — see "
+            ":mod:`romulus.metadata.gamedb`. Sourced from "
+            "https://github.com/niemasd/GameDB."
+        ),
+    )
 
     @field_validator("extensions", mode="after")
     @classmethod
@@ -114,6 +124,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=["Nintendo - Family Computer Disk System"],
         logo_dark="systems/nes-dark.png",
         logo_light="systems/nes-light.png",
+        gamedb_file="nes.json",
     ),
     SystemDef(
         id="snes",
@@ -129,6 +140,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=["Nintendo - Super Nintendo Entertainment System (Combined)"],
         logo_dark="systems/snes-dark.png",
         logo_light="systems/snes-light.png",
+        gamedb_file="snes.json",
     ),
     SystemDef(
         id="n64",
@@ -144,6 +156,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=["Nintendo - Nintendo 64 (BigEndian)"],
         logo_dark="systems/n64-dark.png",
         logo_light="systems/n64-light.png",
+        gamedb_file="n64.json",
     ),
     SystemDef(
         id="gamecube",
@@ -158,6 +171,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - GameCube",
         logo_dark="systems/gamecube-dark.png",
         logo_light="systems/gamecube-light.png",
+        gamedb_file="gamecube.json",
     ),
     SystemDef(
         id="gb",
@@ -172,6 +186,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - Game Boy",
         logo_dark="systems/gb-dark.png",
         logo_light="systems/gb-light.png",
+        gamedb_file="gb.json",
     ),
     SystemDef(
         id="gbc",
@@ -186,6 +201,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - Game Boy Color",
         logo_dark="systems/gbc-dark.png",
         logo_light="systems/gbc-light.png",
+        gamedb_file="gbc.json",
     ),
     SystemDef(
         id="gba",
@@ -200,6 +216,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - Game Boy Advance",
         logo_dark="systems/gba-dark.png",
         logo_light="systems/gba-light.png",
+        gamedb_file="gba.json",
     ),
     SystemDef(
         id="nds",
@@ -252,6 +269,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - Mega Drive - Genesis",
         logo_dark="systems/megadrive-dark.png",
         logo_light="systems/megadrive-light.png",
+        gamedb_file="megadrive.json",
     ),
     SystemDef(
         id="mastersystem",
@@ -266,6 +284,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - Master System - Mark III",
         logo_dark="systems/mastersystem-dark.png",
         logo_light="systems/mastersystem-light.png",
+        gamedb_file="mastersystem.json",
     ),
     SystemDef(
         id="gamegear",
@@ -280,6 +299,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - Game Gear",
         logo_dark="systems/gamegear-dark.png",
         logo_light="systems/gamegear-light.png",
+        gamedb_file="gamegear.json",
     ),
     SystemDef(
         id="saturn",
@@ -294,6 +314,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - Saturn",
         logo_dark="systems/saturn-dark.png",
         logo_light="systems/saturn-light.png",
+        gamedb_file="saturn.json",
     ),
     SystemDef(
         id="dreamcast",
@@ -308,6 +329,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - Dreamcast",
         logo_dark="systems/dreamcast-dark.png",
         logo_light="systems/dreamcast-light.png",
+        gamedb_file="dreamcast.json",
     ),
     SystemDef(
         id="sega32x",
@@ -322,6 +344,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - 32X",
         logo_dark="systems/sega32x-dark.png",
         logo_light="systems/sega32x-light.png",
+        gamedb_file="sega32x.json",
     ),
     # --- Sony ---
     SystemDef(
@@ -337,6 +360,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sony - PlayStation",
         logo_dark="systems/psx-dark.png",
         logo_light="systems/psx-light.png",
+        gamedb_file="psx.json",
     ),
     SystemDef(
         id="psp",
@@ -361,6 +385,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         ],
         logo_dark="systems/psp-dark.png",
         logo_light="systems/psp-light.png",
+        gamedb_file="psp.json",
     ),
     # --- Atari ---
     SystemDef(
@@ -376,6 +401,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Atari - 2600",
         logo_dark="systems/atari2600-dark.png",
         logo_light="systems/atari2600-light.png",
+        gamedb_file="atari2600.json",
     ),
     SystemDef(
         id="atari7800",
@@ -390,6 +416,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Atari - 7800",
         logo_dark="systems/atari7800-dark.png",
         logo_light="systems/atari7800-light.png",
+        gamedb_file="atari7800.json",
     ),
     SystemDef(
         id="lynx",
@@ -404,6 +431,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Atari - Lynx",
         logo_dark="systems/lynx-dark.png",
         logo_light="systems/lynx-light.png",
+        gamedb_file="lynx.json",
     ),
     SystemDef(
         id="atarist",
@@ -418,6 +446,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Atari - ST",
         logo_dark="systems/atarist-dark.png",
         logo_light="systems/atarist-light.png",
+        gamedb_file="atarist.json",
     ),
     # --- NEC ---
     SystemDef(
@@ -433,6 +462,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="NEC - PC Engine - TurboGrafx 16",
         logo_dark="systems/pcengine-dark.png",
         logo_light="systems/pcengine-light.png",
+        gamedb_file="pcengine.json",
     ),
     SystemDef(
         id="pcenginecd",
@@ -476,6 +506,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="SNK - Neo Geo Pocket",
         logo_dark="systems/ngp-dark.png",
         logo_light="systems/ngp-light.png",
+        gamedb_file="ngp.json",
     ),
     SystemDef(
         id="ngpc",
@@ -490,6 +521,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="SNK - Neo Geo Pocket Color",
         logo_dark="systems/ngpc-dark.png",
         logo_light="systems/ngpc-light.png",
+        gamedb_file="ngpc.json",
     ),
     # --- Arcade ---
     SystemDef(
@@ -535,6 +567,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=["Microsoft - MSX2"],
         logo_dark="systems/msx-dark.png",
         logo_light="systems/msx-light.png",
+        gamedb_file="msx.json",
     ),
     SystemDef(
         id="amiga",
@@ -549,6 +582,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Commodore - Amiga",
         logo_dark="systems/amiga-dark.png",
         logo_light="systems/amiga-light.png",
+        gamedb_file="amiga.json",
     ),
     SystemDef(
         id="c64",
@@ -564,6 +598,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name_aliases=["Commodore - 64 (PP)", "Commodore - 64 (Tapes)"],
         logo_dark="systems/c64-dark.png",
         logo_light="systems/c64-light.png",
+        gamedb_file="c64.json",
     ),
     SystemDef(
         id="zxspectrum",
@@ -608,6 +643,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Atari - 5200",
         logo_dark="systems/atari5200-dark.png",
         logo_light="systems/atari5200-light.png",
+        gamedb_file="atari5200.json",
     ),
     SystemDef(
         id="jaguar",
@@ -622,6 +658,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Atari - Jaguar (J64)",
         logo_dark="systems/jaguar-dark.png",
         logo_light="systems/jaguar-light.png",
+        gamedb_file="jaguar.json",
     ),
     # --- Bandai ---
     SystemDef(
@@ -637,6 +674,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Bandai - WonderSwan",
         logo_dark="systems/wonderswan-dark.png",
         logo_light="systems/wonderswan-light.png",
+        gamedb_file="wonderswan.json",
     ),
     SystemDef(
         id="wonderswancolor",
@@ -651,6 +689,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Bandai - WonderSwan Color",
         logo_dark="systems/wonderswancolor-dark.png",
         logo_light="systems/wonderswancolor-light.png",
+        gamedb_file="wonderswancolor.json",
     ),
     # --- Benesse ---
     # Pocket Challenge V2 is a WonderSwan-compatible educational handheld sold
@@ -683,6 +722,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Coleco - ColecoVision",
         logo_dark="systems/colecovision-dark.png",
         logo_light="systems/colecovision-light.png",
+        gamedb_file="colecovision.json",
     ),
     # --- Commodore (extended) ---
     SystemDef(
@@ -797,6 +837,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="GCE - Vectrex",
         logo_dark="systems/vectrex-dark.png",
         logo_light="systems/vectrex-light.png",
+        gamedb_file="vectrex.json",
     ),
     SystemDef(
         id="gamemaster",
@@ -927,6 +968,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Tiger - Game.com",
         logo_dark="systems/gamecom-dark.png",
         logo_light="systems/gamecom-light.png",
+        gamedb_file="gamecom.json",
     ),
     SystemDef(
         id="creativision",
@@ -967,6 +1009,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Watara - Supervision",
         logo_dark="systems/supervision-dark.png",
         logo_light="systems/supervision-light.png",
+        gamedb_file="supervision.json",
     ),
     # --- NEC (extended) ---
     SystemDef(
@@ -982,6 +1025,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="NEC - PC Engine SuperGrafx",
         logo_dark="systems/supergrafx-dark.png",
         logo_light="systems/supergrafx-light.png",
+        gamedb_file="supergrafx.json",
     ),
     # --- Sega (extended) ---
     SystemDef(
@@ -997,6 +1041,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - SG-1000",
         logo_dark="systems/sg1000-dark.png",
         logo_light="systems/sg1000-light.png",
+        gamedb_file="sg1000.json",
     ),
     SystemDef(
         id="segapico",
@@ -1011,6 +1056,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Sega - PICO",
         logo_dark="systems/segapico-dark.png",
         logo_light="systems/segapico-light.png",
+        gamedb_file="segapico.json",
     ),
     # The Beena was a Japan-only educational console aimed at preschoolers,
     # released by Sega in 2005. Routed for completeness; no real cores emulate
@@ -1041,6 +1087,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - Nintendo 64DD",
         logo_dark="systems/n64dd-dark.png",
         logo_light="systems/n64dd-light.png",
+        gamedb_file="n64dd.json",
     ),
     SystemDef(
         id="pokemini",
@@ -1069,6 +1116,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - Satellaview",
         logo_dark="systems/satellaview-dark.png",
         logo_light="systems/satellaview-light.png",
+        gamedb_file="satellaview.json",
     ),
     # Sufami Turbo: SNES cartridge accessory. The `.st` extension collides with
     # Atari ST disk images — disambiguation has to come from folder/system
@@ -1086,6 +1134,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Nintendo - Sufami Turbo",
         logo_dark="systems/sufami-dark.png",
         logo_light="systems/sufami-light.png",
+        gamedb_file="sufami.json",
     ),
     SystemDef(
         id="ereader",
@@ -1127,6 +1176,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         dat_name="Casio - Loopy",
         logo_dark="systems/casioloopy-dark.png",
         logo_light="systems/casioloopy-light.png",
+        gamedb_file="casioloopy.json",
     ),
     SystemDef(
         id="pv1000",
@@ -1171,6 +1221,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         ],
         logo_dark="systems/wii-dark.png",
         logo_light="systems/wii-light.png",
+        gamedb_file="wii.json",
     ),
     SystemDef(
         id="wiiu",
@@ -1288,6 +1339,7 @@ _FALLBACK_REGISTRY: list[SystemDef] = [
         ],
         logo_dark="systems/xbox360-dark.png",
         logo_light="systems/xbox360-light.png",
+        gamedb_file="xbox360.json",
     ),
     # --- Mobile / PDA ---
     # J2ME and Palm OS predate or sit alongside the cartridge era. There are

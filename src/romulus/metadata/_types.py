@@ -21,5 +21,6 @@ class MetadataPayload(TypedDict, total=False):
     developer: str | None
     publisher: str | None
     release_date: str | None
+    release_year: int | None
     players: str | None
     rating: str | None
