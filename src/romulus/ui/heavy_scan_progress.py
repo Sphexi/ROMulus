@@ -50,10 +50,11 @@ class HeavyScanProgressDialog(QProgressDialog):
                 "✓ Heavy Scan complete — cache up to date.\n"
                 "No ROMs needed re-hashing and every existing hash is "
                 "already DAT-matched.\n\n"
-                "If you expected work to happen here, the most likely "
-                "cause is that your ROMs were hashed by a previous run. "
-                "Modifying a file (mtime change) or running Quick Scan "
-                "to re-enrol it will queue it for re-hashing."
+                "Heavy Scan re-hashes a ROM only when its recorded "
+                "modification time has drifted from when it was last "
+                "hashed. To pick up file changes, run Quick Scan first "
+                "— it re-stats every file and updates the modification "
+                "time so the next Heavy Scan can detect the drift."
             )
         else:
             error_line = f"\nErrors: {errors}" if errors else ""
