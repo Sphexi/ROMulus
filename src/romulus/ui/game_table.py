@@ -559,7 +559,7 @@ class GameTable(QWidget):
         )
         menu.addAction(heavy_scan_action)
 
-        covers_action = QAction("Find local covers for this game", menu)
+        covers_action = QAction("Find covers for this game", menu)
         covers_action.triggered.connect(
             lambda: self.find_local_covers_game_requested.emit(game_id)
         )

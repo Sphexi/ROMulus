@@ -176,7 +176,7 @@ class SystemSidebar(QTreeView):
         )
         menu.addAction(enrich)
 
-        covers = QAction(f"Find local covers for {display_name}", menu)
+        covers = QAction(f"Find covers for {display_name}", menu)
         covers.triggered.connect(
             lambda: self.find_covers_system_requested.emit(system_id)
         )
@@ -202,7 +202,7 @@ class SystemSidebar(QTreeView):
         )
         menu.addAction(heavy)
 
-        covers = QAction(f"Find local covers for games in {display_name}", menu)
+        covers = QAction(f"Find covers for games in {display_name}", menu)
         covers.triggered.connect(
             lambda: self.find_covers_collection_requested.emit(collection_id)
         )

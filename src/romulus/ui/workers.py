@@ -46,7 +46,7 @@ from romulus.core.sync import (
     persist_plan,
 )
 from romulus.db import get_connection
-from romulus.metadata import enrich_library
+from romulus.metadata import enrich_library, fetch_online_covers_for_scope
 from romulus.models.profile import DestinationProfile
 
 logger = logging.getLogger(__name__)
@@ -341,21 +341,34 @@ class HeavyScanWorker(_DbWorker):
         self.finished_ok.emit(total_hashed, total_matched, errors)
 
 
-class LocalCoverFinderWorker(_DbWorker):
-    """Run :func:`discover_local_covers` against a library path on a worker thread.
+class CoverFinderWorker(_DbWorker):
+    """Run local cover discovery and/or online cover fetching on a worker thread.
 
     Signals:
-        progress(current, total, filename): Emitted once per ROM processed.
-        finished_ok(roms_scanned, covers_found, covers_skipped, errors): Final counts.
+        progress(current, total, filename): Emitted once per ROM/game processed.
+        finished_ok(roms_scanned, covers_found, covers_skipped, errors, online_covers):
+            Final counts. ``online_covers`` is the count of libretro
+            thumbnails inserted during the online phase (0 when that
+            phase was skipped).
         failed(message): Emitted on exception or cooperative cancel.
 
-    Optional ``scope_rom_ids`` limits discovery to a subset of ROM ids.
+    Two independent toggles:
+
+    * ``include_local`` (default True) — walk the configured library
+      and link image files found alongside ROMs.
+    * ``include_online`` (default False) — fetch libretro thumbnails
+      for every game in scope that doesn't already have one.
+
+    Both phases share the same ``scope_rom_ids`` filter so a system or
+    collection scope narrows both. When both flags are False nothing
+    runs and the worker emits zeros — callers should validate that at
+    least one mode is enabled before constructing the worker.
     """
 
     progress = Signal(int, int, str)
-    finished_ok = Signal(int, int, int, int)
+    finished_ok = Signal(int, int, int, int, int)
 
-    _operation_name = "Local Cover Discovery"
+    _operation_name = "Cover Discovery"
 
     def __init__(
         self,
@@ -363,28 +376,66 @@ class LocalCoverFinderWorker(_DbWorker):
         library_path: Path | str,
         *,
         scope_rom_ids: list[int] | None = None,
+        include_local: bool = True,
+        include_online: bool = False,
+        cache_dir: Path | str | None = None,
     ) -> None:
         super().__init__(db_path)
         self._library_path = str(library_path)
         self._scope_rom_ids = scope_rom_ids
+        self._include_local = include_local
+        self._include_online = include_online
+        self._cache_dir = cache_dir
 
     def _run_work(self, conn: sqlite3.Connection) -> None:
         def _progress(current: int, total: int, filename: str) -> None:
             self._check_cancel()
             self.progress.emit(current, total, filename)
 
-        result: DiscoveryResult = discover_local_covers(
-            conn,
-            self._library_path,
-            progress_callback=_progress,
-            scope_rom_ids=self._scope_rom_ids,
-        )
+        # Phase 1: local image-file discovery. Populates the same
+        # roms_scanned / covers_found / covers_skipped / errors counts
+        # the dialog used to receive — preserves on-screen wording.
+        if self._include_local:
+            result: DiscoveryResult = discover_local_covers(
+                conn,
+                self._library_path,
+                progress_callback=_progress,
+                scope_rom_ids=self._scope_rom_ids,
+            )
+            roms_scanned = result.roms_scanned
+            covers_found = result.covers_found
+            covers_skipped = result.covers_skipped_existing
+            errors = result.errors
+        else:
+            roms_scanned = 0
+            covers_found = 0
+            covers_skipped = 0
+            errors = 0
+
+        # Phase 2: online libretro-thumbnail fetch for the same scope.
+        # Per-game, not per-rom — the helper resolves rom_ids -> game_ids.
+        online_covers = 0
+        if self._include_online:
+            online_covers = fetch_online_covers_for_scope(
+                conn,
+                scope_rom_ids=self._scope_rom_ids,
+                cache_dir=self._cache_dir,
+                progress_callback=_progress,
+            )
+
         self.finished_ok.emit(
-            result.roms_scanned,
-            result.covers_found,
-            result.covers_skipped_existing,
-            result.errors,
+            roms_scanned,
+            covers_found,
+            covers_skipped,
+            errors,
+            online_covers,
         )
+
+
+# Backwards-compatible alias for the rename above. Anything that
+# imported ``LocalCoverFinderWorker`` keeps working; new code should
+# use :class:`CoverFinderWorker`.
+LocalCoverFinderWorker = CoverFinderWorker
 
 
 class DestInventoryWorker(_DbWorker):

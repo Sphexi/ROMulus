@@ -773,9 +773,10 @@ def _seed_verified_game(db, *, title: str, system_id: str, sha1: str | None) -> 
 
 
 class TestEnrichLibrary:
-    def test_enrich_writes_metadata_and_cover(
+    def test_enrich_writes_metadata_only(
         self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Post metadata/covers split: enrich_library no longer fetches covers."""
         seed_defaults(seeded_db)
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
@@ -797,14 +798,11 @@ class TestEnrichLibrary:
                     },
                 )
             if "thumbnails.libretro.com" in host:
-                if "Named_Boxarts" in request.url.path:
-                    # Must lead with a real PNG magic-byte prefix — the
-                    # libretro fetch_cover rejects non-image responses per
-                    # security audit v0.1.0 finding #8.
-                    return httpx.Response(
-                        200, content=b"\x89PNG\r\n\x1a\nBOX"
-                    )
-                return httpx.Response(404)
+                # Enrich must NOT touch the cover CDN any more — split
+                # into the Find Covers worker. Fail loudly if it does.
+                raise AssertionError(
+                    "enrich_library should not fetch covers post-split"
+                )
             raise AssertionError(f"unexpected host: {host}")
 
         client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -819,7 +817,8 @@ class TestEnrichLibrary:
 
         assert stats["games_processed"] == 1
         assert stats["metadata_added"] == 1
-        assert stats["covers_added"] == 1
+        # Stats field is still emitted (back-compat) but always 0 now.
+        assert stats["covers_added"] == 0
         assert progress_events == [(1, 1, "Super Mario World")]
 
         meta = q.get_metadata(seeded_db, 1)
@@ -827,9 +826,8 @@ class TestEnrichLibrary:
         assert meta["description"] == "Mario in Dinosaur Land."
         assert meta["source"] == "hasheous"
 
-        covers = q.get_covers(seeded_db, 1)
-        assert len(covers) == 1
-        assert Path(covers[0]["local_path"]).exists()
+        # No covers should have been inserted — enrich is metadata-only now.
+        assert q.get_covers(seeded_db, 1) == []
 
     def test_enrich_falls_back_to_launchbox(
         self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2120,3 +2118,60 @@ class TestEnrichIncludeOnlineFlag:
         meta = q.get_metadata(seeded_db, 1)
         assert meta is not None
         assert meta["source"] == "hasheous"
+
+
+# ---------------------------------------------------------------------------
+# fetch_online_covers_for_scope — the metadata/covers split's online side
+# ---------------------------------------------------------------------------
+
+
+class TestFetchOnlineCoversForScope:
+    def test_inserts_libretro_covers_for_scope(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """The function should request a thumbnail and insert a cover row."""
+        from romulus.metadata import fetch_online_covers_for_scope
+
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        game_id = _seed_verified_game(
+            seeded_db,
+            title="Super Mario World",
+            system_id="snes",
+            sha1="a" * 40,
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "thumbnails.libretro.com" in host:
+                if "Named_Boxarts" in request.url.path:
+                    return httpx.Response(
+                        200, content=b"\x89PNG\r\n\x1a\nBOX"
+                    )
+                return httpx.Response(404)
+            raise AssertionError(f"unexpected host: {host}")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        rom_ids = q.get_rom_ids_for_scope(seeded_db, game_id=game_id)
+        n = fetch_online_covers_for_scope(
+            seeded_db,
+            scope_rom_ids=rom_ids,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+        )
+        assert n == 1
+        covers = q.get_covers(seeded_db, game_id)
+        assert len(covers) == 1
+
+    def test_empty_scope_returns_zero(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """An explicit empty list should short-circuit without any work."""
+        from romulus.metadata import fetch_online_covers_for_scope
+
+        n = fetch_online_covers_for_scope(
+            seeded_db,
+            scope_rom_ids=[],
+            cache_dir=tmp_path / "covers",
+        )
+        assert n == 0

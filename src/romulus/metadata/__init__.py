@@ -493,7 +493,6 @@ def enrich_library(
 
     total = len(rows)
     metadata_added = 0
-    covers_added = 0
 
     for idx, row in enumerate(rows, start=1):
         game_id = row["id"]
@@ -523,15 +522,6 @@ def enrich_library(
         ):
             metadata_added += 1
 
-        covers_added += _fetch_covers_for_game(
-            conn,
-            game_id,
-            system_id,
-            canonical_name,
-            cache_dir,
-            http_client,
-        )
-
         conn.commit()
 
     # Persist whatever quota counter we ended on so the next session
@@ -541,13 +531,98 @@ def enrich_library(
     return {
         "games_processed": total,
         "metadata_added": metadata_added,
-        "covers_added": covers_added,
+        # ``covers_added`` is kept in the stats dict for backwards-
+        # compatible signal signatures (EnrichWorker.finished_ok still
+        # emits the same three ints) but cover fetching is now driven
+        # by ``find_covers_for_scope`` — the enrich path no longer
+        # touches the cover cache.
+        "covers_added": 0,
     }
+
+
+def fetch_online_covers_for_scope(
+    conn: sqlite3.Connection,
+    scope_rom_ids: list[int] | None = None,
+    cache_dir: Path | str | None = None,
+    progress_callback: ProgressCallback | None = None,
+    http_client: httpx.Client | None = None,
+) -> int:
+    """Fetch libretro thumbnails for every game in *scope_rom_ids*.
+
+    Walks DISTINCT game_ids reachable from the supplied rom-id scope
+    (or every game with metadata if ``scope_rom_ids`` is None) and
+    issues one libretro lookup per missing cover type per game. Returns
+    the count of new cover rows inserted.
+
+    Pairs with :func:`romulus.core.local_cover_finder.discover_local_covers`
+    on the offline side — the UI's "Find Covers" workflow runs one,
+    the other, or both based on the user's dialog choices.
+    """
+    cache_dir = _resolve_cache_dir(conn, cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve scope -> game rows. We need (id, system_id, canonical_name)
+    # per game; canonical_name drives the libretro filename lookup.
+    if scope_rom_ids is None:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT g.id, g.system_id, g.canonical_name, g.title
+            FROM games g
+            JOIN roms r ON r.game_id = g.id
+            ORDER BY g.system_id, g.title
+            """
+        ).fetchall()
+    elif not scope_rom_ids:
+        return 0
+    else:
+        # SQLite parameter limit defaults to 999; ROM-id lists from
+        # ``get_rom_ids_for_scope`` rarely exceed that, but chunk
+        # defensively to keep us inside the limit.
+        rows = []
+        seen: set[int] = set()
+        chunk_size = 500
+        for i in range(0, len(scope_rom_ids), chunk_size):
+            chunk = scope_rom_ids[i : i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            cursor = conn.execute(
+                f"""
+                SELECT DISTINCT g.id, g.system_id, g.canonical_name, g.title
+                FROM games g
+                JOIN roms r ON r.game_id = g.id
+                WHERE r.id IN ({placeholders})
+                """,
+                chunk,
+            )
+            for row in cursor.fetchall():
+                if row["id"] in seen:
+                    continue
+                seen.add(row["id"])
+                rows.append(row)
+
+    total = len(rows)
+    covers_added = 0
+    for idx, row in enumerate(rows, start=1):
+        game_id = int(row["id"])
+        title = str(row["title"] or "")
+        canonical_name = row["canonical_name"] or title
+        if progress_callback is not None:
+            progress_callback(idx, total, title)
+        covers_added += _fetch_covers_for_game(
+            conn,
+            game_id,
+            row["system_id"],
+            canonical_name,
+            cache_dir,
+            http_client,
+        )
+        conn.commit()
+    return covers_added
 
 
 __all__ = [
     "EnrichmentStats",
     "enrich_library",
+    "fetch_online_covers_for_scope",
     "gamedb",
     "hasheous",
     "launchbox",

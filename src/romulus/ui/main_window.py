@@ -19,6 +19,7 @@ from romulus.core.exporter import load_all_profiles
 from romulus.core.organizer import analyze_library
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
 from romulus.db import queries as q
+from romulus.ui.cover_options_dialog import CoverOptionsDialog
 from romulus.ui.dest_scan_progress import DestScanProgressDialog
 from romulus.ui.detail_panel import DetailPanel
 from romulus.ui.enrich_options_dialog import EnrichOptionsDialog
@@ -194,14 +195,17 @@ class MainWindow(QMainWindow):
         heavy_scan.triggered.connect(self._on_heavy_scan)
         tools_menu.addAction(heavy_scan)
         tools_menu.addSeparator()
-        enrich_action = QAction("&Enrich", self)
-        enrich_action.setToolTip("Fetch cover art and metadata for matched games.")
+        enrich_action = QAction("&Enrich Metadata", self)
+        enrich_action.setToolTip(
+            "Fetch metadata (publisher, genre, release year, etc.) for "
+            "matched games. Cover art is handled separately via Find Covers."
+        )
         enrich_action.triggered.connect(self._on_enrich)
         tools_menu.addAction(enrich_action)
-        local_cover_action = QAction("&Find Local Covers", self)
+        local_cover_action = QAction("&Find Covers", self)
         local_cover_action.setToolTip(
-            "Scan the library tree for image files matching enrolled ROMs and link"
-            " them as covers."
+            "Find cover art for enrolled ROMs by scanning the library "
+            "for local image files and/or fetching libretro thumbnails."
         )
         local_cover_action.triggered.connect(self._on_find_local_covers)
         tools_menu.addAction(local_cover_action)
@@ -250,13 +254,13 @@ class MainWindow(QMainWindow):
         organize = QAction("Organize", self)
         organize.triggered.connect(self._on_organize)
         toolbar.addAction(organize)
-        enrich = QAction("Enrich", self)
+        enrich = QAction("Enrich Metadata", self)
         enrich.triggered.connect(self._on_enrich)
         toolbar.addAction(enrich)
-        find_covers = QAction("Find Local Covers", self)
+        find_covers = QAction("Find Covers", self)
         find_covers.setToolTip(
-            "Scan the library tree for image files matching enrolled ROMs and link"
-            " them as covers."
+            "Find cover art for enrolled ROMs from local files and/or "
+            "libretro thumbnails."
         )
         find_covers.triggered.connect(self._on_find_local_covers)
         toolbar.addAction(find_covers)
@@ -890,8 +894,38 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _on_find_local_covers(self) -> None:
-        """Scan the library tree for local image files and link them as covers."""
+        """Open the Find Covers prompt; kick off worker on accept."""
         self._find_local_covers_scoped()
+
+    def _prompt_for_cover_options(
+        self,
+        *,
+        game_id: int | None,
+        system_id: str | None,
+        collection_id: int | None,
+    ) -> tuple[bool, bool] | None:
+        """Show :class:`CoverOptionsDialog`; return (local, online) or None.
+
+        ``None`` means the user cancelled. Shared by every find-covers
+        entry point — global, system, collection, and single-game —
+        so the wording and default state stay consistent.
+        """
+        if game_id is not None:
+            scope_label = "the selected game"
+        elif system_id is not None:
+            scope_label = f"every game on {system_id}"
+        elif collection_id is not None:
+            row = self._conn.execute(
+                "SELECT name FROM collections WHERE id = ?", (collection_id,)
+            ).fetchone()
+            name = row["name"] if row is not None else f"collection {collection_id}"
+            scope_label = f'every game in the "{name}" collection'
+        else:
+            scope_label = "the entire library"
+        dialog = CoverOptionsDialog(scope_label, parent=self)
+        if dialog.exec() != CoverOptionsDialog.DialogCode.Accepted:
+            return None
+        return dialog.include_local, dialog.include_online
 
     def _find_local_covers_scoped(
         self,
@@ -899,25 +933,42 @@ class MainWindow(QMainWindow):
         system_id: str | None = None,
         collection_id: int | None = None,
     ) -> None:
-        """Start local cover discovery, optionally scoped to a game/system/collection."""
+        """Start cover discovery, optionally scoped to a game/system/collection.
+
+        Always opens :class:`CoverOptionsDialog` first; the user picks
+        whether to walk the library for local images, fetch libretro
+        thumbnails online, or both.
+        """
         if (
             self._local_cover_worker is not None
             and self._local_cover_worker.isRunning()
         ):
             QMessageBox.information(
                 self,
-                "Local cover discovery already running",
-                "Local cover discovery is already in progress — "
+                "Cover discovery already running",
+                "Cover discovery is already in progress — "
                 "please wait for it to finish.",
             )
             return
 
+        chosen = self._prompt_for_cover_options(
+            game_id=game_id,
+            system_id=system_id,
+            collection_id=collection_id,
+        )
+        if chosen is None:
+            return
+        include_local, include_online = chosen
+
         library_path = get_config(self._conn, "library_path") or ""
-        if not library_path:
+        if include_local and not library_path:
             QMessageBox.warning(
                 self,
                 "No library configured",
-                "Set a library folder via File > Open Library first.",
+                "Set a library folder via File > Open Library first.\n\n"
+                "(Online-only cover discovery doesn't need a library "
+                "path — uncheck 'Search for local covers' to skip this "
+                "check.)",
             )
             return
 
@@ -933,20 +984,24 @@ class MainWindow(QMainWindow):
             )
 
         if game_id is not None:
-            scope_label = f"Finding local covers: game {game_id}..."
+            scope_label = f"Finding covers: game {game_id}..."
         elif system_id is not None:
-            scope_label = f"Finding local covers: {system_id}..."
+            scope_label = f"Finding covers: {system_id}..."
         elif collection_id is not None:
-            scope_label = f"Finding local covers: collection {collection_id}..."
+            scope_label = f"Finding covers: collection {collection_id}..."
         else:
-            scope_label = "Scanning for local cover images..."
+            scope_label = "Scanning for cover images..."
 
+        cover_cache = get_config(self._conn, "cover_cache_path") or None
         self._local_cover_dialog = LocalCoverProgressDialog(self)
         self._local_cover_dialog.setLabelText(scope_label)
         self._local_cover_worker = LocalCoverFinderWorker(
             DEFAULT_DB_PATH,
             library_path,
             scope_rom_ids=scope_rom_ids,
+            include_local=include_local,
+            include_online=include_online,
+            cache_dir=cover_cache,
         )
 
         self._local_cover_worker.progress.connect(
@@ -977,6 +1032,7 @@ class MainWindow(QMainWindow):
         _covers_found: int,
         _covers_skipped: int,
         _errors: int,
+        _online_covers: int = 0,
     ) -> None:
         self.refresh_all()
 

@@ -1507,14 +1507,20 @@ class TestEnrichProgressDialog:
         assert dlg.value() != 0
 
     def test_on_finished_summary_label(self, qapp) -> None:
+        """Post metadata/covers split: dialog displays only metadata counts."""
         from romulus.ui.enrich_progress import EnrichProgressDialog
 
         dlg = EnrichProgressDialog()
-        dlg.on_finished(10, 7, 4)
+        # Third arg is the back-compat covers_added signal; the dialog
+        # ignores it now that covers live in the Find Covers workflow.
+        dlg.on_finished(10, 7, 0)
         label = dlg.labelText()
         assert "10" in label
         assert "7" in label
-        assert "4" in label
+        assert "Covers" not in label, (
+            "Enrich dialog must not advertise covers — they're a "
+            "separate workflow post-split."
+        )
 
     def test_enrich_preflight_blocks_zero_eligible_games(
         self, qapp, seeded_db, monkeypatch
@@ -1972,3 +1978,44 @@ class TestPathColumn:
         seeded_db.commit()
         rows = load_rom_rows(seeded_db)
         assert rows[0].rom_path == "/roms/snes/Mario.sfc"
+
+
+# ---------------------------------------------------------------------------
+# CoverOptionsDialog — checkboxes for the Find Covers workflow
+# ---------------------------------------------------------------------------
+
+
+class TestCoverOptionsDialog:
+    def test_defaults_local_checked_online_unchecked(self, qapp) -> None:
+        """Default state matches the user-requested behaviour."""
+        from romulus.ui.cover_options_dialog import CoverOptionsDialog
+
+        dialog = CoverOptionsDialog("the entire library")
+        assert dialog.include_local is True
+        assert dialog.include_online is False
+
+    def test_ok_disabled_when_both_unchecked(self, qapp) -> None:
+        """OK must be disabled when nothing is selected to avoid a no-op run."""
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        from romulus.ui.cover_options_dialog import CoverOptionsDialog
+
+        dialog = CoverOptionsDialog("the entire library")
+        dialog.local_box.setChecked(False)
+        assert dialog.include_online is False
+        ok_btn = dialog._buttons.button(QDialogButtonBox.StandardButton.Ok)
+        assert ok_btn is not None
+        assert ok_btn.isEnabled() is False
+
+    def test_ok_enabled_when_either_box_checked(self, qapp) -> None:
+        """OK comes back as soon as either box is ticked."""
+        from PySide6.QtWidgets import QDialogButtonBox
+
+        from romulus.ui.cover_options_dialog import CoverOptionsDialog
+
+        dialog = CoverOptionsDialog("the entire library")
+        dialog.local_box.setChecked(False)
+        dialog.online_box.setChecked(True)
+        ok_btn = dialog._buttons.button(QDialogButtonBox.StandardButton.Ok)
+        assert ok_btn is not None
+        assert ok_btn.isEnabled() is True
