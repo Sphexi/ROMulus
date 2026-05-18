@@ -19,10 +19,28 @@ AVAILABLE_THEMES: dict[str, str] = {
     "dark": "Dark",
     "light": "Light",
     "wbm_classic": "WBM Classic",
+    "mario": "Mario",
+    "n64": "Nintendo 64",
+    "gamegear": "Game Gear",
+    "playstation": "PlayStation",
+    "dreamcast": "Dreamcast",
+    "neogeo": "Neo-Geo",
 }
 
 # Theme ids that have a corresponding .qss file.  "system" uses no QSS.
-_QSS_THEMES: frozenset[str] = frozenset({"dark", "light", "wbm_classic"})
+_QSS_THEMES: frozenset[str] = frozenset(
+    {
+        "dark",
+        "light",
+        "wbm_classic",
+        "mario",
+        "n64",
+        "gamegear",
+        "playstation",
+        "dreamcast",
+        "neogeo",
+    }
+)
 
 
 def load_theme_qss(theme_id: str) -> str:
