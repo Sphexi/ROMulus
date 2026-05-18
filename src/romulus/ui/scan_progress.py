@@ -21,23 +21,25 @@ class ScanProgressDialog(QProgressDialog):
         pin_progress_dialog_layout(self)
 
     def on_progress(self, count: int, filename: str) -> None:
-        """Slot — update the label with the latest scan tick."""
-        self.setLabelText(f"Scanned {count} files\n{filename}")
+        """Slot — update the label with the latest scan tick.
 
-    def on_walk_finished(self) -> None:
-        """Slot — disable Cancel once the post-walk DB rebuild starts.
-
-        Cancelling mid-rebuild (missing sweep, game grouping, scan
-        history update) would leave the DB inconsistent with disk —
-        rom rows present but unlinked, sweep half-done, etc. The
-        scanner has no safe abort points inside those phases, so the
-        button is removed for the duration. ``on_finished`` /
-        ``on_failed`` flip it back to a "Close" button via
-        ``setCancelButtonText``, which creates a fresh button.
+        Detects the post-walk phase by the literal Unicode ellipsis
+        suffix on the label (the scanner emits "Marking missing
+        entries…" / "Linking ROMs to games: …" / "Finalising scan
+        history…" — none of which can collide with a real ROM
+        filename). When detected, the Cancel button is removed:
+        cancelling mid-rebuild would leave the DB inconsistent with
+        disk, and the scanner has no safe abort points inside those
+        phases. ``on_finished`` / ``on_failed`` re-create a "Close"
+        button via ``setCancelButtonText`` when the worker is done.
         """
-        # QProgressDialog doesn't expose its cancel button directly;
-        # ``setCancelButton(None)`` removes the button entirely.
-        self.setCancelButton(None)
+        if filename.endswith("…"):
+            # QProgressDialog doesn't expose its cancel button
+            # directly; ``setCancelButton(None)`` removes the button
+            # entirely. Safe to call repeatedly — Qt no-ops when
+            # there's already no cancel button.
+            self.setCancelButton(None)
+        self.setLabelText(f"Scanned {count} files\n{filename}")
 
     def on_finished(
         self,

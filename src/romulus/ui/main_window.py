@@ -688,9 +688,6 @@ class MainWindow(QMainWindow):
         )
 
         self._scan_worker.progress.connect(self._scan_dialog.on_progress)
-        self._scan_worker.walk_finished.connect(
-            self._scan_dialog.on_walk_finished
-        )
         self._scan_worker.finished_ok.connect(self._scan_dialog.on_finished)
         self._scan_worker.failed.connect(self._scan_dialog.on_failed)
         self._scan_worker.finished_ok.connect(self._on_scan_finished_ok)
