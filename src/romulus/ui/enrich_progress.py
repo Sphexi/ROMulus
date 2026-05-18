@@ -11,6 +11,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QProgressDialog, QWidget
 
+from romulus.ui._progress_layout import pin_progress_dialog_layout
+
 
 class EnrichProgressDialog(QProgressDialog):
     """Determinate progress dialog driven by EnrichWorker signals."""
@@ -22,6 +24,7 @@ class EnrichProgressDialog(QProgressDialog):
         self.setMinimumDuration(0)
         self.setAutoClose(False)
         self.setAutoReset(False)
+        pin_progress_dialog_layout(self)
 
     def on_progress(self, current: int, total: int, title: str) -> None:
         """Slot — bump the progress bar and show the current game title."""

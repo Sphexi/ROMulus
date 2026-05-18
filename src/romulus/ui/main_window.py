@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -134,6 +135,8 @@ class MainWindow(QMainWindow):
         self.game_table.find_local_covers_game_requested.connect(
             lambda gid: self._find_local_covers_scoped(game_id=gid)
         )
+        self.game_table.reveal_rom_requested.connect(self._on_reveal_rom)
+        self.game_table.delete_rom_requested.connect(self._on_delete_rom)
 
         # Scoped sidebar actions — system.
         # Quick Scan for a system triggers a full library quick scan (path
@@ -408,6 +411,126 @@ class MainWindow(QMainWindow):
             self._conn, self._selected_collection, game_id
         )
         self.refresh_game_table()
+
+    def _on_reveal_rom(self, rom_id: int) -> None:
+        """Open the file manager with the ROM highlighted.
+
+        Windows: ``explorer /select,<path>`` selects the target inside
+        its parent folder. On non-Windows platforms the parent folder
+        is opened via ``QDesktopServices.openUrl`` — file managers on
+        macOS / Linux don't expose a portable "select this file" verb.
+        Missing files (the path stored in the DB no longer exists)
+        surface a QMessageBox so the user can choose to clean up the
+        stale row via Tools > Clean Missing Entries.
+        """
+        path = q.get_rom_path(self._conn, rom_id)
+        if not path:
+            QMessageBox.warning(
+                self,
+                "Reveal in Explorer",
+                "Could not find the ROM record (it may have just been "
+                "removed). Try refreshing the game list.",
+            )
+            return
+        target = Path(path)
+        if not target.exists():
+            QMessageBox.warning(
+                self,
+                "Reveal in Explorer",
+                f"The file no longer exists at:\n\n{path}\n\n"
+                "Use Tools > Clean Missing Entries to drop the stale "
+                "library row.",
+            )
+            return
+        if sys.platform.startswith("win"):
+            # Use ``ShellExecuteW`` directly rather than ``subprocess``.
+            # ``subprocess`` builds Windows command lines via
+            # ``list2cmdline``, which wraps multi-token strings (including
+            # the literal ``/select,"C:\\path\\to\\rom"`` we need) in an
+            # outer pair of quotes — Explorer then parses the whole thing
+            # as an unrecognised argument and silently falls back to
+            # opening the user's Documents folder. ShellExecuteW takes
+            # the parameter STRING as-is, so the canonical
+            # ``/select,"<native-path>"`` form reaches Explorer
+            # unmangled and the target file is highlighted.
+            import ctypes
+            import os
+
+            native_path = os.path.normpath(str(target))
+            ctypes.windll.shell32.ShellExecuteW(  # type: ignore[attr-defined]
+                None,
+                None,
+                "explorer.exe",
+                f'/select,"{native_path}"',
+                None,
+                1,
+            )
+            return
+        # Fallback: open the parent folder. macOS could use ``open -R``
+        # for a true reveal but we don't ship a macOS build today.
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.parent)))
+
+    def _on_delete_rom(self, rom_id: int) -> None:
+        """Permanently delete the ROM file from disk + drop its library row.
+
+        Two-step confirmation: a single QMessageBox.Question with
+        explicit "this is permanent" wording. The file is removed via
+        ``Path.unlink`` (no recycle bin) and the DB row + FK
+        dependents + any newly-orphan game are cleaned up via
+        :func:`queries.delete_rom_by_id`. The cover cache is NOT
+        touched — those PNGs may still be relevant to other games in
+        the library, and the user can clear them via the cover cache
+        folder if they want.
+        """
+        path = q.get_rom_path(self._conn, rom_id)
+        if not path:
+            QMessageBox.warning(
+                self,
+                "Delete ROM",
+                "Could not find the ROM record. Try refreshing the "
+                "game list.",
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            "Delete ROM file?",
+            f"This will permanently delete the file:\n\n{path}\n\n"
+            "and remove its library entry.\n\n"
+            "There is no undo — the file is NOT sent to the Recycle Bin.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        target = Path(path)
+        # Remove the on-disk file first. If that fails (permission denied,
+        # network drop, etc.) abort BEFORE touching the DB so the row
+        # stays consistent with what's on disk. If the file is already
+        # gone, treat that as success — the user wants the row dropped
+        # either way and the missing-sweep would have caught it later.
+        try:
+            target.unlink(missing_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Delete ROM",
+                f"Could not delete the file:\n\n{path}\n\n{exc.strerror}",
+            )
+            return
+
+        deleted = q.delete_rom_by_id(self._conn, rom_id)
+        if not deleted:
+            # File is gone but the row vanished from under us — race
+            # with a concurrent Clean Missing Entries, presumably.
+            # Refresh and move on; nothing left for us to do.
+            pass
+        self.refresh_all()
+        self.status_label.setText(f"Deleted: {target.name}")
 
     def _on_favorite_toggled(self, _game_id: int, _is_favorite: bool) -> None:
         """Refresh the sidebar so the Favorites count stays accurate."""

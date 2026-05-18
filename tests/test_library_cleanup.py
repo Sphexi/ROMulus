@@ -609,3 +609,157 @@ class TestScannerSelfHealsUnlinkedRoms:
                 "SELECT game_id FROM roms WHERE id = ?", (rid,)
             ).fetchone()
             assert row["game_id"] is not None
+
+
+# ---------------------------------------------------------------------------
+# delete_rom_by_id — user-initiated "Delete this ROM" right-click action
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteRomById:
+    """Direct single-rom delete used by the game-table right-click action.
+
+    Differs from :func:`delete_missing_roms` in that the caller hands in
+    one rom id (no missing-flag filter), and the helper handles FK
+    dependents + orphan-game prune + commit in one shot.
+    """
+
+    def test_drops_rom_and_orphan_game(self, seeded_db) -> None:
+        """A single-rom game's game row vanishes when its only rom is deleted."""
+        import time
+
+        game_id = q.upsert_game(
+            seeded_db, {"title": "Solo", "system_id": "snes"}
+        )
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/snes/Solo.sfc",
+                "filename": "Solo.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        assert q.delete_rom_by_id(seeded_db, rom_id) is True
+        # Rom row gone.
+        assert seeded_db.execute(
+            "SELECT 1 FROM roms WHERE id = ?", (rom_id,)
+        ).fetchone() is None
+        # Game row also gone (orphan prune).
+        assert seeded_db.execute(
+            "SELECT 1 FROM games WHERE id = ?", (game_id,)
+        ).fetchone() is None
+
+    def test_preserves_game_when_sibling_rom_remains(
+        self, seeded_db
+    ) -> None:
+        """A multi-disc game keeps its game row when one of its roms is removed."""
+        import time
+
+        game_id = q.upsert_game(
+            seeded_db, {"title": "Multi-Disc", "system_id": "psx"}
+        )
+        rom_a = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/psx/MultiDisc (Disc 1).bin",
+                "filename": "MultiDisc (Disc 1).bin",
+                "extension": ".bin",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "psx",
+            },
+        )
+        rom_b = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/psx/MultiDisc (Disc 2).bin",
+                "filename": "MultiDisc (Disc 2).bin",
+                "extension": ".bin",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "psx",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_a, game_id)
+        q.link_rom_to_game(seeded_db, rom_b, game_id)
+        seeded_db.commit()
+
+        # Delete disc 1; disc 2 must keep the game pointer alive.
+        assert q.delete_rom_by_id(seeded_db, rom_a) is True
+        assert seeded_db.execute(
+            "SELECT 1 FROM games WHERE id = ?", (game_id,)
+        ).fetchone() is not None
+        sibling = seeded_db.execute(
+            "SELECT game_id FROM roms WHERE id = ?", (rom_b,)
+        ).fetchone()
+        assert sibling is not None
+        assert sibling["game_id"] == game_id
+
+    def test_drops_hash_dependent(self, seeded_db) -> None:
+        """FK-dependent rows in ``hashes`` must be cleared first.
+
+        Without ``_delete_rom_dependents`` the DELETE on ``roms`` raises
+        ``IntegrityError: FOREIGN KEY constraint failed`` because
+        ``PRAGMA foreign_keys = ON`` is enabled connection-wide.
+        """
+        import time
+
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/snes/Hashed.sfc",
+                "filename": "Hashed.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+            },
+        )
+        q.upsert_hash(
+            seeded_db,
+            rom_id,
+            crc32="deadbeef",
+            sha1="a" * 40,
+            md5=None,
+        )
+        seeded_db.commit()
+
+        assert q.delete_rom_by_id(seeded_db, rom_id) is True
+        assert seeded_db.execute(
+            "SELECT 1 FROM hashes WHERE rom_id = ?", (rom_id,)
+        ).fetchone() is None
+
+    def test_returns_false_when_id_unknown(self, seeded_db) -> None:
+        """A no-op delete on a nonexistent id reports it cleanly."""
+        assert q.delete_rom_by_id(seeded_db, 999_999) is False
+
+
+class TestGetRomPath:
+    """The lookup ``Reveal in Explorer`` / ``Delete this ROM`` use to
+    resolve a rom id to its on-disk path before any FS action.
+    """
+
+    def test_returns_stored_path(self, seeded_db) -> None:
+        import time
+
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/snes/Mario.sfc",
+                "filename": "Mario.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+            },
+        )
+        assert q.get_rom_path(seeded_db, rom_id) == "/lib/snes/Mario.sfc"
+
+    def test_returns_none_for_unknown_id(self, seeded_db) -> None:
+        assert q.get_rom_path(seeded_db, 999_999) is None

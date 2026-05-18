@@ -9,6 +9,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QProgressDialog, QWidget
 
+from romulus.ui._progress_layout import pin_progress_dialog_layout
+
 
 class HeavyScanProgressDialog(QProgressDialog):
     """Progress dialog driven by HeavyScanWorker signals."""
@@ -20,6 +22,7 @@ class HeavyScanProgressDialog(QProgressDialog):
         self.setMinimumDuration(0)
         self.setAutoClose(False)
         self.setAutoReset(False)
+        pin_progress_dialog_layout(self)
 
     def on_progress(self, hashed: int, total: int, filename: str) -> None:
         """Slot — update label; switch to determinate mode once total is known."""

@@ -302,6 +302,11 @@ class GameTable(QWidget):
     enrich_game_requested = Signal(int)
     heavy_scan_game_requested = Signal(int)
     find_local_covers_game_requested = Signal(int)
+    # File-system actions — carry the rom_id (the literal table row), not
+    # the game_id. A multi-disc game's game_id might span multiple roms;
+    # reveal / delete must operate on the specific row the user clicked.
+    reveal_rom_requested = Signal(int)
+    delete_rom_requested = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -658,6 +663,32 @@ class GameTable(QWidget):
             lambda: self.find_local_covers_game_requested.emit(game_id)
         )
         menu.addAction(covers_action)
+
+        # File-system actions — bind to rom_id, not game_id. The
+        # "Reveal in Explorer" target is the specific row the user
+        # right-clicked, and "Delete" should remove that exact file
+        # without dragging multi-disc siblings along.
+        menu.addSeparator()
+
+        rom_id = row.rom_id
+        reveal_action = QAction("Reveal in Explorer", menu)
+        reveal_action.setToolTip(
+            "Open the file manager with this ROM highlighted."
+        )
+        reveal_action.triggered.connect(
+            lambda: self.reveal_rom_requested.emit(rom_id)
+        )
+        menu.addAction(reveal_action)
+
+        delete_action = QAction("Delete this ROM (permanent)…", menu)
+        delete_action.setToolTip(
+            "Permanently delete this ROM file from disk AND remove its "
+            "library entry. There is no undo."
+        )
+        delete_action.triggered.connect(
+            lambda: self.delete_rom_requested.emit(rom_id)
+        )
+        menu.addAction(delete_action)
 
         menu.exec(self.view.viewport().mapToGlobal(point))
 

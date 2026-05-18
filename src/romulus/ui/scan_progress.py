@@ -5,6 +5,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QProgressDialog, QWidget
 
+from romulus.ui._progress_layout import pin_progress_dialog_layout
+
 
 class ScanProgressDialog(QProgressDialog):
     """Indeterminate progress dialog driven by ScanWorker signals."""
@@ -16,6 +18,7 @@ class ScanProgressDialog(QProgressDialog):
         self.setMinimumDuration(0)
         self.setAutoClose(False)
         self.setAutoReset(False)
+        pin_progress_dialog_layout(self)
 
     def on_progress(self, count: int, filename: str) -> None:
         """Slot — update the label with the latest scan tick."""

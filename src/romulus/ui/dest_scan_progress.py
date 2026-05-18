@@ -17,6 +17,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QProgressDialog, QWidget
 
+from romulus.ui._progress_layout import pin_progress_dialog_layout
+
 
 class DestScanProgressDialog(QProgressDialog):
     """Indeterminate-to-determinate progress dialog for the dest walk."""
@@ -31,6 +33,7 @@ class DestScanProgressDialog(QProgressDialog):
         self.setMinimumDuration(0)
         self.setAutoClose(False)
         self.setAutoReset(False)
+        pin_progress_dialog_layout(self)
 
     def on_progress(self, current: int, total: int, label: str) -> None:
         """Slot — bump the bar and show the current dest-relative path.

@@ -1198,6 +1198,51 @@ def delete_rom(conn: sqlite3.Connection, rom_id: int) -> None:
     conn.execute("DELETE FROM roms WHERE id = ?", (rom_id,))
 
 
+def delete_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> bool:
+    """Permanently drop one ROM row, its FK dependents, and any orphan game.
+
+    Used by the user-initiated ``Delete this ROM`` right-click action.
+    Differs from :func:`delete_rom` in two ways:
+
+    * Cleans up ``hashes`` AND ``dest_inventory`` rows that reference
+      this rom — the older helper only handled ``hashes``, which was
+      fine for the organizer (no sync state yet) but would raise a
+      FK ``IntegrityError`` here for any rom that's been pushed to a
+      destination.
+    * Calls :func:`prune_orphan_games` afterwards so a single-rom game
+      row doesn't linger after its last rom is gone.
+    * Commits the surrounding transaction (single-shot user action;
+      no caller is going to bundle it with other work).
+
+    Returns True when a rom row was actually deleted, False when the
+    id didn't match anything in the table.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM roms WHERE id = ?", (rom_id,)
+    ).fetchone()
+    if exists is None:
+        return False
+    _delete_rom_dependents(conn, [rom_id])
+    conn.execute("DELETE FROM roms WHERE id = ?", (rom_id,))
+    prune_orphan_games(conn)
+    conn.commit()
+    return True
+
+
+def get_rom_path(conn: sqlite3.Connection, rom_id: int) -> str | None:
+    """Return the on-disk path stored for a rom id, or None when unknown.
+
+    Used by ``Reveal in Explorer`` (opens the OS file browser with the
+    target highlighted) and as a pre-flight for ``Delete this ROM``.
+    """
+    row = conn.execute(
+        "SELECT path FROM roms WHERE id = ?", (rom_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["path"])
+
+
 def insert_organize_plan(
     conn: sqlite3.Connection, plan_json: str, status: str = "pending"
 ) -> int:
