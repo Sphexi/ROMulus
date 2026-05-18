@@ -38,6 +38,8 @@ from romulus.ui.workers import (
     EnrichWorker,
     ExportWorker,
     HeavyScanWorker,
+    ImportAnalyseWorker,
+    ImportApplyWorker,
     LocalCoverFinderWorker,
     OrganizeWorker,
     ScanWorker,
@@ -77,6 +79,9 @@ class MainWindow(QMainWindow):
         self._dest_scan_dialog: DestScanProgressDialog | None = None
         self._sync_worker: SyncWorker | None = None
         self._sync_preview_dialog: object | None = None
+        self._import_analyse_worker: ImportAnalyseWorker | None = None
+        self._import_apply_worker: ImportApplyWorker | None = None
+        self._import_dialog: object | None = None
 
         q.ensure_favorites_collection(conn)
 
@@ -218,6 +223,14 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._on_export)
         tools_menu.addAction(export_action)
         tools_menu.addSeparator()
+        import_action = QAction("&Import ROMs…", self)
+        import_action.setToolTip(
+            "Walk a staging folder, identify the ROMs inside, and copy/move "
+            "them into the current library."
+        )
+        import_action.triggered.connect(self._on_import_roms)
+        tools_menu.addAction(import_action)
+        tools_menu.addSeparator()
         clean_missing_action = QAction("Clean &Missing Entries...", self)
         clean_missing_action.setToolTip(
             "Permanently remove database rows for ROM files that no longer "
@@ -265,6 +278,12 @@ class MainWindow(QMainWindow):
         export = QAction("Export / Sync", self)
         export.triggered.connect(self._on_export)
         toolbar.addAction(export)
+        import_btn = QAction("Import ROMs", self)
+        import_btn.setToolTip(
+            "Walk a staging folder, identify ROMs, and copy them into the library."
+        )
+        import_btn.triggered.connect(self._on_import_roms)
+        toolbar.addAction(import_btn)
 
         toolbar.addSeparator()
         settings = QAction("Settings", self)
@@ -650,6 +669,12 @@ class MainWindow(QMainWindow):
 
     def _clear_sync_worker(self) -> None:
         self._sync_worker = None
+
+    def _clear_import_analyse_worker(self) -> None:
+        self._import_analyse_worker = None
+
+    def _clear_import_apply_worker(self) -> None:
+        self._import_apply_worker = None
 
     def _on_quick_scan(self) -> None:
         """Toolbar / menu entry — runs a global library-wide quick scan."""
@@ -1527,6 +1552,145 @@ class MainWindow(QMainWindow):
         self.status_label.setText(message)
 
     # ------------------------------------------------------------------
+    # Import ROMs
+    # ------------------------------------------------------------------
+
+    def _on_import_roms(self) -> None:
+        """Open the :class:`ImportDialog` and wire its analyse + apply workers."""
+        from romulus.ui.import_dialog import (
+            ImportDialog,
+            load_recent_staging_paths,
+        )
+
+        if (
+            self._import_analyse_worker is not None
+            and self._import_analyse_worker.isRunning()
+        ) or (
+            self._import_apply_worker is not None
+            and self._import_apply_worker.isRunning()
+        ):
+            QMessageBox.information(
+                self,
+                "Import already running",
+                "An import operation is already in progress — please wait "
+                "for it to finish.",
+            )
+            return
+
+        library_path = get_config(self._conn, "library_path") or ""
+        if not library_path:
+            QMessageBox.warning(
+                self,
+                "No library configured",
+                "Open a library folder under File → Open Library before "
+                "importing.",
+            )
+            return
+
+        recent = load_recent_staging_paths(get_config, self._conn)
+        dialog = ImportDialog(library_path, recent_paths=recent, parent=self)
+        dialog.analyse_requested.connect(self._on_import_analyse_requested)
+        dialog.apply_requested.connect(self._on_import_apply_requested)
+        self._import_dialog = dialog
+        dialog.exec()
+        self._import_dialog = None
+
+    def _on_import_analyse_requested(
+        self,
+        staging_path: str,
+        library_path: str,
+        options: object,
+    ) -> None:
+        """Spawn an :class:`ImportAnalyseWorker` to walk the staging folder."""
+        from romulus.core.importer import ImportOptions
+        from romulus.ui.import_dialog import remember_staging_path
+
+        if not isinstance(options, ImportOptions):
+            return
+        if (
+            self._import_analyse_worker is not None
+            and self._import_analyse_worker.isRunning()
+        ):
+            return
+        # Persist the chosen path to the recent list so it surfaces next time.
+        remember_staging_path(set_config, get_config, self._conn, staging_path)
+        self._conn.commit()
+
+        self._import_analyse_worker = ImportAnalyseWorker(
+            DEFAULT_DB_PATH,
+            staging_path,
+            library_path,
+            options,
+        )
+        if self._import_dialog is not None:
+            dialog = self._import_dialog
+            self._import_analyse_worker.progress.connect(
+                dialog.on_analyse_progress  # type: ignore[attr-defined]
+            )
+            self._import_analyse_worker.finished_ok.connect(
+                dialog.on_analyse_finished  # type: ignore[attr-defined]
+            )
+            self._import_analyse_worker.failed.connect(
+                dialog.on_analyse_failed  # type: ignore[attr-defined]
+            )
+        self._import_analyse_worker.finished.connect(
+            self._import_analyse_worker.deleteLater
+        )
+        self._import_analyse_worker.finished.connect(
+            self._clear_import_analyse_worker
+        )
+        self._import_analyse_worker.start()
+
+    def _on_import_apply_requested(self, plan: object) -> None:
+        """Spawn an :class:`ImportApplyWorker` once the user clicks Apply."""
+        from romulus.core.importer import ImportPlan
+
+        if not isinstance(plan, ImportPlan):
+            return
+        if (
+            self._import_apply_worker is not None
+            and self._import_apply_worker.isRunning()
+        ):
+            return
+
+        self._import_apply_worker = ImportApplyWorker(DEFAULT_DB_PATH, plan)
+        if self._import_dialog is not None:
+            dialog = self._import_dialog
+            self._import_apply_worker.progress.connect(
+                dialog.on_apply_progress  # type: ignore[attr-defined]
+            )
+            self._import_apply_worker.finished_ok.connect(
+                dialog.on_apply_finished  # type: ignore[attr-defined]
+            )
+            self._import_apply_worker.failed.connect(
+                dialog.on_apply_failed  # type: ignore[attr-defined]
+            )
+        self._import_apply_worker.finished_ok.connect(self._on_import_finished_ok)
+        self._import_apply_worker.failed.connect(self._on_import_failed)
+        self._import_apply_worker.finished.connect(
+            self._import_apply_worker.deleteLater
+        )
+        self._import_apply_worker.finished.connect(self._clear_import_apply_worker)
+        self._import_apply_worker.start()
+
+    def _on_import_finished_ok(
+        self,
+        _imported: int,
+        _skipped: int,
+        _replaced: int,
+        _kept_both: int,
+        _bytes_imported: int,
+        _systems: list[str],
+        _errors: list[str],
+    ) -> None:
+        # New rows + possibly-new system folders — refresh both panels so
+        # the user sees the imported games without restarting the app.
+        self.refresh_all()
+
+    def _on_import_failed(self, message: str) -> None:
+        self.status_label.setText(message)
+
+    # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
 
@@ -1553,6 +1717,8 @@ class MainWindow(QMainWindow):
             self._export_worker,
             self._dest_inventory_worker,
             self._sync_worker,
+            self._import_analyse_worker,
+            self._import_apply_worker,
         ):
             if worker is None:
                 continue

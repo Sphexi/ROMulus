@@ -10,10 +10,11 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
 
 ## Current State (as of v0.3.0 in development)
 
-- **918 tests passing, 1 skipped** (POSIX-only chmod test on Windows
-  CI; 919 collected total). Ruff clean. CI runs on `windows-latest`.
+- **941 tests passing, 1 skipped** (POSIX-only chmod test on Windows
+  CI; 942 collected total). Ruff clean. CI runs on `windows-latest`.
 - Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich
-  Metadata → Find Covers → Organize → Export / Sync.
+  Metadata → Find Covers → Organize → Export / Sync, plus inbound
+  Import ROMs from a staging folder.
 - Enrichment is metadata-only; cover discovery is a separate "Find
   Covers" workflow with a per-run dialog (local files / online
   thumbnails / both).
@@ -29,6 +30,12 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   mid-rebuild cancel can't leave the DB inconsistent with disk.
 - Game-table right-click adds **Reveal in Explorer** and **Delete this
   ROM (permanent)…** actions, bound to rom_id (not game_id).
+- **Import ROMs** (Tools menu + toolbar) walks a staging folder,
+  identifies every file via the same L1+L2+L3 pipeline the scanner
+  uses, surfaces path / filename / hash dupes with per-row resolution
+  dropdowns, and atomically copies (or moves) the approved files into
+  the current library. Heavy identification is mandatory; the dialog
+  warns about duration when the staging folder is large.
 - 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging
   + Heavy Scan UI + real DATs; early v0.3.0 added destination sync,
   library cleanup, single-binary build, DEBUG breadcrumbs; later v0.3.0
@@ -36,7 +43,8 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   TheGamesDB, the metadata/covers workflow split, the redesigned
   detail panel with per-platform logos, the enrich-options dialog, and
   UX polish. Final-wave v0.3.0 shipped scoped Quick Scan + post-walk
-  progress + per-game Reveal/Delete + the CI Windows switch.
+  progress + per-game Reveal/Delete + the CI Windows switch + Import
+  ROMs.
 - Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db`
   and rescan if you have a pre-v0.3.0 DB lying around.
 
@@ -84,8 +92,8 @@ Do not load reference documents into context every turn — read them when neede
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
 │  │   Enrich Metadata | Find Covers | Export/Sync |      ││
-│  │   Settings                                           ││
-│  │ Tools menu: Clean Missing Entries…                   ││
+│  │   Import ROMs | Settings                             ││
+│  │ Tools menu: Import ROMs… | Clean Missing Entries…    ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
                │ signals/slots + QThread workers
@@ -115,6 +123,10 @@ Do not load reference documents into context every turn — read them when neede
 │                   region+system_id, hash-by-name, sha1   │
 │                ── dest_inventory cache (per destination) │
 │                ── sync_plans persisted JSON per apply    │
+│                                                          │
+│  Import Engine (core/importer.py): staging → identify    │
+│                → plan → per-row resolution → atomic      │
+│                copy/move/replace/keep-both into library  │
 │                                                          │
 │  Cover Cache    (<install_dir>/data/covers/)             │
 │  GameDB JSON    (<install_dir>/data/gamedb/)             │
@@ -205,6 +217,7 @@ ROMulous/
 │   │   ├── exporter.py           # Destination profile export engine
 │   │   ├── sync.py               # 5-mode sync + 4-tier identity match
 │   │   ├── dest_inventory.py     # Destination filesystem scanner + cache
+│   │   ├── importer.py           # Staging-folder import (analyse + apply)
 │   │   ├── local_cover_finder.py # Disk-side cover discovery + linking
 │   │   ├── atomic.py             # tempfile.mkstemp + os.replace helpers
 │   │   └── _no_intro_tokens.py   # FILENAME_REGION_TOKENS, REVISION_RE
@@ -241,9 +254,10 @@ ROMulous/
 │       ├── organize_preview.py
 │       ├── export_dialog.py
 │       ├── sync_preview.py       # Sync preview + apply UI
+│       ├── import_dialog.py      # Import ROMs preview + apply UI
 │       ├── workers.py            # QThread workers (Scan / HeavyScan / Enrich /
 │       │                          # Organize / Export / Sync / DestInventory /
-│       │                          # CoverFinder)
+│       │                          # CoverFinder / ImportAnalyse / ImportApply)
 │       ├── artwork/              # Bundled per-platform logos (dark + light)
 │       │   ├── __init__.py       # resolve_system_logo(system_id, theme)
 │       │   └── systems/          # <system_id>-{dark,light}.png × 70 systems
@@ -265,7 +279,13 @@ ROMulous/
     ├── test_library_cleanup.py    # tombstone, root-change, FK cascade,
     │                              # logging precedence
     ├── test_packaging.py          # install-dir, three-tier profile loading
-    └── ...                        # 908 tests total, 1 skipped
+    ├── test_importer.py           # 23 tests: plan analysis (dupe levels,
+    │                              # extension fallback, multi-rom zip,
+    │                              # refusal-inside-library), apply (atomic,
+    │                              # move-after-copy, replace, keep_both,
+    │                              # SAVEPOINT rollback, cancel, upsert),
+    │                              # JSON round-trip, find_rom_by_path/sha1
+    └── ...                        # 941 tests total, 1 skipped
 ```
 
 ## Git Policy
@@ -315,6 +335,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 18. **Metadata and cover-art are separate workflows.** `enrich_library` writes to the `metadata` table only. Cover discovery is driven by `CoverFinderWorker` via `CoverOptionsDialog`, which lets the user pick local-file walk and/or libretro-thumbnail fetch independently per batch. `fetch_online_covers_for_scope` is the orchestrator's per-game cover fetcher.
 19. **Bundled offline metadata is content-addressed by CRC32.** Both `libretro_metadat` and `gamedb` index by lowercase 8-char CRC32 (stripping any `0x` prefix). `roms.hashes` populated by Heavy Scan is what unlocks them. Quick-scan-only games fall through to title-fuzzy fallback paths in both clients.
 20. **TheGamesDB has a monthly quota.** ~1000 requests/month for public keys, 6000 lifetime for private keys. The client logs `remaining_monthly_allowance` per response, persists it to `thegamesdb_remaining_allowance` in config, and short-circuits future calls when it hits zero. Slot it last in the chain so we only spend on games every cheaper source missed.
+21. **Import is symmetric to sync.** The Import engine (`core/importer.py`) mirrors the Sync engine in shape — analyse → preview → apply, per-action SAVEPOINT, atomic copy via `core/atomic.py`, cooperative cancel between actions. Heavy identification (SHA-1 + DAT match) runs unconditionally on every analyse pass so the three duplicate levels (path / filename / hash) all surface; the dialog warns about duration up front when the staging folder is large. Staging folder must be outside `library_root` — refused with `ValueError` to prevent self-recursion footguns. New ROMs are enrolled via the same path-keyed `upsert_rom` the scanner uses, so importing a file whose target path matches a `missing=1` row un-tombstones the row rather than duplicating it.
 
 ## Scan Types
 

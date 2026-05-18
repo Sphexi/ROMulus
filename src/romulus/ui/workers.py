@@ -36,6 +36,13 @@ from romulus.core.exporter import (
     export_collection,
 )
 from romulus.core.hasher import hash_library
+from romulus.core.importer import (
+    ImportOptions,
+    ImportPlan,
+    ImportSummary,
+)
+from romulus.core.importer import analyse_import as _analyse_import
+from romulus.core.importer import apply_plan as _apply_import_plan
 from romulus.core.local_cover_finder import DiscoveryResult, discover_local_covers
 from romulus.core.organizer import OrganizeAction, OrganizeSummary, execute_plan
 from romulus.core.sync import (
@@ -675,5 +682,99 @@ class ExportWorker(_DbWorker):
             int(summary.files_skipped),
             int(summary.bytes_copied),
             list(summary.systems),
+            list(summary.errors),
+        )
+
+
+class ImportAnalyseWorker(_DbWorker):
+    """Walk a staging folder and emit a populated :class:`ImportPlan`.
+
+    Mirrors :class:`DestInventoryWorker` — both produce a "what would
+    happen" snapshot used by a follow-up preview dialog. The apply step
+    is a separate worker (:class:`ImportApplyWorker`) so each phase
+    surfaces its own progress + failure path. Keeping them split also
+    means a Cancel during analyse doesn't leave a half-applied plan on
+    disk.
+    """
+
+    progress = Signal(int, int, str)
+    # The plan is a Python object; emit it as ``object`` so the receiving
+    # main_window slot can isinstance-check before using it. Qt's signal
+    # system doesn't carry user-defined dataclasses natively, so the
+    # generic ``object`` slot is what every other worker that emits a
+    # complex result uses (see ``DestInventoryWorker.finished_ok``).
+    finished_ok = Signal(object)
+
+    _operation_name = "Import analyse"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        staging_path: Path | str,
+        library_path: Path | str,
+        options: ImportOptions,
+    ) -> None:
+        super().__init__(db_path)
+        self._staging_path = str(staging_path)
+        self._library_path = str(library_path)
+        self._options = options
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, filename: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, filename)
+
+        plan: ImportPlan = _analyse_import(
+            conn,
+            self._staging_path,
+            self._library_path,
+            options=self._options,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(plan)
+
+
+class ImportApplyWorker(_DbWorker):
+    """Apply an approved :class:`ImportPlan` against the local library.
+
+    Per-action SAVEPOINT rollback, atomic copy via :mod:`romulus.core.atomic`,
+    cooperative cancel between actions. Mirrors :class:`SyncWorker`'s shape
+    one-for-one — both run a plan-of-actions through a single ``apply_plan``
+    function and emit per-action progress.
+    """
+
+    progress = Signal(int, int, str)
+    # ``bytes_imported`` declared as qint64 so totals past 2 GiB don't wrap
+    # negative — same precaution :class:`ExportWorker` already takes for its
+    # bytes-copied counter.
+    finished_ok = Signal(int, int, int, int, "qint64", list, list)
+
+    _operation_name = "Import"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        plan: ImportPlan,
+    ) -> None:
+        super().__init__(db_path)
+        self._plan = plan
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, filename: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, filename)
+
+        summary: ImportSummary = _apply_import_plan(
+            conn,
+            self._plan,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(
+            int(summary.files_imported),
+            int(summary.files_skipped),
+            int(summary.files_replaced),
+            int(summary.files_kept_both),
+            int(summary.bytes_imported),
+            sorted(summary.systems_touched),
             list(summary.errors),
         )

@@ -42,6 +42,36 @@ Explorer / Delete actions).
   threading after a UNC-path-normalization mismatch caused thousands
   of FK errors during apply.
 
+**Import ROMs (`src/romulus/core/importer.py`,
+`src/romulus/ui/import_dialog.py`):**
+- **Tools → Import ROMs…** menu entry + toolbar button. Walks a
+  staging folder (Downloads, USB stick, mounted archive), identifies
+  every file via the same scanner pipeline Quick / Heavy Scan use,
+  and copies (or moves) the approved files into the current library
+  under the right system folder.
+- Three-level duplicate detection — path / filename / hash — with
+  the same per-row dropdown resolution UX the sync preview uses.
+  "Apply to all remaining conflicts" sweeps the bulk choice over
+  every `dupe_filename` action.
+- Heavy identification (SHA-1 + DAT cross-reference) runs on every
+  analyse pass — the dialog warns up front when the staging folder
+  is large (>100 files, >1 GiB total, or any file >100 MiB) so a
+  long-running hash phase is never a surprise.
+- Atomic copy via `core/atomic.py` (per-action SAVEPOINT, same
+  crash-safe semantics as the sync engine). `move` actions unlink the
+  source ONLY after the copy succeeds — a mid-transfer failure leaves
+  the source intact.
+- `created_systems` set surfaces previously-unseen platforms with a
+  `(new)` badge in the preview tree. Unresolvable files route to a
+  `_unsorted/` bucket so they're still copied even when L1+L2+L3 all
+  give up.
+- "Save plan as JSON…" writes a versioned, self-describing
+  `ImportPlan` document for offline audit; `ImportPlan.from_json`
+  rebuilds it without information loss.
+- Refuses to analyse a staging folder inside `library_root` so a
+  careless re-import can't recursively read the files it's about to
+  overwrite.
+
 **Library cleanup (single-library design):**
 - `roms.library_root` column stamps every row with the canonical path
   it was scanned under. `roms.missing` tombstones files that vanish
@@ -407,8 +437,8 @@ Explorer / Delete actions).
 
 ### Test suite
 
-**918 tests passing, 1 skipped** (POSIX-only chmod test on Windows CI;
-runs on POSIX checkouts). 919 collected total. Ruff clean.
+**941 tests passing, 1 skipped** (POSIX-only chmod test on Windows CI;
+runs on POSIX checkouts). 942 collected total. Ruff clean.
 Coverage expanded to include:
 - Sync engine: all five modes, identity matching tiers 1–4,
   region-distinct match, conflict policies, atomic delete via
@@ -440,6 +470,15 @@ Coverage expanded to include:
   tombstone guard, in-scope deletion tombstone), post-walk progress
   message stream, per-game Reveal/Delete actions, and the temp-table
   scaling fast-path in `mark_missing_under_root`.
+- Import ROMs — plan analysis (new files routed to correct system
+  folder, extension fallback for unambiguous extensions, path /
+  filename / hash dupe detection, `created_systems` surfacing,
+  multi-ROM zip detection, refusal to analyse a staging folder
+  inside `library_root`), apply (atomic copy + replace + keep-both
+  + move-unlinks-only-after-copy contract, SAVEPOINT-isolated
+  failure rollback, progress fan-out, cooperative cancel,
+  path-keyed UPSERT re-uses tombstoned rows), and the JSON
+  round-trip for the saved plan.
 
 ---
 

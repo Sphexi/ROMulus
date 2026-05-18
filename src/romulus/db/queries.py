@@ -189,6 +189,43 @@ def get_roms_by_system(conn: sqlite3.Connection, system_id: str) -> list[sqlite3
     ).fetchall()
 
 
+def find_rom_by_path(
+    conn: sqlite3.Connection, abs_path: str
+) -> sqlite3.Row | None:
+    """Return the ``roms`` row for ``abs_path`` or None if not enrolled.
+
+    Used by :mod:`romulus.core.importer` for path-level dupe detection.
+    Path comparison is a direct ``=`` against the UNIQUE column — callers
+    that need cross-platform normalisation should resolve before calling.
+    """
+    return conn.execute(
+        "SELECT * FROM roms WHERE path = ? LIMIT 1", (abs_path,)
+    ).fetchone()
+
+
+def find_rom_by_sha1(
+    conn: sqlite3.Connection, sha1: str
+) -> sqlite3.Row | None:
+    """Return a ``roms`` row whose hashed payload matches ``sha1``, or None.
+
+    Used by :mod:`romulus.core.importer` for hash-level dupe detection when
+    the user opts into Heavy Identify before import. Joins through ``hashes``
+    which is indexed on ``sha1`` so this is an O(log n) lookup.
+    """
+    if not sha1:
+        return None
+    return conn.execute(
+        """
+        SELECT r.*
+        FROM roms r
+        JOIN hashes h ON h.rom_id = r.id
+        WHERE h.sha1 = ?
+        LIMIT 1
+        """,
+        (sha1,),
+    ).fetchone()
+
+
 # ---------------------------------------------------------------------------
 # Library cleanup — stale entries + library-root change handling
 # ---------------------------------------------------------------------------
