@@ -742,6 +742,79 @@ class TestMainWindow:
         window.refresh_game_table()
         assert window.game_table.proxy.rowCount() == 1
 
+    def test_refresh_all_preserves_system_and_game_selection(
+        self, qapp, seeded_db
+    ) -> None:
+        """Selecting a system and a game then triggering a refresh must keep both.
+
+        Regression guard: every worker-finished signal funnels through
+        ``refresh_all``, and the model resets that ``populate`` and
+        ``set_rows`` emit used to clear the user's selection. Enrich a
+        game, settle the dialog, and the user would be back at "All"
+        with the detail panel blank.
+        """
+        import time
+
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        # Seed a DAT-verified game + linked ROM so the table has a row
+        # we can address by game_id.
+        game_id = queries_mod.upsert_game(
+            seeded_db, {"title": "Mario", "system_id": "snes"}
+        )
+        rom_id = queries_mod.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/snes/Mario.sfc",
+                "filename": "Mario.sfc",
+                "extension": ".sfc",
+                "size_bytes": 512,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "match_confidence": "dat_verified",
+            },
+        )
+        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+        window.refresh_all()
+        # Simulate the user picking a system and clicking the game row.
+        window._on_system_selected("snes")
+        window._on_game_selected(game_id)
+
+        assert window._selected_system == "snes"
+        assert window.detail_panel.current_game_id == game_id
+
+        # A worker-completion handler calls refresh_all under us — the
+        # invariant is that nothing visible changes for the user.
+        window.refresh_all()
+
+        assert window._selected_system == "snes"
+        assert window.detail_panel.current_game_id == game_id
+        assert window.game_table.selected_game_id() == game_id
+
+    def test_refresh_all_preserves_collection_selection(
+        self, qapp, seeded_db
+    ) -> None:
+        """Collection-scoped view must also survive refresh_all."""
+        from romulus.db import queries as queries_mod
+        from romulus.ui.main_window import MainWindow
+
+        collection_id = queries_mod.create_collection(seeded_db, "My Picks")
+        seeded_db.commit()
+
+        window = MainWindow(seeded_db)
+        window.refresh_all()
+        window._on_collection_selected(collection_id)
+        assert window._selected_collection == collection_id
+
+        window.refresh_all()
+
+        assert window._selected_collection == collection_id
+        assert window._selected_system is None
+
     def test_close_event_waits_on_running_worker(self, qapp, seeded_db) -> None:
         """closeEvent must request cancel and wait, not leak the QThread."""
         from PySide6.QtGui import QCloseEvent

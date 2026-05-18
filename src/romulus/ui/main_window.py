@@ -120,16 +120,13 @@ class MainWindow(QMainWindow):
         )
         self.detail_panel.favorite_toggled.connect(self._on_favorite_toggled)
 
-        # Scoped game-table actions.
-        # Single-game enrich is the *force* path — it bypasses both
-        # silent filters so the user can re-enrich a fuzzy or already-
-        # metadata-bearing game without first deleting any rows.
+        # Scoped game-table actions. Single-game enrich opens the same
+        # ``EnrichOptionsDialog`` as the batch paths — scoped to one
+        # game id but with the user explicitly choosing fuzzy / re-
+        # enrich / online flags via the dialog checkboxes (matching the
+        # Find Covers flow the user wanted parity with).
         self.game_table.enrich_game_requested.connect(
-            lambda gid: self._enrich_scoped(
-                game_ids=[gid],
-                include_fuzzy=True,
-                include_already_enriched=True,
-            )
+            lambda gid: self._enrich_scoped(game_ids=[gid])
         )
         self.game_table.heavy_scan_game_requested.connect(
             lambda gid: self._heavy_scan_scoped(game_id=gid)
@@ -314,9 +311,41 @@ class MainWindow(QMainWindow):
         self.detail_panel.update_game(None)
 
     def refresh_all(self) -> None:
-        """Repaint both the sidebar and the game table."""
+        """Repaint both the sidebar and the game table, preserving selection.
+
+        Every worker-finished signal in MainWindow funnels through here
+        (Quick Scan, Heavy Scan, Enrich Metadata, Find Covers, Organize,
+        Settings dialog close, etc.). Before this guard the model resets
+        emitted by ``sidebar.populate`` and ``game_table.set_rows``
+        cleared the user's current row in both widgets — selecting a
+        system, clicking Enrich, and waiting for the run to finish
+        always landed them back at "All" with the detail panel blank.
+
+        Capture the three pieces of live selection state up front, run
+        the refresh, then re-apply via the new ``select_*`` helpers.
+        Anything that has since gone away (a system the user just
+        deleted, a game cleaned up from the missing sweep) silently
+        drops to no-selection.
+        """
+        prev_system = self._selected_system
+        prev_collection = self._selected_collection
+        prev_game = self.detail_panel.current_game_id
+
         self.refresh_sidebar()
         self.refresh_game_table()
+
+        # Sidebar first — its ``system_selected`` signal will re-run
+        # ``_on_system_selected`` which itself calls ``refresh_game_table``
+        # under the new scope. That's fine: the rebuild is cheap, and
+        # the second refresh leaves the table populated for the same
+        # scope we want before we restore the game row below.
+        if prev_system is not None:
+            self.sidebar.select_system(prev_system)
+        elif prev_collection is not None:
+            self.sidebar.select_collection(prev_collection)
+
+        if prev_game is not None:
+            self.game_table.select_game(prev_game)
 
     # ------------------------------------------------------------------
     # Slots
@@ -763,18 +792,14 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Start enrichment, optionally scoped to a game / system / collection.
 
-        ``include_fuzzy`` / ``include_already_enriched`` loosen the silent
-        filters in :func:`get_games_needing_enrichment`. ``include_online``
-        gates the network-touching providers (Hasheous, ScreenScraper,
-        TheGamesDB) — when False only the bundled offline sources
-        (libretro-database, GameDB, LaunchBox XML) run.
-
-        Callers reaching this method directly with both ``include_fuzzy``
-        and ``include_already_enriched`` True bypass the per-batch
-        prompt — that's the single-game right-click "force" path. Every
-        other call path (system, collection, global toolbar) goes through
-        :meth:`_prompt_for_enrich_options` first, which surfaces the
-        three flags as user checkboxes.
+        Every entry point — global toolbar, system right-click, collection
+        right-click, single-game right-click — funnels through
+        :meth:`_prompt_for_enrich_options` first so the user explicitly
+        chooses fuzzy / re-enrich / online flags via the same checkbox
+        dialog regardless of scope. Callers may still pass non-default
+        flag values as kwargs (the dialog is then pre-seeded? no — the
+        dialog always re-reads its own defaults), but in practice all
+        UI callers pass scope only and let the dialog drive the flags.
         """
         if self._enrich_worker is not None and self._enrich_worker.isRunning():
             QMessageBox.information(
@@ -784,24 +809,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Single-game force path skips the batch-options prompt entirely;
-        # the user explicitly chose "enrich this game" so the gates are
-        # already deliberately ignored. Every other path asks first.
-        is_single_force = (
-            game_ids is not None
-            and len(game_ids) == 1
-            and include_fuzzy
-            and include_already_enriched
+        chosen = self._prompt_for_enrich_options(
+            game_ids=game_ids,
+            system_id=system_id,
+            collection_id=collection_id,
         )
-        if not is_single_force:
-            chosen = self._prompt_for_enrich_options(
-                game_ids=game_ids,
-                system_id=system_id,
-                collection_id=collection_id,
-            )
-            if chosen is None:
-                return
-            include_fuzzy, include_already_enriched, include_online = chosen
+        if chosen is None:
+            return
+        include_fuzzy, include_already_enriched, include_online = chosen
 
         # Pre-flight: count using the same filters the run will apply.
         # Without this the user could opt in to "re-enrich existing" and

@@ -137,6 +137,43 @@ class SystemSidebar(QTreeView):
                 collections_header.appendRow(item)
             self.expand(self._model.indexFromItem(collections_header))
 
+    def select_system(self, system_id: str) -> bool:
+        """Set the current selection to the system row matching *system_id*.
+
+        Returns True when the row was found and selected, False when it
+        no longer exists in the tree (e.g. its ROMs were all cleaned up
+        in the most recent refresh).
+        """
+        return self._select_payload(KIND_SYSTEM, system_id)
+
+    def select_collection(self, collection_id: int) -> bool:
+        """Set the current selection to the collection row matching the id."""
+        return self._select_payload(KIND_COLLECTION, int(collection_id))
+
+    def _select_payload(self, kind: str, payload: object) -> bool:
+        """Walk every leaf row in the tree, selecting the first match.
+
+        Iterates each top-level item's children — that's where system and
+        collection rows live (under the "Systems" and "Collections"
+        headers). Returns True on hit; the caller doesn't need to react
+        differently to a miss, but the bool is useful in tests.
+        """
+        for r in range(self._model.rowCount()):
+            header = self._model.item(r)
+            if header is None:
+                continue
+            for c in range(header.rowCount()):
+                child = header.child(c)
+                if child is None:
+                    continue
+                if (
+                    child.data(NODE_KIND_ROLE) == kind
+                    and child.data(SYSTEM_ID_ROLE) == payload
+                ):
+                    self.setCurrentIndex(self._model.indexFromItem(child))
+                    return True
+        return False
+
     def _on_current_changed(self, current, _previous) -> None:
         if not current.isValid():
             return

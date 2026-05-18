@@ -481,6 +481,39 @@ class GameTable(QWidget):
         row = self.model.row_at(source_index.row())
         return row.game_id
 
+    def select_game(self, game_id: int) -> bool:
+        """Select the row whose ``GameRow.game_id`` matches *game_id*.
+
+        Returns True on hit, False when the game is no longer in the
+        current view (e.g. the user changed the system filter so the
+        previously-shown game isn't in scope any more).
+
+        Used by :meth:`MainWindow.refresh_all` to keep the user's
+        selection stable across worker-triggered refreshes — without
+        this, every Enrich / Find Covers / Scan run would drop the
+        selection because ``set_rows`` rebuilds the model.
+        """
+        for source_row in range(self.model.rowCount()):
+            row = self.model.row_at(source_row)
+            if row.game_id != game_id:
+                continue
+            source_index = self.model.index(source_row, 0)
+            proxy_index = self.proxy.mapFromSource(source_index)
+            if proxy_index.isValid():
+                self.view.setCurrentIndex(proxy_index)
+                # ``setCurrentIndex`` only updates current; we also need
+                # the selection model's selected-rows state so the row
+                # is visually highlighted.
+                self.view.selectionModel().select(
+                    proxy_index,
+                    self.view.selectionModel().SelectionFlag.Rows
+                    | self.view.selectionModel().SelectionFlag.Select,
+                )
+                self.view.scrollTo(proxy_index)
+                return True
+            return False
+        return False
+
     def _on_current_row_changed(
         self, current: QModelIndex, _previous: QModelIndex
     ) -> None:
@@ -542,12 +575,12 @@ class GameTable(QWidget):
         # Scoped actions — operate on this game only.
         menu.addSeparator()
 
-        # Always enabled — single-game enrich is the explicit force path,
-        # so the user can re-enrich a game that already has metadata or
-        # cover art (e.g. to top it up via a newly-configured provider).
-        # MainWindow translates this signal into a worker call with both
-        # silent filters bypassed.
-        enrich_action = QAction("Enrich this game (force)", menu)
+        # Always enabled — clicking this opens the same options dialog
+        # as the batch paths (Tools > Enrich Metadata, system right-click,
+        # collection right-click), scoped to this one game. The user
+        # picks fuzzy / re-enrich-existing / online via the dialog's
+        # checkboxes; we don't hard-code the flags from this entry point.
+        enrich_action = QAction("Enrich this game", menu)
         enrich_action.triggered.connect(
             lambda: self.enrich_game_requested.emit(game_id)
         )
