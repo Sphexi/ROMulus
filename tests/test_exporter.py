@@ -581,8 +581,14 @@ class TestExportCopies:
             ExportOptions(generate_gamelist=False, generate_m3u=False),
             progress_callback=lambda i, total, name: ticks.append((i, total, name)),
         )
-        assert [t[0] for t in ticks] == [1, 2, 3]
-        assert all(t[1] == 3 for t in ticks)
+        # Phase 1: per-ROM ticks, total=3, label is verb-prefixed.
+        rom_ticks = [t for t in ticks if t[1] == 3]
+        assert [t[0] for t in rom_ticks] == [1, 2, 3]
+        assert all(t[2].startswith("Copying ") for t in rom_ticks)
+        # Phase 2: per-system sidecar ticks. One snes system → one tick.
+        sidecar_ticks = [t for t in ticks if "Refreshing sidecars" in t[2]]
+        assert len(sidecar_ticks) == 1
+        assert sidecar_ticks[0][2] == "Refreshing sidecars: snes"
 
     def test_progress_callback_can_cancel(
         self, seeded_db, tmp_path: Path
@@ -1207,3 +1213,465 @@ class TestRefuseOverwriteDifferentSize:
         assert summary.files_copied == 0
         assert summary.files_skipped == 1
         assert any("refusing to overwrite" in e for e in summary.errors)
+
+
+# ---------------------------------------------------------------------------
+# Per-system summary breakdown (post-apply diagnostic)
+# ---------------------------------------------------------------------------
+
+
+class TestPerSystemBreakdown:
+    """``ExportSummary.per_system`` must classify each row into the right bucket.
+
+    The post-export summary dialog reads from this dict to surface "why
+    did 4,363 amiga files get skipped" without forcing the user to grep
+    logs. Each bucket maps 1:1 to a code path in
+    ``export_collection``'s copy loop.
+    """
+
+    def test_copied_files_bump_copied_bucket(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        _make_rom_file(rom_path, content=b"snes-bytes")
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Super Mario World",
+        )
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        assert "snes" in summary.per_system
+        bucket = summary.per_system["snes"]
+        assert bucket.copied == 1
+        assert bucket.bytes_copied == 10
+        assert bucket.skipped_unsupported == 0
+        assert bucket.skipped_already_present == 0
+        assert bucket.skipped_refused == 0
+        assert bucket.errors == 0
+
+    def test_unsupported_system_bumps_unsupported_bucket(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """A system that the profile marks unsupported lands in its own bucket.
+
+        Mirrors the Amiga / C64 / ZX Spectrum case from the production
+        export the user ran against the Anbernic profile.
+        """
+        rom_path = tmp_path / "lib" / "gc" / "wind.iso"
+        _make_rom_file(rom_path)
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="gamecube",
+            extension=".iso",
+            filename="wind.iso",
+            size_bytes=10,
+            title="Wind Waker",
+        )
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        assert "gamecube" in summary.per_system
+        bucket = summary.per_system["gamecube"]
+        assert bucket.skipped_unsupported == 1
+        assert bucket.copied == 0
+
+    def test_already_present_bumps_idempotent_bucket(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        _make_rom_file(rom_path, content=b"bytes-1234")
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Super Mario World",
+        )
+        target = tmp_path / "out"
+        # First export — populates.
+        export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            target,
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        # Second pass — should be idempotent skip-already-present.
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            target,
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        bucket = summary.per_system["snes"]
+        assert bucket.copied == 0
+        assert bucket.skipped_already_present == 1
+        assert bucket.skipped_refused == 0
+        assert bucket.errors == 0
+
+    def test_refuse_overwrite_bumps_refused_and_errors(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Refuse-overwrite must hit BOTH skipped_refused and errors.
+
+        This is the MAME collision case from the production run — same
+        filename, different size at the destination. The bucket should
+        record it as a refusal AND count it toward errors so the
+        dialog renders the cell red.
+        """
+        rom_path = tmp_path / "src" / "snes" / "Game.sfc"
+        _make_rom_file(rom_path, b"new-rom-bytes-32-chars-long-padding!")
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path),
+            system_id="snes",
+            extension=".sfc",
+            filename="Game.sfc",
+            size_bytes=len(rom_path.read_bytes()),
+            title="Game",
+        )
+        profile = _build_minimal_profile(gamelist=None)
+        target = tmp_path / "out"
+        dest = target / "roms" / "snes" / "Game.sfc"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"PRECIOUS-USER-DATA-different-size")
+
+        summary = export_collection(
+            seeded_db,
+            profile,
+            target,
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        bucket = summary.per_system["snes"]
+        assert bucket.copied == 0
+        assert bucket.skipped_refused == 1
+        assert bucket.errors == 1
+
+    def test_per_system_sum_matches_aggregate(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Sum of per-system buckets must equal the aggregate counters.
+
+        Guards against a future refactor adding a new skip branch but
+        forgetting to bump the corresponding per-system counter (which
+        would silently produce a dialog whose totals row disagrees with
+        the existing one-line summary).
+        """
+        # One copied, one unsupported.
+        for stem, system in (("Mario", "snes"), ("Wind", "gamecube")):
+            rom_path = tmp_path / "lib" / system / f"{stem}.bin"
+            _make_rom_file(rom_path)
+            _insert_rom_with_game(
+                seeded_db,
+                path=str(rom_path).replace("\\", "/"),
+                system_id=system,
+                extension=".bin",
+                filename=f"{stem}.bin",
+                size_bytes=10,
+                title=stem,
+            )
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(generate_gamelist=False, generate_m3u=False),
+        )
+        per_system_copied = sum(
+            b.copied for b in summary.per_system.values()
+        )
+        per_system_skipped = sum(
+            b.skipped_unsupported
+            + b.skipped_already_present
+            + b.skipped_refused
+            for b in summary.per_system.values()
+        )
+        per_system_errors = sum(b.errors for b in summary.per_system.values())
+        assert per_system_copied == summary.files_copied
+        assert per_system_skipped == summary.files_skipped
+        # Errors count: per_system_errors counts sidecar/refuse/missing-src
+        # bumps. Aggregate ``summary.errors`` is a list — its length must
+        # match the per-system error count.
+        assert per_system_errors == len(summary.errors)
+
+
+# ---------------------------------------------------------------------------
+# include_roms toggle — artwork/gamelist-only mode
+# ---------------------------------------------------------------------------
+
+
+class TestIncludeRomsToggle:
+    """``ExportOptions.include_roms = False`` runs the sidecar phase
+    (gamelist + artwork) without copying any ROM bytes.
+
+    Use case: after Enrich Metadata / Find Covers, push the fresh
+    sidecars to the device without re-copying gigabytes of ROMs that
+    are already there.
+    """
+
+    def _stage_game_with_cover(
+        self, conn: sqlite3.Connection, tmp_path: Path
+    ) -> tuple[int, Path]:
+        """Seed one snes game + on-disk cover. Returns (game_id, cover_path)."""
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        _make_rom_file(rom_path, content=b"snes-bytes")
+        _rom_id, game_id = _insert_rom_with_game(
+            conn,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Super Mario World",
+        )
+        cover_path = tmp_path / "covers" / "mario.png"
+        cover_path.parent.mkdir(parents=True, exist_ok=True)
+        cover_path.write_bytes(b"COVER-PNG")
+        q.insert_cover(
+            conn,
+            game_id,
+            cover_type="Named_Boxarts",
+            source_url=None,
+            local_path=str(cover_path),
+        )
+        conn.commit()
+        return game_id, cover_path
+
+    def test_include_roms_false_skips_rom_copy_but_runs_sidecars(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        _game_id, _cover = self._stage_game_with_cover(seeded_db, tmp_path)
+        profile = _build_minimal_profile()
+        target = tmp_path / "out"
+
+        summary = export_collection(
+            seeded_db,
+            profile,
+            target,
+            ExportFilters(),
+            ExportOptions(include_roms=False, generate_m3u=False),
+        )
+
+        # ROM bytes must NOT be on dest.
+        assert not (target / "roms" / "snes" / "Mario.sfc").exists()
+        # Artwork must be on dest (filename template is "{stem}-image{ext}").
+        assert (
+            target
+            / "roms"
+            / "snes"
+            / "downloaded_media"
+            / "Mario-image.png"
+        ).exists()
+        # gamelist.xml must be on dest.
+        assert (target / "roms" / "snes" / "gamelist.xml").exists()
+        # Counts: no copies, no sidecar-phase artwork failures, system touched.
+        assert summary.files_copied == 0
+        assert summary.bytes_copied == 0
+        assert summary.systems == ["snes"]
+        assert summary.artwork_copied == 1
+        assert summary.gamelists_written == 1
+        # Per-system bucket carries the artwork count — required so the
+        # post-export summary dialog renders the "Covers refreshed"
+        # column instead of showing an empty snes row.
+        assert summary.per_system["snes"].artwork_copied == 1
+        assert summary.per_system["snes"].copied == 0
+
+    def test_include_roms_false_does_not_touch_unsupported(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """A system the profile marks unsupported must NOT get an
+        artwork folder created — we'd have no folder anyway, and the
+        per-system bucket should record it as skipped_unsupported
+        even in artwork-only mode.
+        """
+        # Gamecube isn't in _build_minimal_profile's supported set.
+        rom_path = tmp_path / "lib" / "gc" / "wind.iso"
+        _make_rom_file(rom_path)
+        _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="gamecube",
+            extension=".iso",
+            filename="wind.iso",
+            size_bytes=10,
+            title="Wind Waker",
+        )
+        profile = _build_minimal_profile()
+        target = tmp_path / "out"
+
+        summary = export_collection(
+            seeded_db,
+            profile,
+            target,
+            ExportFilters(),
+            ExportOptions(include_roms=False, generate_m3u=False),
+        )
+
+        assert "gamecube" in summary.per_system
+        assert summary.per_system["gamecube"].skipped_unsupported == 1
+        # No gamecube folder at all on dest.
+        assert not (target / "roms" / "gamecube").exists()
+
+    def test_include_roms_false_when_already_synced(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """After a normal export, re-running with include_roms=False
+        should idempotently re-publish artwork + gamelist without
+        re-copying the ROM. Mirrors the user's actual workflow.
+        """
+        _game_id, _cover = self._stage_game_with_cover(seeded_db, tmp_path)
+        profile = _build_minimal_profile()
+        target = tmp_path / "out"
+
+        # Pass 1: normal full export.
+        export_collection(
+            seeded_db,
+            profile,
+            target,
+            ExportFilters(),
+            ExportOptions(generate_m3u=False),
+        )
+        rom_on_dest = target / "roms" / "snes" / "Mario.sfc"
+        assert rom_on_dest.exists()
+        rom_mtime_before = rom_on_dest.stat().st_mtime
+
+        # Pass 2: artwork-only mode. The ROM file's mtime must NOT change.
+        time.sleep(0.05)
+        summary = export_collection(
+            seeded_db,
+            profile,
+            target,
+            ExportFilters(),
+            ExportOptions(include_roms=False, generate_m3u=False),
+        )
+        assert rom_on_dest.stat().st_mtime == rom_mtime_before
+        assert summary.files_copied == 0
+
+
+class TestArtworkFreshnessSkip:
+    """``copy_artwork`` must skip a dest cover that already matches the
+    local copy by size + mtime, so the artwork-only workflow doesn't
+    re-copy every cover on every run.
+    """
+
+    def test_already_current_artwork_is_skipped(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        from romulus.core.exporter import copy_artwork
+
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        _make_rom_file(rom_path)
+        _rom_id, game_id = _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Super Mario World",
+        )
+        cover_path = tmp_path / "covers" / "mario.png"
+        cover_path.parent.mkdir(parents=True, exist_ok=True)
+        cover_path.write_bytes(b"COVER-PNG-BYTES")
+        q.insert_cover(
+            seeded_db,
+            game_id,
+            cover_type="Named_Boxarts",
+            source_url=None,
+            local_path=str(cover_path),
+        )
+        seeded_db.commit()
+
+        profile = _build_minimal_profile()
+        target = tmp_path / "out"
+        rows = list(seeded_db.execute(
+            "SELECT * FROM roms WHERE system_id = 'snes'"
+        ))
+
+        # First pass — fresh copy.
+        first = copy_artwork(seeded_db, "snes", profile, target, rows)
+        assert first == 1
+        dest_cover = (
+            target / "roms" / "snes" / "downloaded_media" / "Mario-image.png"
+        )
+        dest_mtime_before = dest_cover.stat().st_mtime
+
+        # Second pass — same source, dest already current. Must skip.
+        time.sleep(0.05)
+        second = copy_artwork(seeded_db, "snes", profile, target, rows)
+        assert second == 0
+        # mtime must not have changed (no re-write).
+        assert dest_cover.stat().st_mtime == dest_mtime_before
+
+    def test_modified_source_triggers_recopy(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """If the local cover file changes (size or mtime), copy_artwork
+        must re-publish it — that's the whole point of running an
+        artwork-only export after enrichment.
+        """
+        from romulus.core.exporter import copy_artwork
+
+        rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
+        _make_rom_file(rom_path)
+        _rom_id, game_id = _insert_rom_with_game(
+            seeded_db,
+            path=str(rom_path).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario.sfc",
+            size_bytes=10,
+            title="Super Mario World",
+        )
+        cover_path = tmp_path / "covers" / "mario.png"
+        cover_path.parent.mkdir(parents=True, exist_ok=True)
+        cover_path.write_bytes(b"OLD-COVER")
+        q.insert_cover(
+            seeded_db,
+            game_id,
+            cover_type="Named_Boxarts",
+            source_url=None,
+            local_path=str(cover_path),
+        )
+        seeded_db.commit()
+
+        profile = _build_minimal_profile()
+        target = tmp_path / "out"
+        rows = list(seeded_db.execute(
+            "SELECT * FROM roms WHERE system_id = 'snes'"
+        ))
+
+        # First pass — fresh copy of OLD bytes.
+        copy_artwork(seeded_db, "snes", profile, target, rows)
+        dest_cover = (
+            target / "roms" / "snes" / "downloaded_media" / "Mario-image.png"
+        )
+        assert dest_cover.read_bytes() == b"OLD-COVER"
+
+        # Simulate the user re-enriching: rewrite the local cover.
+        time.sleep(0.05)
+        cover_path.write_bytes(b"NEW-COVER-WITH-DIFFERENT-SIZE")
+
+        # Second pass — must re-copy because size differs.
+        second = copy_artwork(seeded_db, "snes", profile, target, rows)
+        assert second == 1
+        assert dest_cover.read_bytes() == b"NEW-COVER-WITH-DIFFERENT-SIZE"

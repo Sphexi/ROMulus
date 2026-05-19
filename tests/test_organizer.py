@@ -730,6 +730,240 @@ class TestOrganizePreviewDialog:
         assert dialog._apply_btn.isEnabled() is False
         dialog.close()
 
+    def test_group_header_toggle_cascades_to_children(self, qapp) -> None:
+        """Tri-state header toggle from GroupedCheckboxTreeMixin must
+        flip only that group's children, leaving sibling groups alone.
+
+        Regression guard for KNOWN-ISSUES.md 2026-05-18 "Per-group
+        select/deselect in preview dialogs" — a multi-thousand-row
+        plan with two groups of three actions, toggling group A's
+        header should ONLY flip group A's actions.
+        """
+        from PySide6.QtCore import Qt
+
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                # Group A: three renames.
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="rename A",
+                ),
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=2,
+                    source_path="/lib/snes/b.sfc",
+                    target_path="/lib/snes/B.sfc",
+                    reason="rename B",
+                ),
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=3,
+                    source_path="/lib/snes/c.sfc",
+                    target_path="/lib/snes/C.sfc",
+                    reason="rename C",
+                ),
+                # Group B: three duplicate removals.
+                OrganizeAction(
+                    kind=ACTION_DELETE_DUPLICATE,
+                    rom_id=4,
+                    source_path="/lib/snes/dup1.sfc",
+                    target_path="/lib/snes/dup1.sfc",
+                    reason="dup of A",
+                ),
+                OrganizeAction(
+                    kind=ACTION_DELETE_DUPLICATE,
+                    rom_id=5,
+                    source_path="/lib/snes/dup2.sfc",
+                    target_path="/lib/snes/dup2.sfc",
+                    reason="dup of B",
+                ),
+                OrganizeAction(
+                    kind=ACTION_DELETE_DUPLICATE,
+                    rom_id=6,
+                    source_path="/lib/snes/dup3.sfc",
+                    target_path="/lib/snes/dup3.sfc",
+                    reason="dup of C",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            root = dialog._model.invisibleRootItem()
+            # Find the rename header + the duplicate header.
+            headers: dict[str, object] = {}
+            for i in range(root.rowCount()):
+                header = root.child(i, 0)
+                if header is None:
+                    continue
+                # Header label is "Renames (3)" or "Duplicate removals (3)" — index by row count.
+                if header.rowCount() == 3:
+                    label = header.text()
+                    if "Renames" in label:
+                        headers["renames"] = header
+                    elif "Duplicate" in label:
+                        headers["dupes"] = header
+            assert "renames" in headers and "dupes" in headers, (
+                f"could not find both group headers: {list(headers)}"
+            )
+
+            renames_hdr = headers["renames"]
+            dupes_hdr = headers["dupes"]
+
+            # Initial state: all six children checked, both headers Checked.
+            assert renames_hdr.checkState() == Qt.CheckState.Checked
+            assert dupes_hdr.checkState() == Qt.CheckState.Checked
+            assert len(dialog.approved_actions()) == 6
+
+            # Toggle the renames header to Unchecked.
+            renames_hdr.setCheckState(Qt.CheckState.Unchecked)
+
+            # All three renames should be unchecked, all three dupes still checked.
+            for j in range(renames_hdr.rowCount()):
+                child = renames_hdr.child(j, 0)
+                assert child.checkState() == Qt.CheckState.Unchecked, (
+                    f"renames child {j} should be unchecked after header toggle"
+                )
+            for j in range(dupes_hdr.rowCount()):
+                child = dupes_hdr.child(j, 0)
+                assert child.checkState() == Qt.CheckState.Checked, (
+                    f"dupes child {j} should still be checked"
+                )
+
+            # approved_actions should be just the 3 dupes now.
+            approved = dialog.approved_actions()
+            assert len(approved) == 3
+            assert all(a.kind == ACTION_DELETE_DUPLICATE for a in approved)
+        finally:
+            dialog.close()
+
+    def test_partial_child_check_puts_header_in_tristate(self, qapp) -> None:
+        """Unchecking one child of a fully-checked group should leave the
+        header in PartiallyChecked state — surfacing the mixed selection.
+        """
+        from PySide6.QtCore import Qt
+
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=i,
+                    source_path=f"/lib/snes/{i}.sfc",
+                    target_path=f"/lib/snes/R{i}.sfc",
+                    reason=f"rename {i}",
+                )
+                for i in range(3)
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            root = dialog._model.invisibleRootItem()
+            header = root.child(0, 0)
+            # Sanity: starts fully checked.
+            assert header.checkState() == Qt.CheckState.Checked
+
+            # Uncheck just one child.
+            header.child(0, 0).setCheckState(Qt.CheckState.Unchecked)
+
+            # Header now reflects partial selection.
+            assert header.checkState() == Qt.CheckState.PartiallyChecked
+
+            # Uncheck the other two — header drops to Unchecked.
+            header.child(1, 0).setCheckState(Qt.CheckState.Unchecked)
+            header.child(2, 0).setCheckState(Qt.CheckState.Unchecked)
+            assert header.checkState() == Qt.CheckState.Unchecked
+        finally:
+            dialog.close()
+
+    def test_collision_only_group_has_non_checkable_header(self, qapp) -> None:
+        """A group whose every child is non-checkable (Collisions) must NOT
+        get a tri-state checkbox — showing one would be misleading since
+        clicking it has no effect.
+        """
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    source_path="/lib/snes/x.sfc",
+                    target_path="/lib/snes/Conflict.sfc",
+                    reason="two renames target this path",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            root = dialog._model.invisibleRootItem()
+            header = root.child(0, 0)
+            assert header.isCheckable() is False
+        finally:
+            dialog.close()
+
+    def test_right_click_select_all_in_group(self, qapp) -> None:
+        """Calling the mixin's group-cascade helper directly (the
+        right-click 'Select all in this group' action) must flip the
+        group's children without touching other groups.
+
+        We exercise the helper, not the menu popup itself, because
+        QMenu.exec is hard to drive headlessly. The right-click handler
+        is a thin wrapper around the same cascade helper.
+        """
+        from PySide6.QtCore import Qt
+
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="rename A",
+                ),
+                OrganizeAction(
+                    kind=ACTION_DELETE_DUPLICATE,
+                    rom_id=2,
+                    source_path="/lib/snes/dup.sfc",
+                    target_path="/lib/snes/dup.sfc",
+                    reason="dup",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            root = dialog._model.invisibleRootItem()
+            renames_hdr = None
+            dupes_hdr = None
+            for i in range(root.rowCount()):
+                header = root.child(i, 0)
+                if "Renames" in header.text():
+                    renames_hdr = header
+                elif "Duplicate" in header.text():
+                    dupes_hdr = header
+            assert renames_hdr is not None
+            assert dupes_hdr is not None
+
+            # Deselect everything to start.
+            dialog._on_deselect_all()
+            assert dialog.approved_actions() == []
+
+            # Cascade-select just the renames group.
+            dialog._gct_cascade_header(renames_hdr, Qt.CheckState.Checked)
+
+            approved = dialog.approved_actions()
+            assert len(approved) == 1
+            assert approved[0].kind == ACTION_RENAME
+        finally:
+            dialog.close()
+
 
 # ---------------------------------------------------------------------------
 # Wiring: MainWindow Organize handler concurrency guard

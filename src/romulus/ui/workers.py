@@ -45,14 +45,21 @@ from romulus.core.importer import analyse_import as _analyse_import
 from romulus.core.importer import apply_plan as _apply_import_plan
 from romulus.core.local_cover_finder import DiscoveryResult, discover_local_covers
 from romulus.core.organizer import OrganizeAction, OrganizeSummary, execute_plan
+from romulus.core.scrub import ScrubAction, ScrubPlan, ScrubSummary
+from romulus.core.scrub import analyse as _scrub_analyse
+from romulus.core.scrub import apply_plan as _scrub_apply_plan
 from romulus.core.sync import (
+    ConflictPolicy,
     SyncAction,
+    SyncMode,
     SyncPlan,
     SyncSummary,
     apply_plan,
+    build_plan,
     persist_plan,
 )
 from romulus.db import get_connection
+from romulus.db import queries as q
 from romulus.metadata import enrich_library, fetch_online_covers_for_scope
 from romulus.models.profile import DestinationProfile
 
@@ -573,6 +580,70 @@ class DestInventoryWorker(_DbWorker):
         self.finished_ok.emit(inventory)
 
 
+class BuildSyncPlanWorker(_DbWorker):
+    """Run :func:`romulus.core.sync.build_plan` on a worker thread.
+
+    Sits between :class:`DestInventoryWorker` and the
+    :class:`SyncPreviewDialog`. ``build_plan`` was running on the UI
+    thread inside the inventory-finished slot — on a large library
+    (38 K local × 17 K dest) that produced a multi-second "not
+    responding" window because the slot fires on the receiving
+    (UI) thread regardless of where the signal originated. The new
+    worker gives the diff phase the same QThread + cooperative-cancel
+    contract every other long-running op already uses.
+    """
+
+    progress = Signal(int, int, str)
+    #: Emits the populated :class:`SyncPlan` once the diff finishes.
+    finished_ok = Signal(object)
+
+    _operation_name = "Sync diff"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        dest_id: int,
+        profile: DestinationProfile,
+        target_path: Path | str,
+        inventory: SyncPlan | object,
+        mode: SyncMode,
+        *,
+        conflict_policy: ConflictPolicy = "skip",
+        library_path: Path | str | None = None,
+    ) -> None:
+        super().__init__(db_path)
+        self._dest_id = dest_id
+        self._profile = profile
+        self._target_path = str(target_path)
+        self._inventory = inventory
+        self._mode = mode
+        self._conflict_policy = conflict_policy
+        self._library_path = (
+            str(library_path) if library_path is not None else None
+        )
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, label: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, label)
+
+        # Mypy can't narrow the ``object`` parameter shape; the caller
+        # passes a real DestInventory in practice but the wider typing
+        # avoids dragging the dest_inventory module into every consumer.
+        plan: SyncPlan = build_plan(
+            conn,
+            self._dest_id,
+            self._profile,
+            self._target_path,
+            self._inventory,  # type: ignore[arg-type]
+            self._mode,
+            conflict_policy=self._conflict_policy,
+            library_path=self._library_path,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(plan)
+
+
 class SyncWorker(_DbWorker):
     """Build a plan, persist it, apply it, emit per-action progress.
 
@@ -583,6 +654,9 @@ class SyncWorker(_DbWorker):
 
     progress = Signal(int, int, str)
     finished_ok = Signal(int, int, int, list)
+    #: Emits the full :class:`SyncSummary` object so the per-system
+    #: summary dialog can render the breakdown. Fires AFTER ``finished_ok``.
+    summary_ready = Signal(object)
 
     _operation_name = "Sync"
 
@@ -637,6 +711,7 @@ class SyncWorker(_DbWorker):
             summary.failed,
             list(summary.errors),
         )
+        self.summary_ready.emit(summary)
 
 
 class ExportWorker(_DbWorker):
@@ -656,6 +731,9 @@ class ExportWorker(_DbWorker):
     # unbounded but PySide6 marshals plain ``int`` through a C ``int``
     # which is 32-bit signed; a 11 GB export reported as -783 MB.
     finished_ok = Signal(int, int, "qint64", list, list)
+    #: Emits the full :class:`ExportSummary` object so the per-system
+    #: summary dialog can render the breakdown. Fires AFTER ``finished_ok``.
+    summary_ready = Signal(object)
 
     _operation_name = "Export"
 
@@ -693,6 +771,7 @@ class ExportWorker(_DbWorker):
             list(summary.systems),
             list(summary.errors),
         )
+        self.summary_ready.emit(summary)
 
 
 class ImportAnalyseWorker(_DbWorker):
@@ -787,3 +866,160 @@ class ImportApplyWorker(_DbWorker):
             sorted(summary.systems_touched),
             list(summary.errors),
         )
+
+
+class ScrubAnalyseWorker(_DbWorker):
+    """Walk the DB and classify rows against disk; emit a populated ScrubPlan.
+
+    Mirrors :class:`ImportAnalyseWorker` — produces a "what would happen"
+    snapshot consumed by a follow-up preview dialog. Apply is a separate
+    worker (:class:`ScrubApplyWorker`) so each phase surfaces its own
+    progress + failure path. Read-only — never writes to the DB; safe to
+    cancel mid-walk without leaving anything inconsistent.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(object)
+
+    _operation_name = "Verify Library"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        library_root: Path | str,
+    ) -> None:
+        super().__init__(db_path)
+        self._library_root = str(library_root)
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, filename: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, filename)
+
+        plan: ScrubPlan = _scrub_analyse(
+            conn,
+            self._library_root,
+            progress_callback=_progress,
+        )
+        self.finished_ok.emit(plan)
+
+
+class ScrubApplyWorker(_DbWorker):
+    """Apply an approved set of :class:`ScrubAction` items, bucketed by status.
+
+    Per-bucket SAVEPOINT — each of the four buckets commits independently.
+    A failure in one bucket rolls back only that bucket, the others apply.
+    Cancellation is cooperative between actions (mid-bucket cancel rolls
+    back the in-flight bucket).
+    """
+
+    progress = Signal(int, int, str)
+    # (flagged_missing, deleted_outside_root, untombstoned, drift_fixed,
+    #  pruned_games, errors)
+    finished_ok = Signal(int, int, int, int, int, list)
+
+    _operation_name = "Verify Library apply"
+
+    def __init__(
+        self,
+        db_path: Path | str,
+        actions: list[ScrubAction],
+    ) -> None:
+        super().__init__(db_path)
+        self._actions = list(actions)
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, label: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, label)
+
+        try:
+            summary: ScrubSummary = _scrub_apply_plan(
+                conn,
+                self._actions,
+                progress_callback=_progress,
+            )
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                logger.exception("ScrubApply: rollback after failure errored")
+            raise
+
+        self.finished_ok.emit(
+            summary.flagged_missing,
+            summary.deleted_outside_root,
+            summary.untombstoned,
+            summary.drift_fixed,
+            summary.pruned_games,
+            list(summary.errors),
+        )
+
+
+class CleanMissingWorker(_DbWorker):
+    """Permanently delete every ``missing = 1`` row + prune orphan games.
+
+    Mirrors the other long-running workers' contract: thread-local sqlite3
+    connection, ``progress(current, total, label)`` ticks per chunk,
+    ``finished_ok(deleted_roms, pruned_games)`` on success, ``failed(msg)``
+    on exception or cancel.
+
+    The work runs as a single transaction on the worker's own connection:
+    ``delete_missing_roms`` -> ``prune_orphan_games`` -> ``commit()``. Any
+    exception triggers ``conn.rollback()`` BEFORE the exception unwinds out
+    of :meth:`_run_work`, so :meth:`_DbWorker.run` sees a clean connection
+    when it logs the failure. The rollback also unblocks subsequent
+    Quick-Scan workers (separate connection, file-level lock) — the original
+    bug was a leaked open transaction holding the write lock for the rest
+    of the session.
+
+    Cancellation is supported per dependent-row chunk via the progress
+    callback's :meth:`_check_cancel`. The final ``DELETE FROM roms`` and
+    ``prune_orphan_games`` statements are not interruptible — they run to
+    completion once dependent cleanup is done. That's intentional: an
+    abort between those steps would leave the DB in a state the user
+    can't easily reason about.
+    """
+
+    progress = Signal(int, int, str)
+    finished_ok = Signal(int, int)
+
+    _operation_name = "Clean Missing Entries"
+
+    def _run_work(self, conn: sqlite3.Connection) -> None:
+        def _progress(current: int, total: int, label: str) -> None:
+            self._check_cancel()
+            self.progress.emit(current, total, label)
+
+        try:
+            self.progress.emit(0, 0, "Counting missing entries…")
+            total = q.count_missing_roms(conn)
+            if total == 0:
+                # Nothing to do — emit a clean finish so the dialog can
+                # close itself without a "failed" detour.
+                self.finished_ok.emit(0, 0)
+                return
+
+            self.progress.emit(0, total, "Deleting dependent rows…")
+            deleted = q.delete_missing_roms(
+                conn, progress_callback=_progress
+            )
+            self.progress.emit(total, total, "Pruning orphan games…")
+            pruned = q.prune_orphan_games(conn)
+            conn.commit()
+            logger.info(
+                "CleanMissing complete: deleted_roms=%d pruned_games=%d",
+                deleted,
+                pruned,
+            )
+        except Exception:
+            # Roll back the implicit transaction so a subsequent worker on a
+            # separate connection isn't blocked by a leaked write lock.
+            # ``_DbWorker.run`` logs + emits ``failed`` once we re-raise.
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                logger.exception("CleanMissing: rollback after failure errored")
+            raise
+
+        self.finished_ok.emit(deleted, pruned)

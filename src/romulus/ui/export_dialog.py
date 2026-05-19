@@ -177,6 +177,18 @@ class ExportDialog(QDialog):
         # ---- Sidecar option toggles -----------------------------------
         options_group = QGroupBox("Options", self)
         options_layout = QVBoxLayout(options_group)
+        self._include_roms_cb = QCheckBox("Include ROMs", options_group)
+        self._include_roms_cb.setChecked(True)
+        self._include_roms_cb.setToolTip(
+            "Uncheck to skip ROM copies and only refresh artwork + "
+            "gamelist.xml on the destination. Use this after a Find "
+            "Covers / Enrich Metadata run to push the fresh sidecars "
+            "without re-copying gigabytes of already-synced ROMs."
+        )
+        self._include_roms_cb.stateChanged.connect(
+            self._on_include_roms_changed
+        )
+        options_layout.addWidget(self._include_roms_cb)
         self._include_artwork_cb = QCheckBox("Include artwork", options_group)
         self._include_artwork_cb.setChecked(True)
         options_layout.addWidget(self._include_artwork_cb)
@@ -289,6 +301,7 @@ class ExportDialog(QDialog):
 
     def build_options(self) -> ExportOptions:
         return ExportOptions(
+            include_roms=self._include_roms_cb.isChecked(),
             include_artwork=self._include_artwork_cb.isChecked(),
             generate_gamelist=self._generate_gamelist_cb.isChecked(),
             generate_m3u=self._generate_m3u_cb.isChecked(),
@@ -433,6 +446,39 @@ class ExportDialog(QDialog):
             return
         self._populate_destination_combo(select_dest_id=new_id)
 
+    def _on_include_roms_changed(self, _state: int) -> None:
+        """Disable Scan destination + adjust UX when the user opts out of ROMs.
+
+        ``Scan destination`` only earns its keep when the export is
+        going to copy or delete ROM bytes — it walks the entire dest
+        filesystem (potentially tens of thousands of files), runs the
+        4-tier identity matcher, and produces a sync plan whose every
+        row would be ``ACTION_IDENTICAL`` in artwork-only mode.
+        Applying such a plan wouldn't refresh sidecars anyway (identical
+        actions don't touch artwork). So when ``Include ROMs`` is off,
+        the button is disabled with an explanatory tooltip and the
+        user is funneled toward Export, which actually runs the
+        sidecar refresh.
+        """
+        include_roms = self._include_roms_cb.isChecked()
+        self._scan_dest_btn.setEnabled(include_roms)
+        if include_roms:
+            self._scan_dest_btn.setToolTip(
+                "Walk the destination and diff against the local "
+                "library — required for sync modes that may delete or "
+                "overwrite dest files."
+            )
+        else:
+            self._scan_dest_btn.setToolTip(
+                "Disabled in artwork-only mode. Click Export to "
+                "refresh artwork + gamelist without scanning the "
+                "destination."
+            )
+        # Refresh the Preview pane if it's already populated so its text
+        # reflects the new mode without the user having to re-click.
+        if self._preview_text.toPlainText().strip():
+            self._on_preview()
+
     def _on_scan_destination(self) -> None:
         """Emit :pyattr:`sync_scan_requested` for MainWindow to spawn the worker."""
         profile = self.selected_profile()
@@ -460,12 +506,26 @@ class ExportDialog(QDialog):
             return
         filters = self.build_filters()
         preview = preview_export(self._conn, profile, target, filters)
+        include_roms = self._include_roms_cb.isChecked()
         lines: list[str] = []
-        lines.append(
-            f"Exporting {preview.file_count} ROM(s) "
-            f"({_format_bytes(preview.total_size_bytes)}) "
-            f"across {len(preview.by_system)} system(s)."
-        )
+        if include_roms:
+            lines.append(
+                f"Exporting {preview.file_count} ROM(s) "
+                f"({_format_bytes(preview.total_size_bytes)}) "
+                f"across {len(preview.by_system)} system(s)."
+            )
+        else:
+            # Artwork-only mode: ROM bytes won't move. Re-frame the
+            # preview around what *will* happen — covers refreshed,
+            # gamelists rebuilt — so the user isn't misled by a
+            # "Exporting 38,120 ROMs (240 GB)" headline when none of
+            # those bytes will actually be copied.
+            lines.append(
+                f"Artwork-only mode — refreshing covers + "
+                f"gamelist.xml for {len(preview.by_system)} system(s) "
+                f"covering {preview.file_count} game(s). "
+                f"No ROM bytes will be copied."
+            )
         if preview.unsupported_systems:
             lines.append(
                 "Skipping unsupported system(s): "
@@ -509,11 +569,28 @@ class ExportDialog(QDialog):
     # Progress hooks driven by the caller while the worker runs
     # ------------------------------------------------------------------
 
-    def on_progress(self, current: int, total: int, filename: str) -> None:
+    def on_progress(self, current: int, total: int, label: str) -> None:
+        """Slot — driven by ExportWorker progress signal.
+
+        Two phases, each with its own label scale:
+
+        * Phase 1 (ROM copy): ``current`` / ``total`` count files and
+          ``label`` is verb-prefixed by the exporter ("Copying foo.sfc").
+        * Phase 2 (sidecars): ``current`` / ``total`` count systems and
+          ``label`` reads "Refreshing sidecars: <system_id>".
+
+        Render the label as authoritative — the previous hard-coded
+        "Exporting N of M" prefix produced a stuck-at-100% UX once
+        phase 1 finished because nothing updated the label during the
+        artwork pass.
+        """
         if total > 0:
             self._progress.setMaximum(total)
             self._progress.setValue(current)
-        self._status_label.setText(f"Exporting {current} of {total}: {filename}")
+            self._status_label.setText(f"{label} ({current} of {total})")
+        else:
+            # Indeterminate phase tick — just drive the label.
+            self._status_label.setText(label)
 
     def on_finished(
         self,

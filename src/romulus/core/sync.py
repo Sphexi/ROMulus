@@ -171,6 +171,24 @@ class SyncPlan:
 
 
 @dataclass(slots=True)
+class PerSystemSyncCounts:
+    """Per-system breakdown of a sync run.
+
+    Populated alongside the aggregate counters in :class:`SyncSummary`
+    so the post-sync summary dialog can show what each system actually
+    did in this run (copied / deleted / left identical / failed).
+    """
+
+    copied_to_dest: int = 0
+    copied_to_local: int = 0
+    deleted_dest: int = 0
+    deleted_local: int = 0
+    skipped_identical: int = 0
+    failed: int = 0
+    bytes_copied: int = 0
+
+
+@dataclass(slots=True)
 class SyncSummary:
     """Result of :func:`apply_plan` — what actually happened on disk."""
 
@@ -184,6 +202,11 @@ class SyncSummary:
     files_pulled_to_local: int = 0
     systems_touched: set[str] = field(default_factory=set)
     errors: list[str] = field(default_factory=list)
+    #: Per-system breakdown keyed by ``system_id``. Identical actions
+    #: that don't touch the filesystem still produce an entry so the
+    #: summary dialog can show "0 changes for snes" rather than the
+    #: system being missing.
+    per_system: dict[str, PerSystemSyncCounts] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +270,42 @@ class _MatchIndex:
     by_sha1: dict[str, LocalRom] = field(default_factory=dict)
     rows: list[LocalRom] = field(default_factory=list)
     profile: DestinationProfile | None = None
+
+
+def _build_inventory_fuzzy_index(
+    inv_by_path: dict[str, InventoryEntry],
+    profile: DestinationProfile,
+) -> dict[tuple[str, str, str], InventoryEntry]:
+    """Pre-compute ``(fuzzy_key, region, system_id) -> InventoryEntry`` for tier-2.
+
+    Without this, :func:`_find_tier2_inventory_entry` was O(M) per
+    local rom because it re-scanned the inventory + recomputed fuzzy
+    keys on every miss. On a 38 K local × 17 K dest library that's
+    roughly 600 M fuzzy-key recomputations — minutes of pure CPU on
+    the UI thread. Building the index once collapses the tier-2
+    lookup to a single dict.get.
+
+    Sidecar paths (gamelist.xml, .m3u, artwork dirs) are skipped so
+    they don't accidentally map onto a real ROM's fuzzy key. Entries
+    whose folder doesn't resolve to a profile system are skipped too
+    — we can't safely tier-2 match without a system anchor (see the
+    cross-platform Pac-Man case in :class:`_MatchIndex`'s docstring).
+
+    First-write-wins so a re-release (Rev 1 sitting next to Rev 0 in
+    the same folder) doesn't shadow the original entry.
+    """
+    out: dict[tuple[str, str, str], InventoryEntry] = {}
+    for entry in inv_by_path.values():
+        if _is_sidecar(entry.rel_path):
+            continue
+        system_id = _system_id_from_rel_path(entry.rel_path, profile)
+        if system_id is None:
+            continue
+        fuzzy, region = _fuzzy_region_key_for_entry(entry.rel_path)
+        if not fuzzy:
+            continue
+        out.setdefault((fuzzy, region, system_id), entry)
+    return out
 
 
 def _build_match_index(
@@ -512,23 +571,31 @@ def _build_push_actions(
     inventory: DestInventory,
     *,
     delete_dest_only: bool,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[SyncAction]:
     """Build the push-side action list for merge / mirror / wipe modes."""
     inv_by_path = inventory.by_rel_path()
+    dest_by_fuzzy = _build_inventory_fuzzy_index(inv_by_path, profile)
     matched_rom_ids: set[int] = set()
     actions: list[SyncAction] = []
 
+    total_local = len(index.rows)
+    if progress_callback is not None:
+        progress_callback(0, total_local, "Computing diff…")
+
     # Local-only files become copy_to_dest actions; tier 1-4 identity
     # matches against the dest become "identical" buckets.
-    for rom in index.rows:
+    for idx, rom in enumerate(index.rows, start=1):
+        if progress_callback is not None and idx % 500 == 0:
+            progress_callback(idx, total_local, "Computing diff…")
         rel = _local_rel_path(profile, target, rom)
         if rel is None:
             continue
         entry = inv_by_path.get(rel)
         if entry is None:
             # Maybe a tier-2 match exists at a different rel_path on dest —
-            # walk the inventory to find it before deciding to copy.
-            tier2_entry = _find_tier2_inventory_entry(rom, inv_by_path, index)
+            # one dict lookup against the pre-built index.
+            tier2_entry = _find_tier2_inventory_entry(rom, dest_by_fuzzy)
             if tier2_entry is not None:
                 matched_rom_ids.add(rom.rom_id)
                 actions.append(
@@ -617,36 +684,26 @@ def _build_push_actions(
 
 def _find_tier2_inventory_entry(
     rom: LocalRom,
-    inv_by_path: dict[str, InventoryEntry],
-    index: _MatchIndex,
+    dest_by_fuzzy: dict[tuple[str, str, str], InventoryEntry],
 ) -> InventoryEntry | None:
     """Find a dest entry that tier-2 matches ``rom`` at a different rel_path.
 
     Used when the canonical-profile path isn't on the destination but a
-    fuzzy-key-equivalent file is sitting under a different folder (e.g. the
-    user moved it manually). The system_id of the candidate dest entry
-    must match ``rom.system_id`` — without that gate a Game Boy "Pac-Man"
-    would match the Game Boy Color folder's "Pac-Man.gbc" and we'd report
-    "already on dest" for a file that's actually a different game.
+    fuzzy-key-equivalent file is sitting under a different folder (e.g.
+    the user moved it manually). The system_id segment of the lookup
+    key is the cross-platform guard — without it a Game Boy "Pac-Man"
+    would match the Game Boy Color folder's "Pac-Man.gbc" and we'd
+    report "already on dest" for a file that's actually a different
+    game.
+
+    Single dict lookup — see :func:`_build_inventory_fuzzy_index` for
+    why this used to be O(M) per call.
     """
     if not rom.fuzzy_key:
         return None
-    target_key = (rom.fuzzy_key, rom.region.lower())
-    profile = index.profile
-    for entry in inv_by_path.values():
-        fuzzy, region = _fuzzy_region_key_for_entry(entry.rel_path)
-        if (fuzzy, region) != target_key:
-            continue
-        # System guard: only accept the dest entry if its folder maps to
-        # the same system as the local rom. Without a profile we can't
-        # resolve folder→system, so we skip tier-2 entirely rather than
-        # risk a cross-platform false positive.
-        if profile is None:
-            continue
-        dest_system_id = _system_id_from_rel_path(entry.rel_path, profile)
-        if dest_system_id == rom.system_id:
-            return entry
-    return None
+    return dest_by_fuzzy.get(
+        (rom.fuzzy_key, rom.region.lower(), rom.system_id)
+    )
 
 
 def _is_sidecar(rel_path: str) -> bool:
@@ -765,19 +822,28 @@ def _build_twoway_actions(
     inventory: DestInventory,
     conflict_policy: ConflictPolicy,
     library_path: Path | None,
+    *,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[SyncAction]:
     """Two-way actions: copy missing files in either direction, resolve conflicts."""
     inv_by_path = inventory.by_rel_path()
+    dest_by_fuzzy = _build_inventory_fuzzy_index(inv_by_path, profile)
     matched_rom_ids: set[int] = set()
     actions: list[SyncAction] = []
 
+    total_local = len(index.rows)
+    if progress_callback is not None:
+        progress_callback(0, total_local, "Computing two-way diff…")
+
     # Forward pass: every local ROM gets a row.
-    for rom in index.rows:
+    for idx, rom in enumerate(index.rows, start=1):
+        if progress_callback is not None and idx % 500 == 0:
+            progress_callback(idx, total_local, "Computing two-way diff…")
         rel = _local_rel_path(profile, target, rom)
         if rel is None:
             continue
         entry = inv_by_path.get(rel) or _find_tier2_inventory_entry(
-            rom, inv_by_path, index
+            rom, dest_by_fuzzy
         )
         if entry is None:
             actions.append(
@@ -915,24 +981,52 @@ def build_plan(
     *,
     conflict_policy: ConflictPolicy = "skip",
     library_path: Path | str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> SyncPlan:
     """Compute the action list for ``mode`` against the inventory snapshot.
 
     Returns a :class:`SyncPlan` — pure data, no filesystem writes. The
     matching plan IS the source of truth the preview dialog and the apply
     worker share.
+
+    ``progress_callback`` (optional, signature ``(current, total, label)``)
+    fires at each phase boundary so a worker thread can drive a progress
+    dialog. The diff is fast on small libraries (sub-second) but a
+    40 K-rom × 17 K-dest pairing can take a noticeable beat; the callback
+    means the UI shows progress instead of a frozen "not responding"
+    window.
     """
     target = Path(target_path)
     library = Path(library_path) if library_path is not None else None
+
+    inv_count = len(inventory.entries)
+    logger.info(
+        "build_plan: start mode=%s dest_id=%d inventory=%d entries",
+        mode,
+        dest_id,
+        inv_count,
+    )
+    if progress_callback is not None:
+        progress_callback(0, 4, "Loading library index…")
+
     index = _build_match_index(conn, profile, target)
+    logger.info(
+        "build_plan: match index built (%d local roms)", len(index.rows)
+    )
+    if progress_callback is not None:
+        progress_callback(1, 4, "Indexing destination…")
 
     if mode == "push_merge":
         actions = _build_push_actions(
-            profile, target, index, inventory, delete_dest_only=False
+            profile, target, index, inventory,
+            delete_dest_only=False,
+            progress_callback=progress_callback,
         )
     elif mode in {"push_mirror", "push_wipe"}:
         actions = _build_push_actions(
-            profile, target, index, inventory, delete_dest_only=True
+            profile, target, index, inventory,
+            delete_dest_only=True,
+            progress_callback=progress_callback,
         )
     elif mode == "pull":
         actions = _build_pull_actions(
@@ -940,16 +1034,30 @@ def build_plan(
         )
     elif mode == "two_way":
         actions = _build_twoway_actions(
-            profile, target, index, inventory, conflict_policy, library
+            profile, target, index, inventory, conflict_policy, library,
+            progress_callback=progress_callback,
         )
     else:  # pragma: no cover - guarded by Literal at call sites
         raise ValueError(f"unknown sync mode: {mode!r}")
-    return SyncPlan(
+
+    if progress_callback is not None:
+        progress_callback(4, 4, "Finalising plan…")
+    plan = SyncPlan(
         dest_id=dest_id,
         mode=mode,
         actions=actions,
         conflict_policy=conflict_policy,
     )
+    logger.info(
+        "build_plan: complete mode=%s actions=%d (%s)",
+        mode,
+        len(plan.actions),
+        ", ".join(
+            f"{k}={v}" for k, v in sorted(plan.counts_by_kind().items())
+        )
+        or "no actions",
+    )
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -983,10 +1091,16 @@ def _execute_copy_to_dest(
         raise FileNotFoundError(f"source vanished: {source}")
     dest = Path(action.dest_path)
     atomic.atomic_copy(source, dest)
-    summary.bytes_copied_to_dest += int(action.size_bytes or 0)
+    size = int(action.size_bytes or 0)
+    summary.bytes_copied_to_dest += size
     summary.files_added_to_dest += 1
     if action.system_id:
         summary.systems_touched.add(action.system_id)
+        bucket = summary.per_system.setdefault(
+            action.system_id, PerSystemSyncCounts()
+        )
+        bucket.copied_to_dest += 1
+        bucket.bytes_copied += size
     # Update the destination inventory cache so re-running the sync without
     # a re-scan doesn't propose copying the same file again. Skip the
     # inventory write entirely for one-shot syncs that never created a
@@ -1038,6 +1152,9 @@ def _execute_delete_dest(
     summary.files_removed_from_dest += 1
     if action.system_id:
         summary.systems_touched.add(action.system_id)
+        summary.per_system.setdefault(
+            action.system_id, PerSystemSyncCounts()
+        ).deleted_dest += 1
     if dest_id >= 0:
         q.delete_dest_inventory_row(conn, dest_id, action.rel_path)
     # Drop the cover that followed this ROM in (best-effort).
@@ -1062,7 +1179,8 @@ def _execute_copy_to_local(
         raise FileNotFoundError(f"dest source vanished: {source}")
     dest = Path(action.local_path)
     atomic.atomic_copy(source, dest)
-    summary.bytes_copied_to_local += int(action.size_bytes or 0)
+    size = int(action.size_bytes or 0)
+    summary.bytes_copied_to_local += size
     summary.files_pulled_to_local += 1
     # Enrol via Quick Scan semantics — parse the filename, generate the
     # fuzzy key, and upsert as match_confidence='fuzzy' per spec §8.
@@ -1088,6 +1206,11 @@ def _execute_copy_to_local(
     )
     if system_id != "_unsorted":
         summary.systems_touched.add(system_id)
+        bucket = summary.per_system.setdefault(
+            system_id, PerSystemSyncCounts()
+        )
+        bucket.copied_to_local += 1
+        bucket.bytes_copied += size
 
 
 def _execute_conflict(
@@ -1427,6 +1550,9 @@ def apply_plan(
                 summary.skipped += 1
                 if action.system_id:
                     summary.systems_touched.add(action.system_id)
+                    summary.per_system.setdefault(
+                        action.system_id, PerSystemSyncCounts()
+                    ).skipped_identical += 1
                 action.executed = True
                 conn.execute(f"RELEASE SAVEPOINT {savepoint}")
                 continue
@@ -1452,6 +1578,10 @@ def apply_plan(
             action.error = str(exc)
             summary.failed += 1
             summary.errors.append(f"{action.kind} {action.rel_path!s}: {exc}")
+            if action.system_id:
+                summary.per_system.setdefault(
+                    action.system_id, PerSystemSyncCounts()
+                ).failed += 1
             logger.warning(
                 "sync action failed: kind=%s rel_path=%s err=%s",
                 action.kind,

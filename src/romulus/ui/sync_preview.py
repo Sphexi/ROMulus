@@ -50,6 +50,7 @@ from romulus.core.sync import (
     SyncAction,
     SyncPlan,
 )
+from romulus.ui._grouped_tree import GroupedCheckboxTreeMixin
 
 # Display labels for each bucket — keep in sync with the spec's preview mock.
 _BUCKET_LABELS: dict[str, str] = {
@@ -83,7 +84,7 @@ _CONFLICT_POLICY_CHOICES: tuple[tuple[str, str], ...] = (
 _ACTION_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
-class SyncPreviewDialog(QDialog):
+class SyncPreviewDialog(QDialog, GroupedCheckboxTreeMixin):
     """Preview / commit dialog for a :class:`SyncPlan`."""
 
     #: Emitted with the list of approved :class:`SyncAction` instances after
@@ -150,6 +151,7 @@ class SyncPreviewDialog(QDialog):
         # Conflict-policy dropdowns are inserted via setIndexWidget after the
         # model is attached so their parents are correct.
         self._install_conflict_widgets()
+        self._install_group_toggle()
         self._tree.expandAll()
         self._tree.setColumnWidth(0, 240)
         self._tree.setColumnWidth(1, 360)

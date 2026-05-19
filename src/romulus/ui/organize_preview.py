@@ -37,6 +37,7 @@ from romulus.core.organizer import (
     OrganizeAction,
     OrganizePlan,
 )
+from romulus.ui._grouped_tree import GroupedCheckboxTreeMixin
 
 _ACTION_LABELS: dict[str, str] = {
     ACTION_MERGE_FOLDER: "Merge folders",
@@ -49,7 +50,7 @@ _ACTION_LABELS: dict[str, str] = {
 _ACTION_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
 
-class OrganizePreviewDialog(QDialog):
+class OrganizePreviewDialog(QDialog, GroupedCheckboxTreeMixin):
     """Preview/commit dialog for an :class:`OrganizePlan`."""
 
     #: Emitted with the list of approved actions when the user clicks Apply.
@@ -76,6 +77,7 @@ class OrganizePreviewDialog(QDialog):
         self._model.setHorizontalHeaderLabels(["Action", "Source", "Target"])
         self._populate_model()
         self._tree.setModel(self._model)
+        self._install_group_toggle()
         self._tree.expandAll()
         self._tree.setColumnWidth(0, 220)
         self._tree.setColumnWidth(1, 260)

@@ -42,6 +42,122 @@ Explorer / Delete actions).
   threading after a UNC-path-normalization mismatch caused thousands
   of FK errors during apply.
 
+**Artwork-only export mode
+(`src/romulus/core/exporter.py`,
+`src/romulus/ui/export_dialog.py`):**
+- New **"Include ROMs"** checkbox at the top of the Export Options
+  group, default checked. Uncheck it to skip the ROM copy loop
+  entirely and only refresh artwork + gamelist.xml on the
+  destination. Use case: after an Enrich Metadata / Find Covers run,
+  push the fresh sidecars to the device without re-copying
+  gigabytes of already-synced ROMs.
+- `copy_artwork` now does a size + mtime compare against any
+  existing dest cover and skips files that already match (2 s mtime
+  tolerance for FAT32/SMB second-precision rounding). Before this,
+  a re-run blindly re-copied every cover even when content hadn't
+  changed — fine for hundreds of MB of art, wasteful at scale.
+- Export / Sync dialog reacts to the checkbox: when Include ROMs is
+  unchecked, **Scan destination** disables itself with a tooltip
+  ("Disabled in artwork-only mode — use Export"), since a full dest
+  walk would produce a sync plan of pure `ACTION_IDENTICAL` rows
+  that don't refresh sidecars anyway. The Preview text reframes
+  from "Exporting N ROMs (NN GB)" to "Artwork-only mode — refreshing
+  covers + gamelist.xml for N system(s)…" so the headline matches
+  what's actually about to happen.
+- Per-system summary dialog gains a **"Covers refreshed"** column.
+  Without it, an artwork-only run produced a table of empty rows
+  (every ROM-centric counter is 0). The column also surfaces cover
+  work in normal full-export runs — the existing
+  `summary.artwork_copied` aggregate had no per-system breakdown.
+- Export progress dialog reports the **sidecar phase** explicitly
+  instead of sitting at 100% with a stale ROM filename. Phase 1 ROM
+  ticks are now labelled `"Copying foo.sfc"`; phase 2 emits per-system
+  ticks labelled `"Refreshing sidecars: <system_id>"` and rescales
+  the progress bar to the system count. Before this the artwork
+  pass ran silently after the ROM loop hit 100% — minutes of
+  invisible work on libraries with thousands of covers.
+
+**Sync diff performance + threading
+(`src/romulus/core/sync.py`, `src/romulus/ui/workers.py`,
+`src/romulus/ui/sync_diff_progress.py`):**
+- **`_find_tier2_inventory_entry` was O(N·M).** Every local ROM
+  without a tier-1 path match re-scanned the entire destination
+  inventory, recomputing every fuzzy key via `parse_filename` +
+  `generate_fuzzy_key` + regex. On a 38 K local × 17 K dest library
+  that's ~600 M fuzzy-key computations — the UI froze for tens of
+  minutes in a single re.sub loop. Pre-build a
+  `(fuzzy_key, region, system_id) → InventoryEntry` index once at
+  the top of `_build_push_actions` / `_build_twoway_actions`; the
+  tier-2 lookup is now a single `dict.get`. Total fuzzy-key
+  computations drops from O(N·M) to O(M).
+- **`build_plan` runs on a worker thread now.** New
+  `BuildSyncPlanWorker` (mirrors `ImportAnalyseWorker`'s contract)
+  sits between `DestInventoryWorker` and `SyncPreviewDialog`. New
+  `SyncDiffProgressDialog` shows "Computing diff…" with a determinate
+  bar driven by per-row progress ticks; Cancel is cooperative. Before
+  this, `build_plan` ran inside `_on_inventory_done` on the UI thread
+  even though it was wired to a queued signal from a worker — the
+  slot still executes on the receiving (UI) thread.
+- **Build_plan emits enter/exit INFO logs.** A future "frozen UI"
+  report can now be diagnosed from `logs/romulus.log` alone:
+  `build_plan: start mode=… dest_id=… inventory=…` followed by
+  `build_plan: complete mode=… actions=N (copy_to_dest=X, …)`.
+
+**Per-system summary dialog for Export + Sync
+(`src/romulus/ui/per_system_summary_dialog.py`):**
+- Auto-popup modal dialog after Export or Sync completes, on top of
+  the progress dialog. Sortable table with one row per system + a
+  Totals row.
+- Export columns: Copied | Bytes | Already on dest | Unsupported |
+  Refused | Errors. Mirrors the exporter's skip-reason taxonomy so
+  the user can tell at a glance whether a system was skipped because
+  the profile rejected it (e.g. Amiga on Anbernic RGLauncher) or
+  because of a refuse-overwrite collision (same filename, different
+  size at dest).
+- Sync columns: Copied → dest | Pulled → local | Deleted (dest) |
+  Deleted (local) | Already identical | Bytes moved | Failed.
+- Engine summaries (`ExportSummary` / `SyncSummary`) gained a
+  `per_system` field populated alongside the existing aggregates, so
+  the totals row never disagrees with the one-line summary.
+- Error-like cells render red when non-zero so failures stand out.
+
+**Per-group bulk toggle in preview dialogs
+(`src/romulus/ui/_grouped_tree.py`):**
+- New `GroupedCheckboxTreeMixin` mixin shared by Organize, Sync, and
+  Verify Library preview dialogs. Adds tri-state group headers
+  (checked / unchecked / partial) — clicking a header cascades to
+  every child in that bucket — plus a right-click "Select / Deselect
+  all in this group" context menu for users who reach for the
+  Windows right-click reflex first.
+- A multi-thousand-row plan with several action types is now
+  workable: flip an entire bucket with a single click instead of
+  per-row clicking each child. Buckets whose every child is
+  non-checkable (e.g. the Organize "Collisions" section) keep a
+  plain non-checkable header so the affordance doesn't lie about
+  what it can do.
+
+**Verify Library — reverse-direction DB scrub
+(`src/romulus/core/scrub.py`, `src/romulus/ui/scrub_dialog.py`):**
+- **Tools → Verify Library…** menu entry that walks every row in
+  `roms` and verifies each one against disk. Catches drift the
+  forward scan can't: rows from a previous library still in the DB,
+  rows pointing outside `library_root`, rows wrongly flagged
+  `missing = 1` when the file came back, and rows whose stored
+  size / mtime have drifted from disk.
+- Four classification buckets surfaced in a grouped checkbox preview:
+  `missing_unflagged` (set missing=1), `outside_root` (delete +
+  FK-dependent cleanup + orphan-game prune), `flagged_but_present`
+  (set missing=0), `drift` (clear cached hash + restat). Conservative
+  defaults — only the no-data-loss fix-ups are pre-checked.
+- Per-bucket SAVEPOINT — each bucket commits independently, so a
+  failure in one bucket doesn't roll back the others. Read-only
+  analyse phase is safely cancellable; apply runs through the
+  preview dialog's progress bar.
+- Unreadable rows (stat raises `PermissionError`/`OSError` — typically
+  SMB share offline) are explicitly NOT auto-tombstoned. They're
+  counted and surfaced in the summary so the user can re-run when
+  the share is back.
+
 **Import ROMs (`src/romulus/core/importer.py`,
 `src/romulus/ui/import_dialog.py`):**
 - **Tools → Import ROMs…** menu entry + toolbar button. Walks a
@@ -408,6 +524,22 @@ Explorer / Delete actions).
   under the cursor via `indexAt(point)` rather than the previous
   selection, and promotes that row to current so subsequent actions
   bind to it.
+- **Clean Missing Entries locked the database and silently rolled
+  back its deletes.** The cleanup ran synchronously on the UI
+  thread against the main connection without a `try/except/rollback`;
+  an exception during the chain (most likely from a transient SMB
+  stat in the post-commit `refresh_all`) left the implicit
+  transaction open, holding a write lock against every subsequent
+  Quick Scan worker for the rest of the session and rolling the
+  deletes back at app close. Moved the work to a new
+  `CleanMissingWorker` (QThread, thread-local connection, commit
+  on the worker side) wrapped in a try/except that calls
+  `conn.rollback()` before re-raising. Added INFO + DEBUG logging
+  to `delete_missing_roms` / `_delete_rom_dependents` /
+  `prune_orphan_games` so future "DB locked" reports become
+  diagnosable from logs alone, plus a determinate
+  `CleanMissingProgressDialog` showing per-chunk progress through
+  the dependent-row deletes.
 
 ### Removed
 

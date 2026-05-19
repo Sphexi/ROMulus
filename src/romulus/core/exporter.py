@@ -123,8 +123,17 @@ class ExportFilters:
 
 @dataclass(frozen=True, slots=True)
 class ExportOptions:
-    """Toggles for the optional sidecar artifacts."""
+    """Toggles for the export run.
 
+    ``include_roms`` is the master switch. When False, the per-row copy
+    loop is short-circuited — no ROM bytes move — but the per-system
+    classification still runs so the sidecar phase (gamelist / artwork)
+    can target the right systems. Use case: after enrichment, push the
+    fresh covers + rebuild gamelist.xml without re-copying gigabytes
+    of already-synced ROMs.
+    """
+
+    include_roms: bool = True
     include_artwork: bool = True
     generate_gamelist: bool = True
     generate_m3u: bool = True
@@ -142,6 +151,32 @@ class ExportPreview:
 
 
 @dataclass(slots=True)
+class PerSystemExportCounts:
+    """Per-system breakdown of an export run.
+
+    Populated alongside the aggregate counters in :class:`ExportSummary`
+    so the post-export summary dialog can show why each system landed
+    where it did (copied vs already-present vs unsupported vs refused
+    vs failed). Stays a plain dataclass instead of a TypedDict so the
+    PySide6 ``Signal(object)`` round-trip preserves the type.
+
+    ``artwork_copied`` records how many cover files this system's
+    sidecar pass actually published (i.e. covers that weren't already
+    on the destination at the same size + mtime). Critical for the
+    artwork-only mode where every other counter is 0 — without it the
+    summary dialog would show empty rows.
+    """
+
+    copied: int = 0
+    bytes_copied: int = 0
+    skipped_unsupported: int = 0
+    skipped_already_present: int = 0
+    skipped_refused: int = 0
+    errors: int = 0
+    artwork_copied: int = 0
+
+
+@dataclass(slots=True)
 class ExportSummary:
     """Result of ``export_collection`` — what actually happened on disk."""
 
@@ -153,6 +188,10 @@ class ExportSummary:
     m3u_written: int = 0
     artwork_copied: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Per-system breakdown keyed by ``system_id``. Every system that
+    #: contributed at least one row to the candidate set gets an entry,
+    #: including systems that ended up entirely skipped.
+    per_system: dict[str, PerSystemExportCounts] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -436,10 +475,20 @@ def export_collection(
     # per system after the file copy is complete.
     by_system: defaultdict[str, list[sqlite3.Row]] = defaultdict(list)
 
+    def _bucket(system_id: str) -> PerSystemExportCounts:
+        return summary.per_system.setdefault(system_id, PerSystemExportCounts())
+
     total = len(candidates)
+    # Phase 1 label is verb-prefixed ("Copying foo.sfc") so the dialog
+    # can render it directly instead of hard-coding "Exporting" — phase
+    # 2 (sidecars) emits its own verb. The previous bare-filename format
+    # produced a "stuck at 100%" UX once the ROM loop finished because
+    # nothing updated the label during the sidecar pass.
     for index, row in enumerate(candidates, start=1):
         if progress_callback is not None:
-            progress_callback(index, total, str(row["filename"]))
+            progress_callback(
+                index, total, f"Copying {row['filename']}"
+            )
 
         system_id = str(row["system_id"])
         mapping = profile.systems.get(system_id)
@@ -450,6 +499,18 @@ def export_collection(
                 system_id,
             )
             summary.files_skipped += 1
+            _bucket(system_id).skipped_unsupported += 1
+            continue
+        if not options.include_roms:
+            # Artwork-only mode (the "Include ROMs" checkbox is off).
+            # Register the row for the sidecar phase so gamelist.xml and
+            # cover-art copies still target the right systems, but skip
+            # every per-row ROM operation — no source/dest stat, no
+            # atomic_copy. Counters are intentionally not bumped: the
+            # user knows ROMs were excluded by choice, a "skipped: N"
+            # tally would just be noise.
+            systems_touched.add(system_id)
+            by_system[system_id].append(row)
             continue
         source = Path(str(row["path"]))
         if not source.exists():
@@ -460,6 +521,9 @@ def export_collection(
             )
             summary.files_skipped += 1
             summary.errors.append(f"source missing: {source}")
+            bucket = _bucket(system_id)
+            bucket.skipped_refused += 1
+            bucket.errors += 1
             continue
         dest_dir = _system_dest_dir(target, profile, mapping)
         dest = dest_dir / str(row["filename"])
@@ -479,6 +543,7 @@ def export_collection(
                 summary.files_skipped += 1
                 systems_touched.add(system_id)
                 by_system[system_id].append(row)
+                _bucket(system_id).skipped_already_present += 1
                 continue
             # Security audit v0.1.0 finding #4: refuse to silently overwrite a
             # pre-existing file whose size differs from the source. The
@@ -499,6 +564,9 @@ def export_collection(
                 f"refusing to overwrite existing file at {dest} "
                 f"(existing={existing_size}B, source={size_bytes}B)"
             )
+            bucket = _bucket(system_id)
+            bucket.skipped_refused += 1
+            bucket.errors += 1
             continue
         logger.debug(
             "export: copy filename=%s src=%s dest=%s size=%d",
@@ -518,11 +586,15 @@ def export_collection(
                 exc,
             )
             summary.errors.append(f"copy failed {source} -> {dest}: {exc}")
+            _bucket(system_id).errors += 1
             continue
         summary.files_copied += 1
         summary.bytes_copied += size_bytes
         systems_touched.add(system_id)
         by_system[system_id].append(row)
+        bucket = _bucket(system_id)
+        bucket.copied += 1
+        bucket.bytes_copied += size_bytes
 
     summary.systems = sorted(systems_touched)
     logger.debug(
@@ -535,7 +607,18 @@ def export_collection(
     )
 
     # ---- Sidecars -------------------------------------------------------
-    for system_id in summary.systems:
+    # Phase 2 progress: re-scale the bar to per-system count so the
+    # user sees motion during the artwork + gamelist passes. Without
+    # this the dialog used to sit at 100% with a stale filename label
+    # while ``copy_artwork`` slogged through thousands of cover files.
+    total_systems = len(summary.systems)
+    for sys_idx, system_id in enumerate(summary.systems, start=1):
+        if progress_callback is not None:
+            progress_callback(
+                sys_idx,
+                total_systems,
+                f"Refreshing sidecars: {system_id}",
+            )
         mapping = profile.systems[system_id]
         dest_dir = _system_dest_dir(target, profile, mapping)
         if options.generate_gamelist and profile.gamelist_format == "emulationstation_xml":
@@ -548,20 +631,24 @@ def export_collection(
                 summary.errors.append(
                     f"gamelist.xml failed for {system_id}: {exc}"
                 )
+                _bucket(system_id).errors += 1
         if options.generate_m3u and profile.multi_disc == "m3u":
             try:
                 count = generate_m3u_playlists(dest_dir, by_system[system_id])
                 summary.m3u_written += count
             except OSError as exc:
                 summary.errors.append(f".m3u failed for {system_id}: {exc}")
+                _bucket(system_id).errors += 1
         if options.include_artwork and profile.artwork_subdir:
             try:
                 count = copy_artwork(
                     conn, system_id, profile, target, by_system[system_id]
                 )
                 summary.artwork_copied += count
+                _bucket(system_id).artwork_copied += count
             except OSError as exc:
                 summary.errors.append(f"artwork copy failed for {system_id}: {exc}")
+                _bucket(system_id).errors += 1
     return summary
 
 
@@ -706,6 +793,13 @@ def generate_m3u_playlists(
 # ---------------------------------------------------------------------------
 
 
+#: Mtime tolerance for the artwork freshness compare. FAT32 / SMB /
+#: archive extraction routinely re-stamp mtimes within a 2 s window
+#: even when content didn't change; the same tolerance is already used
+#: in core/scrub.py for ROM drift detection.
+_ARTWORK_MTIME_TOLERANCE_SECONDS: float = 2.0
+
+
 def copy_artwork(
     conn: sqlite3.Connection,
     system_id: str,
@@ -717,8 +811,16 @@ def copy_artwork(
 
     The destination layout follows EmulationStation conventions:
     ``{target}/{base_path}/{system_folder}/{artwork_subdir}/{filename-stem}-image.png``.
-    Returns the number of cover files successfully copied. Missing covers
-    are silently skipped — the metadata enrichment pipeline is best-effort.
+
+    Returns the number of cover files successfully copied. Missing
+    covers are silently skipped — the metadata enrichment pipeline is
+    best-effort.
+
+    Size + mtime compare against any existing dest file: a cover that
+    already matches the local copy is left in place. This makes the
+    "Include ROMs off → push fresh artwork" workflow O(changed covers)
+    rather than O(all games), so a re-export after a partial enrichment
+    pass doesn't re-copy every cover on the device.
     """
     if not profile.artwork_subdir:
         return 0
@@ -769,6 +871,13 @@ def copy_artwork(
             stem=stem, ext=local_path.suffix
         )
         dest = artwork_dir / filename
+        if _artwork_already_current(local_path, dest):
+            logger.debug(
+                "artwork: skip-current game_id=%d dest=%s",
+                int(game_id),
+                dest,
+            )
+            continue
         logger.debug(
             "artwork: copy game_id=%d src=%s dest=%s",
             int(game_id),
@@ -787,6 +896,27 @@ def copy_artwork(
         copied,
     )
     return copied
+
+
+def _artwork_already_current(local_path: Path, dest: Path) -> bool:
+    """True if ``dest`` already matches ``local_path`` by size + mtime.
+
+    Stat errors on either side are treated as "not current" so the
+    copy attempt fires and any failure surfaces via the OSError handler
+    in :func:`copy_artwork`. Mtime tolerance matches scrub's drift
+    band so FAT32 / SMB second-precision rounding doesn't trigger
+    spurious re-copies.
+    """
+    try:
+        dest_stat = dest.stat()
+        local_stat = local_path.stat()
+    except OSError:
+        return False
+    if dest_stat.st_size != local_stat.st_size:
+        return False
+    return abs(dest_stat.st_mtime - local_stat.st_mtime) < (
+        _ARTWORK_MTIME_TOLERANCE_SECONDS
+    )
 
 
 def _artwork_relative_ref(

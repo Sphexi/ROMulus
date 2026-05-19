@@ -1214,3 +1214,313 @@ class TestReRecognition:
         second = scan_destination(seeded_db, dest_id, target)
         assert second.signature != first.signature
         assert second.cache_was_invalidated is True
+
+
+# ---------------------------------------------------------------------------
+# Per-system summary breakdown (post-apply diagnostic)
+# ---------------------------------------------------------------------------
+
+
+class TestPerSystemSyncBreakdown:
+    """``SyncSummary.per_system`` must classify each applied action.
+
+    Mirrors the export-side breakdown in test_exporter.py — the
+    post-sync summary dialog reads from this dict to surface which
+    systems contributed copies vs deletes vs identical-skips vs
+    failures.
+    """
+
+    def test_copy_to_dest_bumps_copied_bucket(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        target.mkdir()
+        profile = _minimal_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="snes", filename="Game.sfc"
+        )
+        dest_id = _make_dest(seeded_db, target)
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_merge"
+        )
+        summary = apply_plan(seeded_db, plan, profile, target)
+
+        assert "snes" in summary.per_system
+        bucket = summary.per_system["snes"]
+        assert bucket.copied_to_dest == 1
+        assert bucket.bytes_copied > 0
+        assert bucket.failed == 0
+
+    def test_identical_action_bumps_identical_bucket(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        profile = _minimal_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="snes", filename="Game.sfc"
+        )
+        # Pre-stage dest so the row classifies as identical.
+        _stage_dest_file(target, "roms/snes/Game.sfc", b"local-rom-bytes")
+        dest_id = _make_dest(seeded_db, target)
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_merge"
+        )
+        summary = apply_plan(seeded_db, plan, profile, target)
+
+        bucket = summary.per_system["snes"]
+        assert bucket.skipped_identical == 1
+        assert bucket.copied_to_dest == 0
+
+    def test_delete_dest_bumps_deleted_bucket(
+        self,
+        seeded_db: sqlite3.Connection,
+        tmp_path: Path,
+    ) -> None:
+        """push_mirror deletes orphan dest rows — per-system bucket must record it."""
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        profile = _minimal_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="snes", filename="Keep.sfc"
+        )
+        _stage_dest_file(target, "roms/snes/Keep.sfc", b"local-rom-bytes")
+        _stage_dest_file(target, "roms/snes/Orphan.sfc", b"orphan")
+        dest_id = _make_dest(seeded_db, target)
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_mirror"
+        )
+        summary = apply_plan(seeded_db, plan, profile, target)
+
+        bucket = summary.per_system["snes"]
+        assert bucket.deleted_dest == 1
+
+
+# ---------------------------------------------------------------------------
+# Algorithmic fix: dest-side fuzzy index for tier-2 matching
+# ---------------------------------------------------------------------------
+
+
+class TestInventoryFuzzyIndex:
+    """``_build_inventory_fuzzy_index`` collapses tier-2 to O(1) per local rom.
+
+    Before the fix, ``_find_tier2_inventory_entry`` re-walked the whole
+    inventory + recomputed every fuzzy key on every miss. On a 38 K × 17 K
+    library this produced a multi-minute "not responding" freeze. The
+    pre-built dict means each tier-2 lookup is now a single dict.get.
+    """
+
+    def test_indexes_unique_paths_under_canonical_keys(self) -> None:
+        from romulus.core.dest_inventory import DestInventory, InventoryEntry
+        from romulus.core.sync import _build_inventory_fuzzy_index
+
+        entries = [
+            InventoryEntry(
+                rel_path="roms/snes/Super Mario World (USA).sfc",
+                size_bytes=512_000,
+                mtime=0.0,
+                sha1=None,
+            ),
+            InventoryEntry(
+                rel_path="roms/nes/Castlevania (USA).nes",
+                size_bytes=131_072,
+                mtime=0.0,
+                sha1=None,
+            ),
+        ]
+        inv = DestInventory(dest_id=0, target_path="", entries=entries)
+        inv_by_path = inv.by_rel_path()
+        index = _build_inventory_fuzzy_index(inv_by_path, _minimal_profile())
+        # Two real ROMs → two entries; keys carry system_id + region.
+        assert len(index) == 2
+        keys = {k for k in index}
+        assert ("supermarioworld", "usa", "snes") in keys
+        assert ("castlevania", "usa", "nes") in keys
+
+    def test_skips_sidecars_and_unknown_folders(self) -> None:
+        """gamelist.xml, .m3u, artwork dirs, and unknown system folders
+        must not appear in the index — they'd produce false tier-2 hits.
+        """
+        from romulus.core.dest_inventory import DestInventory, InventoryEntry
+        from romulus.core.sync import _build_inventory_fuzzy_index
+
+        entries = [
+            InventoryEntry(
+                rel_path="roms/snes/Game.sfc",
+                size_bytes=10,
+                mtime=0.0,
+                sha1=None,
+            ),
+            InventoryEntry(
+                rel_path="roms/snes/gamelist.xml",
+                size_bytes=1,
+                mtime=0.0,
+                sha1=None,
+            ),
+            InventoryEntry(
+                rel_path="roms/snes/discs.m3u",
+                size_bytes=1,
+                mtime=0.0,
+                sha1=None,
+            ),
+            # Unknown folder (not in profile.systems).
+            InventoryEntry(
+                rel_path="roms/atari2600/Adventure.bin",
+                size_bytes=4096,
+                mtime=0.0,
+                sha1=None,
+            ),
+        ]
+        inv = DestInventory(dest_id=0, target_path="", entries=entries)
+        index = _build_inventory_fuzzy_index(
+            inv.by_rel_path(), _minimal_profile()
+        )
+        # Only the real snes ROM.
+        assert len(index) == 1
+        assert ("game", "", "snes") in index
+
+    def test_tier2_match_with_different_dest_filename(
+        self, seeded_db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """End-to-end: a destination file with a tier-2-equivalent
+        filename at a different rel_path should classify as IDENTICAL,
+        not as COPY_TO_DEST. Guards the algorithmic fix against
+        behaviour drift.
+        """
+        from romulus.core.sync import ACTION_COPY_TO_DEST, ACTION_IDENTICAL
+
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        profile = _minimal_profile()
+        # Local: "Super Mario World (USA).sfc" at canonical path.
+        _stage_local_rom(
+            seeded_db,
+            library,
+            system_id="snes",
+            filename="Super Mario World (USA).sfc",
+        )
+        # Dest: same identity but moved to a different filename layout.
+        # The fuzzy key matches; this is the case tier-2 catches.
+        _stage_dest_file(
+            target,
+            "roms/snes/Super Mario World (USA) [!].sfc",
+            b"local-rom-bytes",
+        )
+        dest_id = _make_dest(seeded_db, target)
+        inv = scan_destination(seeded_db, dest_id, target)
+        plan = build_plan(
+            seeded_db, dest_id, profile, target, inv, "push_merge"
+        )
+        kinds = [a.kind for a in plan.actions]
+        # Tier-2 must classify as identical (already on dest), not as a copy.
+        assert ACTION_IDENTICAL in kinds
+        assert ACTION_COPY_TO_DEST not in kinds
+
+    def test_build_plan_emits_progress_callbacks(
+        self, seeded_db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """The new ``progress_callback`` parameter must fire at least once.
+
+        The worker uses this to drive the SyncDiffProgressDialog. The
+        contract: at least one tick before the diff loop, plus the
+        finalising tick at the end.
+        """
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        target.mkdir()
+        profile = _minimal_profile()
+        _stage_local_rom(
+            seeded_db, library, system_id="snes", filename="Game.sfc"
+        )
+        dest_id = _make_dest(seeded_db, target)
+        inv = scan_destination(seeded_db, dest_id, target)
+
+        events: list[tuple[int, int, str]] = []
+        build_plan(
+            seeded_db,
+            dest_id,
+            profile,
+            target,
+            inv,
+            "push_merge",
+            progress_callback=lambda c, t, label: events.append(
+                (c, t, label)
+            ),
+        )
+        assert events, "build_plan must emit at least one progress tick"
+        # Final tick should report the finalising phase.
+        assert events[-1][2].lower().startswith(("finalising", "computing"))
+
+
+# ---------------------------------------------------------------------------
+# BuildSyncPlanWorker — runs build_plan on its own thread
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSyncPlanWorker:
+    """The diff worker must produce the same plan as a synchronous call,
+    emit progress ticks, and surface its result via ``finished_ok``.
+    """
+
+    def test_worker_produces_plan_and_emits_progress(
+        self, qapp, tmp_path: Path
+    ) -> None:
+        from PySide6.QtCore import QEventLoop
+
+        from romulus.core.dest_inventory import scan_destination as _scan
+        from romulus.core.sync import SyncPlan
+        from romulus.db import create_tables, get_connection
+        from romulus.models import seed_systems
+        from romulus.ui.workers import BuildSyncPlanWorker
+
+        db_path = tmp_path / "diff.db"
+        conn = get_connection(db_path)
+        create_tables(conn)
+        seed_systems(conn)
+        library = tmp_path / "library"
+        target = tmp_path / "dest"
+        target.mkdir()
+        _stage_local_rom(
+            conn, library, system_id="snes", filename="Mario.sfc"
+        )
+        dest_id = _make_dest(conn, target)
+        inv = _scan(conn, dest_id, target)
+        conn.commit()
+        conn.close()
+
+        profile = _minimal_profile()
+        worker = BuildSyncPlanWorker(
+            db_path,
+            dest_id,
+            profile,
+            str(target),
+            inv,
+            "push_merge",
+        )
+        progress_events: list[tuple[int, int, str]] = []
+        finished: list[object] = []
+        failed: list[str] = []
+        worker.progress.connect(
+            lambda c, t, label: progress_events.append((c, t, label))
+        )
+        worker.finished_ok.connect(finished.append)
+        worker.failed.connect(failed.append)
+
+        loop = QEventLoop()
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+        assert worker.wait(5000), "BuildSyncPlanWorker did not finish in 5s"
+
+        assert not failed, f"unexpected failure: {failed}"
+        assert len(finished) == 1
+        assert isinstance(finished[0], SyncPlan)
+        assert progress_events, "no progress events from BuildSyncPlanWorker"

@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
 from PySide6.QtWidgets import (
+    QDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -21,6 +22,7 @@ from romulus.core.exporter import load_all_profiles
 from romulus.core.organizer import analyze_library
 from romulus.db import DEFAULT_DB_PATH, get_config, set_config
 from romulus.db import queries as q
+from romulus.ui.clean_missing_progress import CleanMissingProgressDialog
 from romulus.ui.cover_options_dialog import CoverOptionsDialog
 from romulus.ui.dest_scan_progress import DestScanProgressDialog
 from romulus.ui.detail_panel import DetailPanel
@@ -31,10 +33,16 @@ from romulus.ui.game_table import GameTable, load_rom_rows
 from romulus.ui.heavy_scan_progress import HeavyScanProgressDialog
 from romulus.ui.local_cover_progress import LocalCoverProgressDialog
 from romulus.ui.organize_preview import OrganizePreviewDialog
+from romulus.ui.per_system_summary_dialog import PerSystemSummaryDialog
 from romulus.ui.scan_progress import ScanProgressDialog
+from romulus.ui.scrub_dialog import ScrubPreviewDialog
+from romulus.ui.scrub_progress import ScrubAnalyseProgressDialog
 from romulus.ui.settings_dialog import SettingsDialog
+from romulus.ui.sync_diff_progress import SyncDiffProgressDialog
 from romulus.ui.system_sidebar import SystemSidebar
 from romulus.ui.workers import (
+    BuildSyncPlanWorker,
+    CleanMissingWorker,
     DestInventoryWorker,
     EnrichWorker,
     ExportWorker,
@@ -44,6 +52,8 @@ from romulus.ui.workers import (
     LocalCoverFinderWorker,
     OrganizeWorker,
     ScanWorker,
+    ScrubAnalyseWorker,
+    ScrubApplyWorker,
     SyncWorker,
 )
 
@@ -97,11 +107,19 @@ class MainWindow(QMainWindow):
         self._local_cover_dialog: LocalCoverProgressDialog | None = None
         self._dest_inventory_worker: DestInventoryWorker | None = None
         self._dest_scan_dialog: DestScanProgressDialog | None = None
+        self._build_sync_plan_worker: BuildSyncPlanWorker | None = None
+        self._sync_diff_dialog: SyncDiffProgressDialog | None = None
         self._sync_worker: SyncWorker | None = None
         self._sync_preview_dialog: object | None = None
         self._import_analyse_worker: ImportAnalyseWorker | None = None
         self._import_apply_worker: ImportApplyWorker | None = None
         self._import_dialog: object | None = None
+        self._clean_missing_worker: CleanMissingWorker | None = None
+        self._clean_missing_dialog: CleanMissingProgressDialog | None = None
+        self._scrub_analyse_worker: ScrubAnalyseWorker | None = None
+        self._scrub_apply_worker: ScrubApplyWorker | None = None
+        self._scrub_analyse_dialog: ScrubAnalyseProgressDialog | None = None
+        self._scrub_preview_dialog: ScrubPreviewDialog | None = None
 
         q.ensure_favorites_collection(conn)
 
@@ -251,6 +269,15 @@ class MainWindow(QMainWindow):
         import_action.triggered.connect(self._on_import_roms)
         tools_menu.addAction(import_action)
         tools_menu.addSeparator()
+        verify_action = QAction("&Verify Library...", self)
+        verify_action.setToolTip(
+            "Walk the database and check every row against disk. Surfaces "
+            "rows missing-but-not-flagged, rows outside the current library "
+            "root, rows wrongly flagged missing, and rows whose size/mtime "
+            "have drifted from disk."
+        )
+        verify_action.triggered.connect(self._on_verify_library)
+        tools_menu.addAction(verify_action)
         clean_missing_action = QAction("Clean &Missing Entries...", self)
         clean_missing_action.setToolTip(
             "Permanently remove database rows for ROM files that no longer "
@@ -617,7 +644,17 @@ class MainWindow(QMainWindow):
         self.refresh_all()
 
     def _on_clean_missing(self) -> None:
-        """Permanently delete every row currently flagged ``missing = 1``."""
+        """Permanently delete every row currently flagged ``missing = 1``.
+
+        Delegates to :class:`CleanMissingWorker` so a multi-thousand-row
+        cleanup over an SMB-pathed library doesn't freeze the UI and
+        doesn't run inside the main-thread connection (where a leaked
+        open transaction would lock the DB file against subsequent Quick
+        Scans for the rest of the session — see ``docs/KNOWN-ISSUES.md``
+        entry 2026-05-18 "Clean Missing Entries locks the DB").
+        """
+        if self._clean_missing_worker is not None:
+            return
         count = q.count_missing_roms(self._conn)
         if count == 0:
             QMessageBox.information(
@@ -639,13 +676,150 @@ class MainWindow(QMainWindow):
         )
         if choice != QMessageBox.StandardButton.Yes:
             return
-        deleted = q.delete_missing_roms(self._conn)
-        pruned = q.prune_orphan_games(self._conn)
-        self._conn.commit()
+
+        dialog = CleanMissingProgressDialog(self)
+        worker = CleanMissingWorker(DEFAULT_DB_PATH)
+        self._clean_missing_worker = worker
+        self._clean_missing_dialog = dialog
+
+        worker.progress.connect(dialog.on_progress)
+        worker.finished_ok.connect(self._on_clean_missing_finished)
+        worker.failed.connect(self._on_clean_missing_failed)
+        worker.finished.connect(self._clear_clean_missing_worker)
+        worker.finished.connect(worker.deleteLater)
+        dialog.canceled.connect(worker.cancel)
+
+        worker.start()
+        dialog.exec()
+
+    def _on_clean_missing_finished(self, deleted: int, pruned: int) -> None:
+        if self._clean_missing_dialog is not None:
+            self._clean_missing_dialog.on_finished(deleted, pruned)
         self.status_label.setText(
             f"Removed {deleted} missing entries ({pruned} games pruned)"
         )
         self.refresh_all()
+
+    def _on_clean_missing_failed(self, message: str) -> None:
+        if self._clean_missing_dialog is not None:
+            self._clean_missing_dialog.on_failed(message)
+        self.status_label.setText(message)
+
+    # ------------------------------------------------------------------
+    # Verify Library (reverse-direction DB scrub)
+    # ------------------------------------------------------------------
+
+    def _on_verify_library(self) -> None:
+        """Walk the DB and surface rows that don't match disk.
+
+        Read-only analyse + preview + per-bucket apply. Catches the
+        asymmetric drifts the forward scan can't (rows from a previous
+        library still in the DB, rows pointing outside library_root,
+        files whose stat drifted under us).
+        """
+        if (
+            self._scrub_analyse_worker is not None
+            or self._scrub_apply_worker is not None
+        ):
+            return
+        library_path = get_config(self._conn, "library_path") or ""
+        if not library_path:
+            QMessageBox.information(
+                self,
+                "No library configured",
+                "Open a library first (File → Open Library…) before running "
+                "Verify Library.",
+            )
+            return
+        library_root = str(Path(library_path).resolve())
+
+        dialog = ScrubAnalyseProgressDialog(self)
+        worker = ScrubAnalyseWorker(DEFAULT_DB_PATH, library_root)
+        self._scrub_analyse_worker = worker
+        self._scrub_analyse_dialog = dialog
+
+        worker.progress.connect(dialog.on_progress)
+        worker.finished_ok.connect(self._on_verify_analyse_finished)
+        worker.failed.connect(self._on_verify_analyse_failed)
+        worker.finished.connect(self._clear_scrub_analyse_worker)
+        worker.finished.connect(worker.deleteLater)
+        dialog.canceled.connect(worker.cancel)
+
+        worker.start()
+        dialog.exec()
+
+    def _on_verify_analyse_finished(self, plan: object) -> None:
+        from romulus.core.scrub import ScrubPlan as _ScrubPlan
+
+        if not isinstance(plan, _ScrubPlan):
+            return
+        if self._scrub_analyse_dialog is not None:
+            self._scrub_analyse_dialog.close()
+            self._scrub_analyse_dialog = None
+        if not plan.actions and plan.rows_unreadable == 0:
+            QMessageBox.information(
+                self,
+                "Library clean",
+                f"Scanned {plan.rows_scanned} rows — every one matches the "
+                f"disk under the current library. Nothing to do.",
+            )
+            return
+        preview = ScrubPreviewDialog(plan, self)
+        preview.actions_approved.connect(self._on_verify_actions_approved)
+        self._scrub_preview_dialog = preview
+        preview.finished.connect(self._clear_scrub_preview_dialog)
+        preview.show()
+
+    def _on_verify_analyse_failed(self, message: str) -> None:
+        if self._scrub_analyse_dialog is not None:
+            self._scrub_analyse_dialog.on_failed(message)
+        self.status_label.setText(message)
+
+    def _on_verify_actions_approved(self, actions: list) -> None:
+        if not actions:
+            return
+        worker = ScrubApplyWorker(DEFAULT_DB_PATH, actions)
+        self._scrub_apply_worker = worker
+
+        preview = self._scrub_preview_dialog
+        if preview is not None:
+            worker.progress.connect(preview.on_progress)
+            worker.finished_ok.connect(preview.on_finished)
+            worker.failed.connect(preview.on_failed)
+        worker.finished_ok.connect(self._on_verify_apply_finished)
+        worker.failed.connect(self._on_verify_apply_failed)
+        worker.finished.connect(self._clear_scrub_apply_worker)
+        worker.finished.connect(worker.deleteLater)
+
+        worker.start()
+
+    def _on_verify_apply_finished(
+        self,
+        flagged_missing: int,
+        deleted_outside_root: int,
+        untombstoned: int,
+        drift_fixed: int,
+        pruned_games: int,
+        errors: list,
+    ) -> None:
+        bits = []
+        if flagged_missing:
+            bits.append(f"flagged {flagged_missing} missing")
+        if deleted_outside_root:
+            bits.append(f"deleted {deleted_outside_root} outside-library")
+        if untombstoned:
+            bits.append(f"un-tombstoned {untombstoned}")
+        if drift_fixed:
+            bits.append(f"reset {drift_fixed} drifted")
+        if pruned_games:
+            bits.append(f"pruned {pruned_games} orphan games")
+        body = ", ".join(bits) if bits else "no changes"
+        err_line = f" — {len(errors)} bucket(s) failed" if errors else ""
+        self.status_label.setText(f"Verify Library: {body}{err_line}")
+        self.refresh_all()
+
+    def _on_verify_apply_failed(self, message: str) -> None:
+        self.status_label.setText(message)
 
     def _on_open_settings(self) -> None:
         dialog = SettingsDialog(self._conn, self)
@@ -687,6 +861,10 @@ class MainWindow(QMainWindow):
     def _clear_dest_inventory_worker(self) -> None:
         self._dest_inventory_worker = None
 
+    def _clear_build_sync_plan_worker(self) -> None:
+        self._build_sync_plan_worker = None
+        self._sync_diff_dialog = None
+
     def _clear_sync_worker(self) -> None:
         self._sync_worker = None
 
@@ -695,6 +873,19 @@ class MainWindow(QMainWindow):
 
     def _clear_import_apply_worker(self) -> None:
         self._import_apply_worker = None
+
+    def _clear_clean_missing_worker(self) -> None:
+        self._clean_missing_worker = None
+        self._clean_missing_dialog = None
+
+    def _clear_scrub_analyse_worker(self) -> None:
+        self._scrub_analyse_worker = None
+
+    def _clear_scrub_apply_worker(self) -> None:
+        self._scrub_apply_worker = None
+
+    def _clear_scrub_preview_dialog(self) -> None:
+        self._scrub_preview_dialog = None
 
     def _on_quick_scan(self) -> None:
         """Toolbar / menu entry — runs a global library-wide quick scan."""
@@ -1342,9 +1533,7 @@ class MainWindow(QMainWindow):
         the worker produced; the user then either Applies (which spawns the
         :class:`SyncWorker`) or cancels.
         """
-        from romulus.core.sync import build_plan
         from romulus.models.profile import DestinationProfile
-        from romulus.ui.sync_preview import SyncPreviewDialog
 
         if not isinstance(profile, DestinationProfile):
             return
@@ -1403,14 +1592,22 @@ class MainWindow(QMainWindow):
 
             if not isinstance(inventory, DestInventory):
                 return
-            # Dismiss the scan progress dialog before the preview opens so
+            # Dismiss the scan progress dialog before the diff worker
+            # starts; the diff progress dialog will take its place so
             # we don't stack two modals on top of each other.
             if self._dest_scan_dialog is not None:
                 self._dest_scan_dialog.close()
                 self._dest_scan_dialog = None
+
+            # Run ``build_plan`` on its own worker — it's pure data work
+            # but a multi-thousand-row library can take a few seconds
+            # and we don't want to block the UI thread (the original
+            # "not responding" freeze the user reported).
             library_path = get_config(self._conn, "library_path") or None
-            plan = build_plan(
-                self._conn,
+            diff_dialog = SyncDiffProgressDialog(self)
+            self._sync_diff_dialog = diff_dialog
+            diff_worker = BuildSyncPlanWorker(
+                DEFAULT_DB_PATH,
                 dest_id,
                 profile,
                 target_path,
@@ -1418,18 +1615,22 @@ class MainWindow(QMainWindow):
                 mode,  # type: ignore[arg-type]
                 library_path=library_path,
             )
-            dialog = SyncPreviewDialog(
-                plan,
-                destination_label=target_path,
-                parent=self,
-            )
-            dialog.actions_approved.connect(
-                lambda approved: self._on_sync_actions_approved(
-                    approved, profile, target_path, plan, dest_id
+            self._build_sync_plan_worker = diff_worker
+
+            diff_worker.progress.connect(diff_dialog.on_progress)
+            diff_worker.failed.connect(diff_dialog.on_failed)
+            diff_worker.failed.connect(self._on_sync_scan_failed)
+            diff_worker.finished_ok.connect(
+                lambda plan: self._on_diff_done(
+                    plan, profile, target_path, dest_id
                 )
             )
-            self._sync_preview_dialog = dialog
-            dialog.exec()
+            diff_worker.finished.connect(self._clear_build_sync_plan_worker)
+            diff_worker.finished.connect(diff_worker.deleteLater)
+            diff_dialog.canceled.connect(diff_worker.cancel)
+
+            diff_worker.start()
+            diff_dialog.exec()
 
         self._dest_inventory_worker.progress.connect(
             self._dest_scan_dialog.on_progress
@@ -1456,6 +1657,38 @@ class MainWindow(QMainWindow):
 
     def _on_sync_scan_failed(self, message: str) -> None:
         self.status_label.setText(message)
+
+    def _on_diff_done(
+        self,
+        plan: object,
+        profile: object,
+        target_path: str,
+        dest_id: int,
+    ) -> None:
+        """Slot — open the :class:`SyncPreviewDialog` once the diff worker emits a plan."""
+        from romulus.core.sync import SyncPlan
+        from romulus.models.profile import DestinationProfile
+        from romulus.ui.sync_preview import SyncPreviewDialog
+
+        if not isinstance(plan, SyncPlan) or not isinstance(
+            profile, DestinationProfile
+        ):
+            return
+        if self._sync_diff_dialog is not None:
+            self._sync_diff_dialog.close()
+            self._sync_diff_dialog = None
+        dialog = SyncPreviewDialog(
+            plan,
+            destination_label=target_path,
+            parent=self,
+        )
+        dialog.actions_approved.connect(
+            lambda approved: self._on_sync_actions_approved(
+                approved, profile, target_path, plan, dest_id
+            )
+        )
+        self._sync_preview_dialog = dialog
+        dialog.exec()
 
     def _on_sync_actions_approved(
         self,
@@ -1505,6 +1738,7 @@ class MainWindow(QMainWindow):
             )
             self._sync_worker.failed.connect(preview_dialog.on_failed)  # type: ignore[attr-defined]
         self._sync_worker.finished_ok.connect(self._on_sync_finished_ok)
+        self._sync_worker.summary_ready.connect(self._on_sync_summary_ready)
         self._sync_worker.failed.connect(self._on_sync_failed)
         self._sync_worker.finished.connect(self._sync_worker.deleteLater)
         self._sync_worker.finished.connect(self._clear_sync_worker)
@@ -1518,6 +1752,20 @@ class MainWindow(QMainWindow):
         _errors: list[str],
     ) -> None:
         self.refresh_all()
+
+    def _on_sync_summary_ready(self, summary: object) -> None:
+        """Slot — pop the per-system breakdown after a sync apply completes."""
+        from romulus.core.sync import SyncSummary as _SyncSummary
+
+        if not isinstance(summary, _SyncSummary):
+            return
+        parent = (
+            self._sync_preview_dialog
+            if isinstance(self._sync_preview_dialog, QDialog)
+            else self
+        )
+        dialog = PerSystemSummaryDialog.for_sync(summary, parent=parent)
+        dialog.exec()
 
     def _on_sync_failed(self, message: str) -> None:
         self.status_label.setText(message)
@@ -1551,6 +1799,7 @@ class MainWindow(QMainWindow):
         self._export_worker.finished_ok.connect(self._export_dialog.on_finished)
         self._export_worker.failed.connect(self._export_dialog.on_failed)
         self._export_worker.finished_ok.connect(self._on_export_finished_ok)
+        self._export_worker.summary_ready.connect(self._on_export_summary_ready)
         self._export_worker.failed.connect(self._on_export_failed)
         self._export_worker.finished.connect(self._export_worker.deleteLater)
         self._export_worker.finished.connect(self._clear_export_worker)
@@ -1567,6 +1816,22 @@ class MainWindow(QMainWindow):
         # No library state changes from an export — refresh is a no-op but
         # cheap, and matches the pattern of the other workers.
         self.refresh_all()
+
+    def _on_export_summary_ready(self, summary: object) -> None:
+        """Slot — pop the per-system breakdown dialog on top of the export dialog.
+
+        Fires after the worker's ``finished_ok`` has updated the export
+        dialog's one-line summary; this dialog drills into the per-system
+        breakdown so the user can see why systems landed where they did
+        (copied vs already-present vs unsupported vs refused vs failed).
+        """
+        from romulus.core.exporter import ExportSummary as _ExportSummary
+
+        if not isinstance(summary, _ExportSummary):
+            return
+        parent = self._export_dialog if self._export_dialog else self
+        dialog = PerSystemSummaryDialog.for_export(summary, parent=parent)
+        dialog.exec()
 
     def _on_export_failed(self, message: str) -> None:
         self.status_label.setText(message)

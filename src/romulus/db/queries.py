@@ -7,7 +7,9 @@ rather than constructing their own queries.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, NotRequired, TypedDict
@@ -15,6 +17,8 @@ from typing import TYPE_CHECKING, NotRequired, TypedDict
 if TYPE_CHECKING:
     from romulus.core.dat_parser import DatEntry
     from romulus.metadata._types import MetadataPayload
+
+logger = logging.getLogger(__name__)
 
 # Ordering of match_confidence values. Used in upsert_rom so a re-scan never
 # downgrades a stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
@@ -331,7 +335,10 @@ def count_missing_roms(conn: sqlite3.Connection) -> int:
     return row["n"] if row else 0
 
 
-def delete_missing_roms(conn: sqlite3.Connection) -> int:
+def delete_missing_roms(
+    conn: sqlite3.Connection,
+    progress_callback: Callable[[int, int, str], None] | None = None,
+) -> int:
     """Permanently remove every row flagged ``missing = 1``. Returns count.
 
     Caller owns the surrounding transaction commit. Cascading cleanup of
@@ -344,6 +351,11 @@ def delete_missing_roms(conn: sqlite3.Connection) -> int:
     add) and ``PRAGMA foreign_keys = ON`` is enabled connection-wide, so
     a plain DELETE on roms with dependent hashes/inventory entries would
     raise ``IntegrityError: FOREIGN KEY constraint failed``.
+
+    ``progress_callback`` (optional, signature ``(current, total, label)``)
+    fires once per dependent-row chunk so a worker thread can drive a
+    progress dialog. The ``current`` / ``total`` count is in units of rom
+    ids processed, not chunks — matches the other long-running ops.
     """
     rom_ids = [
         row["id"]
@@ -352,14 +364,22 @@ def delete_missing_roms(conn: sqlite3.Connection) -> int:
         ).fetchall()
     ]
     if not rom_ids:
+        logger.info("delete_missing_roms: no missing rows to delete")
         return 0
-    _delete_rom_dependents(conn, rom_ids)
+    logger.info(
+        "delete_missing_roms: start count=%d (with FK dependents)",
+        len(rom_ids),
+    )
+    _delete_rom_dependents(conn, rom_ids, progress_callback=progress_callback)
     cursor = conn.execute("DELETE FROM roms WHERE missing = 1")
+    logger.info("delete_missing_roms: deleted rom rows=%d", cursor.rowcount)
     return cursor.rowcount
 
 
 def _delete_rom_dependents(
-    conn: sqlite3.Connection, rom_ids: list[int]
+    conn: sqlite3.Connection,
+    rom_ids: list[int],
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> None:
     """Drop ``hashes`` and ``dest_inventory`` rows referencing ``rom_ids``.
 
@@ -367,11 +387,16 @@ def _delete_rom_dependents(
     rows. Splits the work into chunks of 500 ids so a very large clean
     (e.g. the user switching libraries with tens of thousands of stale
     entries) doesn't hit SQLite's parameter-count limit (default 999).
+
+    ``progress_callback`` (optional) fires once per processed chunk with
+    ``(done, total, label)`` so a worker can update a determinate
+    progress dialog during long deletes over SMB / spinning disks.
     """
     if not rom_ids:
         return
     chunk_size = 500
-    for start in range(0, len(rom_ids), chunk_size):
+    total = len(rom_ids)
+    for start in range(0, total, chunk_size):
         chunk = rom_ids[start : start + chunk_size]
         placeholders = ",".join("?" for _ in chunk)
         conn.execute(
@@ -381,6 +406,37 @@ def _delete_rom_dependents(
             f"DELETE FROM dest_inventory WHERE rom_id IN ({placeholders})",
             chunk,
         )
+        done = min(start + chunk_size, total)
+        logger.debug(
+            "_delete_rom_dependents: chunk done=%d/%d",
+            done,
+            total,
+        )
+        if progress_callback is not None:
+            progress_callback(done, total, "Deleting dependent rows…")
+
+
+def delete_roms_by_ids(
+    conn: sqlite3.Connection,
+    rom_ids: list[int],
+) -> int:
+    """Delete a hand-picked set of rom rows + their FK dependents.
+
+    Returns the rowcount of the ``roms`` delete. Mirrors
+    :func:`delete_missing_roms` but driven by an explicit id list
+    instead of the ``missing = 1`` filter — used by the reverse-scrub
+    flow, which classifies rows row-by-row and needs to delete only
+    the ones the user approved. Caller owns the transaction commit.
+    """
+    if not rom_ids:
+        return 0
+    logger.info("delete_roms_by_ids: deleting %d rom rows", len(rom_ids))
+    _delete_rom_dependents(conn, rom_ids)
+    placeholders = ",".join("?" for _ in rom_ids)
+    cursor = conn.execute(
+        f"DELETE FROM roms WHERE id IN ({placeholders})", rom_ids
+    )
+    return cursor.rowcount
 
 
 def count_roms_with_other_library_root(
@@ -445,17 +501,89 @@ def prune_orphan_games(conn: sqlite3.Connection) -> int:
 
     Called after :func:`delete_missing_roms` or
     :func:`delete_roms_with_other_library_root` so the games table doesn't
-    accumulate dangling rows. Returns the number of games dropped. Metadata
-    and covers are FK-orphaned (no CASCADE in the schema) — that's OK because
-    the next enrichment cycle will recreate them if the game ever comes back,
-    and a stale metadata row without a corresponding game is invisible to
-    the UI.
+    accumulate dangling rows. Returns the number of games dropped.
+
+    FK-dependent rows are cleared in this order before the games delete:
+
+    * ``metadata`` (1:1, FK on game_id without CASCADE) — DELETED.
+    * ``covers`` (FK on game_id without CASCADE) — DELETED.
+    * ``collection_games`` (FK on game_id without CASCADE) — DELETED.
+    * ``dest_inventory.game_id`` (FK on game_id without CASCADE) —
+      SET to NULL. The dest_inventory row itself is anchored by rom_id,
+      not game_id; if its rom is still alive the row stays. (Rows
+      pointing at deleted roms are already gone via
+      :func:`_delete_rom_dependents`.)
+
+    Without this dependent cleanup the games delete raises
+    ``IntegrityError: FOREIGN KEY constraint failed`` for any orphan
+    game that had been enriched (metadata / covers / collection
+    membership). This used to look fine in tests because the test
+    fixtures never attached metadata; real libraries trip it
+    immediately after a Clean Missing run.
     """
-    cursor = conn.execute(
-        "DELETE FROM games "
-        "WHERE id NOT IN (SELECT DISTINCT game_id FROM roms WHERE game_id IS NOT NULL)"
+    orphan_ids = [
+        row["id"]
+        for row in conn.execute(
+            "SELECT id FROM games "
+            "WHERE id NOT IN "
+            "(SELECT DISTINCT game_id FROM roms WHERE game_id IS NOT NULL)"
+        ).fetchall()
+    ]
+    if not orphan_ids:
+        logger.info("prune_orphan_games: no orphans to prune")
+        return 0
+    logger.info(
+        "prune_orphan_games: clearing dependents for %d orphan game(s)",
+        len(orphan_ids),
     )
+    _delete_game_dependents(conn, orphan_ids)
+    placeholders = ",".join("?" for _ in orphan_ids)
+    cursor = conn.execute(
+        f"DELETE FROM games WHERE id IN ({placeholders})", orphan_ids
+    )
+    logger.info("prune_orphan_games: pruned=%d", cursor.rowcount)
     return cursor.rowcount
+
+
+def _delete_game_dependents(
+    conn: sqlite3.Connection, game_ids: list[int]
+) -> None:
+    """Drop FK-dependent rows that reference ``game_ids`` without CASCADE.
+
+    Mirrors :func:`_delete_rom_dependents` — chunks the work into 500
+    ids at a time to stay under SQLite's default parameter limit (999).
+    ``dest_inventory.game_id`` is NULLed rather than deleted because
+    the row is anchored on ``rom_id``; nuking the inventory entry
+    would lose the destination-side bookkeeping the next sync needs.
+    """
+    if not game_ids:
+        return
+    chunk_size = 500
+    total = len(game_ids)
+    for start in range(0, total, chunk_size):
+        chunk = game_ids[start : start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        conn.execute(
+            f"DELETE FROM metadata WHERE game_id IN ({placeholders})", chunk
+        )
+        conn.execute(
+            f"DELETE FROM covers WHERE game_id IN ({placeholders})", chunk
+        )
+        conn.execute(
+            f"DELETE FROM collection_games WHERE game_id IN ({placeholders})",
+            chunk,
+        )
+        conn.execute(
+            f"UPDATE dest_inventory SET game_id = NULL "
+            f"WHERE game_id IN ({placeholders})",
+            chunk,
+        )
+        done = min(start + chunk_size, total)
+        logger.debug(
+            "_delete_game_dependents: chunk done=%d/%d",
+            done,
+            total,
+        )
 
 
 # ---------------------------------------------------------------------------

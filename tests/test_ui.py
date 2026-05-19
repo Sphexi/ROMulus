@@ -2004,6 +2004,37 @@ class TestProgressDialogSpinners:
         assert not (dlg._progress.minimum() == 0 and dlg._progress.maximum() == 0)
         assert "✓" in dlg._status_label.text()
 
+    def test_export_on_progress_renders_phase_2_label(
+        self, qapp, seeded_db
+    ) -> None:
+        """When phase 2 (sidecar refresh) emits its per-system ticks,
+        the dialog's status label must reflect the sidecar verb — not
+        stay frozen on the last ROM filename from phase 1. This is the
+        "stuck at 100%" UX the user reported.
+        """
+        from romulus.core.exporter import load_all_profiles
+        from romulus.ui.export_dialog import ExportDialog
+
+        profiles = load_all_profiles()
+        if not profiles:
+            return
+        dlg = ExportDialog(seeded_db, profiles)
+
+        # Phase 1: last ROM tick.
+        dlg.on_progress(38120, 38120, "Copying ZZ-Final.sfc")
+        assert "Copying ZZ-Final.sfc" in dlg._status_label.text()
+
+        # Phase 2: sidecar tick — bar rescales to system count, label
+        # switches to the sidecar verb.
+        dlg.on_progress(1, 35, "Refreshing sidecars: snes")
+        assert "Refreshing sidecars: snes" in dlg._status_label.text()
+        # Bar shows phase 2 scale.
+        assert dlg._progress.maximum() == 35
+        assert dlg._progress.value() == 1
+        # And critically — no leftover "Exporting" prefix or stale ROM name.
+        assert "ZZ-Final" not in dlg._status_label.text()
+        assert "Exporting" not in dlg._status_label.text()
+
     def test_export_on_failed_stops_spinner(self, qapp, seeded_db) -> None:
         from romulus.core.exporter import load_all_profiles
         from romulus.ui.export_dialog import ExportDialog
@@ -2016,6 +2047,101 @@ class TestProgressDialogSpinners:
         dlg.on_failed("Disk full")
         assert not (dlg._progress.minimum() == 0 and dlg._progress.maximum() == 0)
         assert "✗" in dlg._status_label.text()
+
+    def test_include_roms_unchecked_disables_scan_destination(
+        self, qapp, seeded_db
+    ) -> None:
+        """Artwork-only mode (Include ROMs off) must disable Scan
+        destination — a full dest walk + sync plan would be wasted I/O
+        when no ROM bytes will move.
+        """
+        from romulus.core.exporter import load_all_profiles
+        from romulus.ui.export_dialog import ExportDialog
+
+        profiles = load_all_profiles()
+        if not profiles:
+            return
+        dlg = ExportDialog(seeded_db, profiles)
+        # Default state — checked, Scan destination enabled.
+        assert dlg._include_roms_cb.isChecked() is True
+        assert dlg._scan_dest_btn.isEnabled() is True
+
+        # Uncheck → Scan destination becomes disabled with explanatory tooltip.
+        dlg._include_roms_cb.setChecked(False)
+        assert dlg._scan_dest_btn.isEnabled() is False
+        assert "artwork-only" in dlg._scan_dest_btn.toolTip().lower()
+
+        # Re-check → re-enabled.
+        dlg._include_roms_cb.setChecked(True)
+        assert dlg._scan_dest_btn.isEnabled() is True
+
+    def test_preview_text_reflects_artwork_only_mode(
+        self, qapp, seeded_db, tmp_path
+    ) -> None:
+        """When Include ROMs is unchecked, the Preview text must NOT
+        claim "Exporting N ROMs (NN GB)" — that's misleading because
+        no ROM bytes will move. Re-frame around the actual work.
+        """
+        import time
+
+        from romulus.core.exporter import load_all_profiles
+        from romulus.db import queries as q
+        from romulus.ui.export_dialog import ExportDialog
+
+        profiles = load_all_profiles()
+        if not profiles:
+            return
+
+        # Seed one snes game so the preview has something to report.
+        game_id = q.upsert_game(
+            seeded_db,
+            {"title": "Mario", "system_id": "snes"},
+        )
+        rom_path = tmp_path / "snes" / "Mario.sfc"
+        rom_path.parent.mkdir(parents=True, exist_ok=True)
+        rom_path.write_bytes(b"x" * 1024)
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": str(rom_path),
+                "filename": "Mario.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+            },
+        )
+        q.link_rom_to_game(seeded_db, rom_id, game_id)
+        # Ensure a sync destination exists so selected_target_path
+        # returns something — preview requires both profile + target.
+        q.insert_sync_destination(
+            seeded_db,
+            {
+                "name": "T",
+                "target_path": str(tmp_path / "dest"),
+                "profile_id": next(iter(profiles)),
+            },
+        )
+        seeded_db.commit()
+
+        dlg = ExportDialog(seeded_db, profiles)
+        # Pick the destination we just inserted (first non-placeholder entry).
+        if dlg._destination_combo.count() > 1:
+            dlg._destination_combo.setCurrentIndex(1)
+
+        # Pass 1 — Include ROMs checked: text mentions "Exporting".
+        dlg._include_roms_cb.setChecked(True)
+        dlg._on_preview()
+        normal_text = dlg._preview_text.toPlainText()
+        assert "Exporting" in normal_text
+
+        # Pass 2 — Include ROMs unchecked: text re-frames around artwork.
+        dlg._include_roms_cb.setChecked(False)
+        # _on_include_roms_changed should have refreshed the preview
+        # automatically since the pane was already populated.
+        artwork_text = dlg._preview_text.toPlainText()
+        assert "Artwork-only" in artwork_text
+        assert "No ROM bytes" in artwork_text
 
 
 # ---------------------------------------------------------------------------
