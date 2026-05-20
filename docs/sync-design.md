@@ -1,7 +1,7 @@
 # Destination Sync — Design Spec
 
 **Status:** implemented (v0.2.0), refined (v0.3.0).
-**Last updated:** 2026-05-17
+**Last updated:** 2026-05-20
 **Authoritative reference:** this doc. Implementation diverging from it must update the doc in the same commit. Post-implementation fixes are recorded in [§12](#12-post-implementation-notes-v030).
 
 ---
@@ -536,3 +536,95 @@ inconsistently:
 3. **One-shot syncs (`dest_id < 0`) skip dest_inventory writes
    entirely.** Not specified before; recorded now so future apply-step
    work doesn't try to make them work the same as saved destinations.
+
+### 12.6 `build_plan` perf + worker thread (commit `e3082b4`)
+
+**Symptom.** Push-merge against a 38 K-rom local library + 17 K-file
+destination froze the UI for ~10 minutes after the destination scan
+completed. The user had to kill the process or interrupt via
+`Ctrl+C` from the launching shell. Traceback captured during the
+freeze pointed straight at `_find_tier2_inventory_entry` →
+`_fuzzy_region_key_for_entry` → `parse_filename` → `generate_fuzzy_key`
+→ `re.sub` — looping forever inside a per-rom scan of the entire
+inventory.
+
+**Root causes (two, interleaved).**
+
+1. **O(N·M) tier-2 fuzzy match.**
+   `_find_tier2_inventory_entry` walked the entire destination
+   inventory and recomputed every entry's `(fuzzy_key, region)` on
+   every call, for every local rom that didn't have a tier-1 path
+   match. On a 38 K × 17 K library that's ~600 M fuzzy-key
+   computations — each one is a regex parse plus normalisation, on the
+   order of microseconds. Total runtime: roughly an hour of pure CPU.
+
+   The local side already had an O(N) pre-built index
+   (`_MatchIndex.by_fuzzy_region`); the dest side just never got the
+   same treatment.
+
+2. **`build_plan` ran on the UI thread.**
+   `_on_inventory_done` (the slot connected to
+   `DestInventoryWorker.finished_ok`) called `build_plan(...)` inline.
+   Slots fired across a queued connection from a worker thread still
+   execute on the **receiving** thread — which here was the UI
+   thread. So even though the dest inventory walk was correctly
+   off-thread, the diff phase was synchronous on the UI.
+
+**Fix.**
+
+1. **Pre-built dest fuzzy index.** New helper
+   `_build_inventory_fuzzy_index(inv_by_path, profile)` walks the
+   inventory once at the top of `_build_push_actions` /
+   `_build_twoway_actions` and returns
+   `dict[(fuzzy_key, region, system_id), InventoryEntry]`. The
+   tier-2 lookup becomes a single `dict.get`. Sidecar paths
+   (gamelist.xml, .m3u, artwork dirs) are skipped; entries whose
+   folder doesn't resolve to a profile system are skipped (can't
+   safely tier-2 match without a system anchor); first-write-wins
+   so re-releases don't shadow originals.
+
+   Total fuzzy-key computations: **O(N·M) → O(M).** ~600 M → ~17 K
+   in the user's scenario.
+
+2. **`BuildSyncPlanWorker`.** New QThread worker that mirrors
+   `ImportAnalyseWorker`'s shape — takes the inventory + mode +
+   profile, calls `build_plan` with a progress callback, emits the
+   resulting `SyncPlan` via `finished_ok`. New
+   `SyncDiffProgressDialog` shows "Computing diff…" with a
+   determinate bar driven by per-row progress ticks
+   (every 500 rows). The dialog cancels cooperatively.
+
+3. **`build_plan` emits enter/exit INFO logs.** A future "frozen UI"
+   report can now be diagnosed from `logs/romulus.log` alone:
+
+   ```
+   INFO build_plan: start mode=push_merge dest_id=1 inventory=16555 entries
+   INFO build_plan: match index built (38120 local roms)
+   INFO build_plan: complete mode=push_merge actions=N (copy_to_dest=X, …)
+   ```
+
+**Regression coverage.** `tests/test_sync.py::TestInventoryFuzzyIndex`
+(3 tests covering index construction, sidecar skip, end-to-end
+tier-2 match preservation) plus
+`TestBuildSyncPlanWorker::test_worker_produces_plan_and_emits_progress`.
+
+### 12.7 Spec amendments from §12.6
+
+These take precedence over earlier sections in this doc if anything
+reads inconsistently:
+
+1. **Tier-2 lookup is now O(1) per local rom.** §3.2 didn't specify
+   complexity; the pre-built `dest_by_fuzzy` index is the implementation.
+2. **`build_plan` is asynchronous from the UI thread.** §6 describes
+   the workflow without mentioning the diff phase explicitly — it
+   runs on `BuildSyncPlanWorker` between the dest scan and the
+   preview dialog.
+3. **`build_plan` accepts a `progress_callback`.** Signature
+   `(current, total, label) -> None`. Both `_build_match_index` and
+   the per-mode action builders honor it.
+4. **Sidecar entries are excluded from the dest fuzzy index.** Both
+   `gamelist.xml` / `.m3u` and artwork subfolder paths
+   (`Imgs/`, `downloaded_media/`, `media/`) are skipped during
+   index construction. Tier-2 matches against them used to be
+   silently impossible due to the system-folder requirement; now
+   they're explicitly excluded.

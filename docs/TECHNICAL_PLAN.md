@@ -29,10 +29,11 @@
 
 ## Current State
 
-**As of v0.3.0 (in development; last reviewed 2026-05-18):**
+**As of v0.3.0 (in development; last reviewed 2026-05-20):**
 
-- **918 tests passing, 1 skipped** (919 collected total; the POSIX-only
-  chmod test is skipped on the `windows-latest` CI runner). Ruff clean.
+- **1,003 tests passing, 1 skipped** (1,004 collected total; the
+  POSIX-only chmod test is skipped on the `windows-latest` CI runner).
+  Ruff clean.
 - **CI runs on `windows-latest`.** ROMulus is a Windows-first desktop
   app; running CI on the same OS we ship for exercises the same
   Qt/SQLite/PySide6 stack end users will run. Also dodges a Linux
@@ -43,7 +44,9 @@
   v0.3.0 (in development) adds destination sync, library cleanup,
   single-binary build, a debug-logging overhaul, bundled offline
   metadata, a metadata/covers workflow split, scoped Quick Scan with
-  post-walk progress, and per-game Reveal/Delete actions.
+  post-walk progress, per-game Reveal/Delete actions, inbound Import
+  ROMs, a reverse-direction Verify Library scrub, per-system summary
+  dialogs after Export + Sync, and an artwork-only export mode.
 - Subsequent work after Session 11 is committed directly via
   `feat(scope):` / `fix(scope):` / `refactor(scope):` style commits
   without a numbered session file.
@@ -98,6 +101,42 @@
   right-click menu, bound to rom_id (not game_id).
 - **Rename: Romulus → ROMulus.** Python package import path `romulus`
   (lowercase) preserved; only display-name strings changed.
+- **Inbound Import ROMs** (`src/romulus/core/importer.py`,
+  `src/romulus/ui/import_dialog.py`) — staging-folder → library
+  workflow with three-level dupe detection (path / filename / hash)
+  and per-row resolution dropdowns. Full spec at
+  `docs/import-design.md` (formerly a "future" doc, now
+  authoritative reference for the shipped feature).
+- **Reverse-direction Verify Library scrub** (`src/romulus/core/scrub.py`,
+  `src/romulus/ui/scrub_dialog.py`). Walks every roms row and
+  classifies against disk into four buckets (missing-on-disk,
+  outside-current-library, flagged-but-present, size/mtime drift),
+  with per-bucket SAVEPOINT apply.
+- **Per-system summary dialog** after Export and Sync
+  (`src/romulus/ui/per_system_summary_dialog.py`). One row per system,
+  Copied / Bytes / Covers refreshed / Already on dest / Unsupported /
+  Refused / Errors. New `per_system` field on `ExportSummary` /
+  `SyncSummary` populated alongside the existing aggregates.
+- **Artwork-only export mode.** New `include_roms: bool = True` on
+  `ExportOptions`. Uncheck → skip the ROM copy loop entirely, run only
+  the sidecar refresh (artwork + gamelist.xml). `copy_artwork` adds a
+  size + mtime compare so re-runs only re-publish covers that
+  actually changed.
+- **Sync diff perf + threading rewrite** (commit `e3082b4`,
+  `docs/sync-design.md` §12.6). `build_plan` is O(N+M) now via the
+  pre-built `dest_by_fuzzy` index, and runs on `BuildSyncPlanWorker`
+  with a "Computing diff…" progress dialog. Closes a multi-minute UI
+  freeze on large libraries.
+- **`prune_orphan_games` clears FK-dependent metadata / covers /
+  collection_games / dest_inventory.game_id** before deleting from
+  `games`. Was raising `IntegrityError` on orphan games with
+  enrichment.
+- **`CleanMissingWorker`** wraps Clean Missing Entries on a worker
+  thread with `try/except/conn.rollback()/raise` — closes the
+  "DB locked / silent rollback" footgun.
+- **Tri-state group headers + right-click bulk toggle** on Organize,
+  Sync, and Verify Library preview dialogs via the shared
+  `GroupedCheckboxTreeMixin`.
 
 These deltas don't invalidate the sections that follow — they extend
 them.

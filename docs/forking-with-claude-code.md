@@ -38,7 +38,7 @@ will save you time.
 
 Plus the supporting docs:
 
-- [`docs/sync-design.md`](sync-design.md), [`docs/import-design.md`](import-design.md) — feature-specific specs.
+- [`docs/sync-design.md`](sync-design.md), [`docs/import-design.md`](import-design.md) — feature-specific references for the shipped Sync and Import workflows.
 - [`docs/ROM-FORMATS-REFERENCE.md`](ROM-FORMATS-REFERENCE.md), [`docs/ROM-DEDUP-METHODOLOGY.md`](ROM-DEDUP-METHODOLOGY.md), [`docs/ROM-LIBRARY-ANALYSIS-REPORT.md`](ROM-LIBRARY-ANALYSIS-REPORT.md) — domain knowledge.
 - [`docs/CREDITS.md`](CREDITS.md) — upstream attribution.
 - [`CHANGELOG.md`](../CHANGELOG.md) — per-release log.
@@ -79,10 +79,10 @@ Sanity-check the test suite before you touch anything:
 .venv/Scripts/python.exe -m ruff check src/ tests/
 ```
 
-Current expected state: **918 tests passing, 1 skipped** (the POSIX-only
-chmod test, skipped on Windows). If anything else fails on a clean
-checkout, file an issue against upstream before assuming the fork is
-the problem.
+Current expected state: **1,003 tests passing, 1 skipped** (the
+POSIX-only chmod test, skipped on Windows). If anything else fails on
+a clean checkout, file an issue against upstream before assuming the
+fork is the problem.
 
 ### What to change in `CLAUDE.md`
 
@@ -216,9 +216,12 @@ can skip the session file and just commit directly with a Conventional
 Commits message. That's what 90% of recent work uses.
 
 Look at [`docs/sessions/00-bootstrap.md`](sessions/00-bootstrap.md) for
-the canonical example of a complete session file (project setup), and
-[`docs/sessions/12-import-roms.md`](sessions/12-import-roms.md) for an
-in-progress one (the next planned feature).
+the canonical example of a complete session file. After session 11
+the project moved off numbered sessions entirely — newer work
+(Import ROMs, Verify Library, the per-system summary dialog, the
+sync diff perf rewrite) was committed directly via Conventional
+Commits. See [`CHANGELOG.md`](../CHANGELOG.md) for the per-feature
+history of post-bootstrap work.
 
 ### Conventions to respect
 

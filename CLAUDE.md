@@ -10,11 +10,12 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
 
 ## Current State (as of v0.3.0 in development)
 
-- **941 tests passing, 1 skipped** (POSIX-only chmod test on Windows
-  CI; 942 collected total). Ruff clean. CI runs on `windows-latest`.
+- **1,003 tests passing, 1 skipped** (POSIX-only chmod test on Windows
+  CI; 1,004 collected total). Ruff clean. CI runs on `windows-latest`.
 - Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich
   Metadata → Find Covers → Organize → Export / Sync, plus inbound
-  Import ROMs from a staging folder.
+  Import ROMs from a staging folder and a reverse-direction Verify
+  Library scrub.
 - Enrichment is metadata-only; cover discovery is a separate "Find
   Covers" workflow with a per-run dialog (local files / online
   thumbnails / both).
@@ -35,7 +36,31 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   uses, surfaces path / filename / hash dupes with per-row resolution
   dropdowns, and atomically copies (or moves) the approved files into
   the current library. Heavy identification is mandatory; the dialog
-  warns about duration when the staging folder is large.
+  warns about duration when the staging folder is large. Full
+  reference: `docs/import-design.md`.
+- **Tools → Verify Library** walks the DB and classifies every row
+  against disk into four buckets (missing-on-disk, outside-current-
+  library, flagged-but-present, size/mtime drift). Per-bucket
+  SAVEPOINT apply; unreadable-row guard skips SMB hiccups.
+- **Post-Export / post-Sync per-system summary dialog**. One row per
+  system × bucket columns (copied / bytes / covers refreshed /
+  unsupported / refused / errors). Auto-popups on top of the
+  progress dialog when the operation completes.
+- **Artwork-only export mode.** Uncheck **Include ROMs** in Export
+  Options to skip the ROM copy loop entirely and only refresh
+  artwork + gamelist.xml. `copy_artwork` size+mtime-compares per
+  file so a re-run only republishes covers that actually changed.
+- **Sync diff is O(N+M)** via pre-built `dest_by_fuzzy` index;
+  `build_plan` runs on `BuildSyncPlanWorker` with a "Computing diff…"
+  progress dialog. Closed a multi-minute UI freeze on 38K × 17K
+  libraries. See `docs/sync-design.md` §12.6.
+- **Tri-state group headers + right-click bulk toggle** on Organize,
+  Sync, and Verify Library preview dialogs via shared
+  `GroupedCheckboxTreeMixin`.
+- **Clean Missing Entries** runs on `CleanMissingWorker` with
+  try/except/rollback. `prune_orphan_games` now clears FK-dependent
+  metadata / covers / collection_games rows and NULLs
+  `dest_inventory.game_id` before deleting from `games`.
 - 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging
   + Heavy Scan UI + real DATs; early v0.3.0 added destination sync,
   library cleanup, single-binary build, DEBUG breadcrumbs; later v0.3.0
@@ -44,7 +69,8 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   detail panel with per-platform logos, the enrich-options dialog, and
   UX polish. Final-wave v0.3.0 shipped scoped Quick Scan + post-walk
   progress + per-game Reveal/Delete + the CI Windows switch + Import
-  ROMs.
+  ROMs + Verify Library + per-system summary dialogs + the sync diff
+  perf rewrite + artwork-only export mode.
 - Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db`
   and rescan if you have a pre-v0.3.0 DB lying around.
 
@@ -70,11 +96,12 @@ Claude Code MUST follow the tasks in the current session file (when one applies)
 | `docs/sessions/NN-slug.md` | Per-session task list, context, acceptance criteria (sessions 00–11 are done) | When the user resumes a numbered session |
 | `docs/TECHNICAL_PLAN.md` | Full API details, schema column-by-column, implementation pseudocode | On-demand for edge cases not covered in architecture.md |
 | `docs/sync-design.md` | Destination sync engine spec (modes, identity matcher, dest_inventory, sync_plans) | When touching `core/sync.py` or `core/dest_inventory.py` |
-| `docs/import-design.md` | Import ROMs feature design (future) | When implementing the staging-folder → library importer |
+| `docs/import-design.md` | Import ROMs feature reference (shipped) — status taxonomy, conflict resolution, plan JSON, safety properties | When touching `core/importer.py` or `ui/import_dialog.py` |
 | `docs/ROM-FORMATS-REFERENCE.md` | Extension tables, naming conventions, folder aliases | When implementing scanner or system registry |
 | `docs/ROM-DEDUP-METHODOLOGY.md` | Three-layer identification pipeline methodology | When implementing identifier pipeline |
 | `docs/ROM-LIBRARY-ANALYSIS-REPORT.md` | Real-world library stats, test validation data | When writing tests or validating assumptions |
 | `docs/forking-with-claude-code.md` | How to fork ROMulus and continue building it with Claude Code | When mentoring a fork-and-extend workflow |
+| `docs/KNOWN-ISSUES.md` | Open bugs triaged for later — newest first, deleted when fixed | Check before proposing new work; flag anything new here that's deferred |
 | `CHANGELOG.md` | Per-release feature + fix history with breaking-change callouts | When orienting on what shipped when |
 
 Do not load reference documents into context every turn — read them when needed.
@@ -93,7 +120,8 @@ Do not load reference documents into context every turn — read them when neede
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
 │  │   Enrich Metadata | Find Covers | Export/Sync |      ││
 │  │   Import ROMs | Settings                             ││
-│  │ Tools menu: Import ROMs… | Clean Missing Entries…    ││
+│  │ Tools menu: Import ROMs… | Verify Library… |         ││
+│  │             Clean Missing Entries…                   ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
                │ signals/slots + QThread workers
@@ -215,9 +243,15 @@ ROMulous/
 │   │   ├── dat_parser.py         # Logiqx XML DAT parser + match_hashes
 │   │   ├── organizer.py          # Library reorganization (preview/commit)
 │   │   ├── exporter.py           # Destination profile export engine
+│   │   │                         # (incl. include_roms artwork-only mode,
+│   │   │                         # phase-2 sidecar progress, PerSystemExportCounts)
 │   │   ├── sync.py               # 5-mode sync + 4-tier identity match
+│   │   │                         # (O(N+M) tier-2 via dest_by_fuzzy index,
+│   │   │                         # PerSystemSyncCounts)
 │   │   ├── dest_inventory.py     # Destination filesystem scanner + cache
 │   │   ├── importer.py           # Staging-folder import (analyse + apply)
+│   │   ├── scrub.py              # Reverse-direction DB ↔ disk verifier
+│   │   │                         # (four buckets, per-bucket SAVEPOINT)
 │   │   ├── local_cover_finder.py # Disk-side cover discovery + linking
 │   │   ├── atomic.py             # tempfile.mkstemp + os.replace helpers
 │   │   └── _no_intro_tokens.py   # FILENAME_REGION_TOKENS, REVISION_RE
@@ -252,12 +286,20 @@ ROMulous/
 │       ├── enrich_progress.py    # Enrich Metadata progress
 │       ├── local_cover_progress.py # Find Covers progress (dual phase)
 │       ├── organize_preview.py
-│       ├── export_dialog.py
+│       ├── export_dialog.py      # Export / Sync dialog (incl. Include ROMs toggle)
 │       ├── sync_preview.py       # Sync preview + apply UI
+│       ├── sync_diff_progress.py # "Computing diff…" between dest scan + preview
 │       ├── import_dialog.py      # Import ROMs preview + apply UI
+│       ├── scrub_dialog.py       # Verify Library bucketed-checkbox preview
+│       ├── scrub_progress.py     # Verify Library analyse phase
+│       ├── clean_missing_progress.py  # Clean Missing Entries progress
+│       ├── per_system_summary_dialog.py # Post-Export / post-Sync breakdown table
+│       ├── _grouped_tree.py      # Tri-state header + right-click toggle mixin
 │       ├── workers.py            # QThread workers (Scan / HeavyScan / Enrich /
 │       │                          # Organize / Export / Sync / DestInventory /
-│       │                          # CoverFinder / ImportAnalyse / ImportApply)
+│       │                          # BuildSyncPlan / CoverFinder / ImportAnalyse /
+│       │                          # ImportApply / CleanMissing /
+│       │                          # ScrubAnalyse / ScrubApply)
 │       ├── artwork/              # Bundled per-platform logos (dark + light)
 │       │   ├── __init__.py       # resolve_system_logo(system_id, theme)
 │       │   └── systems/          # <system_id>-{dark,light}.png × 70 systems
@@ -285,7 +327,10 @@ ROMulous/
     │                              # move-after-copy, replace, keep_both,
     │                              # SAVEPOINT rollback, cancel, upsert),
     │                              # JSON round-trip, find_rom_by_path/sha1
-    └── ...                        # 941 tests total, 1 skipped
+    ├── test_scrub.py              # Verify Library: bucket classification,
+    │                              # per-bucket SAVEPOINT, unreadable guard
+    ├── test_per_system_summary_dialog.py  # Per-system summary dialog smoke
+    └── ...                        # 1003 tests total, 1 skipped
 ```
 
 ## Git Policy
@@ -336,6 +381,12 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 19. **Bundled offline metadata is content-addressed by CRC32.** Both `libretro_metadat` and `gamedb` index by lowercase 8-char CRC32 (stripping any `0x` prefix). `roms.hashes` populated by Heavy Scan is what unlocks them. Quick-scan-only games fall through to title-fuzzy fallback paths in both clients.
 20. **TheGamesDB has a monthly quota.** ~1000 requests/month for public keys, 6000 lifetime for private keys. The client logs `remaining_monthly_allowance` per response, persists it to `thegamesdb_remaining_allowance` in config, and short-circuits future calls when it hits zero. Slot it last in the chain so we only spend on games every cheaper source missed.
 21. **Import is symmetric to sync.** The Import engine (`core/importer.py`) mirrors the Sync engine in shape — analyse → preview → apply, per-action SAVEPOINT, atomic copy via `core/atomic.py`, cooperative cancel between actions. Heavy identification (SHA-1 + DAT match) runs unconditionally on every analyse pass so the three duplicate levels (path / filename / hash) all surface; the dialog warns about duration up front when the staging folder is large. Staging folder must be outside `library_root` — refused with `ValueError` to prevent self-recursion footguns. New ROMs are enrolled via the same path-keyed `upsert_rom` the scanner uses, so importing a file whose target path matches a `missing=1` row un-tombstones the row rather than duplicating it.
+22. **Long-running DB writes go through a worker + rollback wrap.** `CleanMissingWorker` and `ScrubApplyWorker` (and any future analogue) run on their own QThread, open their own connection, and wrap the work in `try/except: conn.rollback(); raise`. Closes the "DB locked / silent rollback" footgun where an exception inside a UI-thread DML chain left the implicit transaction open and held the write lock for the rest of the session.
+23. **`prune_orphan_games` clears FK-dependent rows first.** `metadata` / `covers` / `collection_games` are deleted; `dest_inventory.game_id` is NULLed (the dest_inventory row is anchored on `rom_id`). Required because none of those tables declare `ON DELETE CASCADE` — the games delete fails with `IntegrityError` if dependents remain. Latent bug pre-v0.3.0 because tests never attached metadata to the games they pruned.
+24. **Sync diff is O(N+M), not O(N·M).** `_build_inventory_fuzzy_index` pre-computes `(fuzzy_key, region, system_id) → InventoryEntry` once at the top of `_build_push_actions` / `_build_twoway_actions`; tier-2 lookup is a single `dict.get`. `build_plan` runs on `BuildSyncPlanWorker` with a "Computing diff…" progress dialog — slots fired across a queued connection from a worker still execute on the receiving (UI) thread, so the inventory worker alone doesn't move `build_plan` off the UI thread. See `docs/sync-design.md` §12.6.
+25. **Export has an artwork-only mode.** `ExportOptions.include_roms` defaults True; uncheck to skip the ROM copy loop and run only the sidecar refresh. `copy_artwork` size+mtime-compares per file (2s tolerance for FAT32/SMB rounding). The dialog disables Scan destination when Include ROMs is off — a sync-path plan would be pure `ACTION_IDENTICAL` rows and the apply step doesn't touch sidecars.
+26. **Post-Export / post-Sync show a per-system summary dialog.** `ExportSummary` and `SyncSummary` carry a `per_system` field populated alongside the existing aggregates; the dialog (`PerSystemSummaryDialog`) renders one row per system with the per-bucket counts. Used to diagnose why a system was skipped (unsupported / refuse-overwrite / already-present) without grepping `logs/romulus.log`.
+27. **Preview dialogs have tri-state group headers + right-click bulk toggle.** Shared `GroupedCheckboxTreeMixin` powers `OrganizePreviewDialog`, `SyncPreviewDialog`, and `ScrubPreviewDialog`. Multi-thousand-row plans become workable. Buckets whose every child is non-checkable (e.g. Organize Collisions) keep a plain non-checkable header.
 
 ## Scan Types
 

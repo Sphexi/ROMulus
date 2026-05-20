@@ -54,8 +54,8 @@ ROMulus replaces that with a single desktop app that:
 │  ┌──────────────────────────────────────────────────────┐│
 │  │ Toolbar: Quick Scan | Heavy Scan | Organize |        ││
 │  │   Enrich Metadata | Find Covers | Export/Sync |      ││
-│  │   Settings                                           ││
-│  │ Tools menu: Clean Missing Entries…                   ││
+│  │   Import ROMs | Settings                             ││
+│  │ Tools menu: Verify Library… | Clean Missing Entries… ││
 │  └──────────────────────────────────────────────────────┘│
 └──────────────┬───────────────────────────────────────────┘
                │ signals/slots + QThread workers
@@ -80,9 +80,22 @@ ROMulus replaces that with a single desktop app that:
 │  Organizer  Export Engine    Sync Engine                 │
 │  (preview/  (dest profiles,  (5 modes: push merge/       │
 │   commit)   gamelist.xml,     mirror/wipe, pull merge,   │
-│             .m3u, artwork)    two-way; 4-tier identity   │
-│                               match; dest_inventory      │
-│                               cache; SAVEPOINT rollback) │
+│             .m3u, artwork,    two-way; 4-tier identity   │
+│             include_roms      match; dest_inventory      │
+│             toggle for        cache; O(N+M) tier-2 via   │
+│             artwork-only      pre-indexed dest_by_fuzzy; │
+│             refreshes)        SAVEPOINT rollback)        │
+│                                                          │
+│  Importer  (staging → identify → analyse → preview →     │
+│   commit)  per-action SAVEPOINT, three-level dupe        │
+│            detection (path / filename / hash)            │
+│                                                          │
+│  Scrub Engine (Tools → Verify Library)                   │
+│   walks DB ↔ disk, classifies into four buckets,         │
+│   per-bucket SAVEPOINT apply                             │
+│                                                          │
+│  Per-system summary dialog (post-Export, post-Sync) ─────┤
+│   one row per system × Copied / Bytes / Covers / etc.    │
 │                                                          │
 │  Cover Cache    (<install_dir>/data/covers/)             │
 │  GameDB JSON    (<install_dir>/data/gamedb/)             │
@@ -109,9 +122,15 @@ window and dispatches work via signals.
 | `EnrichWorker` | Enrich Metadata toolbar / per-game right-click | Metadata chain orchestrator |
 | `CoverFinderWorker` (alias `LocalCoverFinderWorker`) | Find Covers toolbar / per-game right-click | Local cover walk + libretro-thumbnails fetch |
 | `OrganizeWorker` | Organize toolbar | Library reorganization |
-| `ExportWorker` | Export dialog | One-shot export to a profile |
-| `SyncWorker` | Sync dialog | 5-mode sync with preview/apply |
-| `DestInventoryScanWorker` | Sync dialog first step | Destination filesystem walk + cache refresh |
+| `ExportWorker` | Export dialog | One-shot export to a profile (two-phase: ROM copy + sidecar refresh) |
+| `SyncWorker` | Sync dialog | 5-mode sync apply |
+| `DestInventoryWorker` | Sync dialog first step | Destination filesystem walk + cache refresh |
+| `BuildSyncPlanWorker` | Between DestInventory and SyncPreview | Runs `build_plan` on a worker thread (was on UI thread; froze on large libs) |
+| `ImportAnalyseWorker` | Import ROMs dialog (analyse phase) | Walks staging folder + builds ImportPlan |
+| `ImportApplyWorker` | Import ROMs dialog (apply phase) | Executes the approved ImportPlan with per-action SAVEPOINT |
+| `CleanMissingWorker` | Tools → Clean Missing Entries | Drops tombstoned rows + FK dependents + orphan-game prune |
+| `ScrubAnalyseWorker` | Tools → Verify Library (analyse phase) | Walks every roms row, classifies vs disk |
+| `ScrubApplyWorker` | Verify Library (apply phase) | Applies per-bucket fixes (SAVEPOINT-per-bucket) |
 
 Worker conventions:
 
@@ -195,6 +214,55 @@ so the behavior doesn't surprise users or future contributors.
 19. **TheGamesDB has a monthly quota.** ~1000 requests/month for public
     keys, 6000 lifetime for private keys. Slot it last in the chain so
     we only spend on games every cheaper source missed.
+20. **Import is symmetric to sync.** The Import engine
+    (`core/importer.py`) mirrors the Sync engine in shape — analyse →
+    preview → apply, per-action SAVEPOINT, atomic copy, cooperative
+    cancel. Three duplicate levels are detected (path / filename /
+    hash); staging folder must be outside `library_root`.
+21. **Long-running DB writes go through a worker + rollback wrap.**
+    Clean Missing Entries and Verify Library both run on dedicated
+    QThread workers that call `conn.rollback()` on any exception before
+    re-raising. Closes the "DB locked / silent rollback" footgun where
+    a stray exception in a UI-thread DML chain left the implicit
+    transaction open and held the write lock for the rest of the
+    session.
+22. **`prune_orphan_games` clears FK-dependent rows first.** `metadata`
+    / `covers` / `collection_games` are deleted before the orphan game
+    rows themselves; `dest_inventory.game_id` is NULLed rather than
+    deleted (the inventory row is anchored on `rom_id`). Required
+    because none of those tables declare `ON DELETE CASCADE` — the
+    games delete fails with `IntegrityError` if dependents remain.
+23. **Sync diff is O(N+M), not O(N·M).** `_build_inventory_fuzzy_index`
+    pre-computes `(fuzzy_key, region, system_id) → InventoryEntry` once
+    at the top of `_build_push_actions` / `_build_twoway_actions`. The
+    tier-2 lookup is a single `dict.get`. Prior naive form
+    re-scanned the entire inventory + recomputed every fuzzy key per
+    local rom — froze the UI for tens of minutes on 38K × 17K libraries.
+24. **`build_plan` runs on a worker thread.** `BuildSyncPlanWorker` sits
+    between `DestInventoryWorker` and `SyncPreviewDialog` with its own
+    progress dialog ("Computing diff…"). Required because slots fired
+    across a queued connection from a worker still run on the receiving
+    (UI) thread — so calling `build_plan` from `_on_inventory_done`
+    froze the UI even though the inventory walk itself was off-thread.
+25. **Export has an artwork-only mode.** `ExportOptions.include_roms`
+    defaults True; uncheck to skip the ROM copy loop entirely and run
+    only the sidecar refresh. `copy_artwork` does a size + mtime
+    compare so a re-run only republishes covers that actually changed
+    (2 s mtime tolerance for FAT32/SMB rounding).
+26. **Post-Export and post-Sync show a per-system summary dialog.**
+    `ExportSummary` and `SyncSummary` carry a `per_system` field
+    populated alongside the existing aggregates; the dialog
+    (`PerSystemSummaryDialog`) renders one row per system with the
+    per-bucket counts. Used to diagnose why a system was skipped
+    (unsupported / refuse-overwrite / already-present) without grepping
+    `logs/romulus.log`.
+27. **Preview dialogs have tri-state group headers + right-click bulk
+    toggle.** Shared `GroupedCheckboxTreeMixin` powers
+    `OrganizePreviewDialog`, `SyncPreviewDialog`, and
+    `ScrubPreviewDialog`. Multi-thousand-row plans become workable —
+    flip a bucket with one click. Buckets whose every child is
+    non-checkable (e.g. Organize Collisions) keep a plain non-checkable
+    header.
 
 ---
 
@@ -288,6 +356,13 @@ via `CoverOptionsDialog`. Two independent checkboxes per run:
 Four-tier identity matcher (in order): path equivalence →
 `(fuzzy_key, region, system_id)` → size sanity gate → SHA-1 deep verify.
 The `system_id` segment of tier 2 is the cross-platform guard.
+
+**Perf:** the tier-2 lookup is O(1) per local rom via the
+pre-built `dest_by_fuzzy` index — see
+[sync-design.md §12.6](sync-design.md#126-on-buildplan-perf-+-worker-thread-commit-e3082b4)
+for the full story. `build_plan` runs on `BuildSyncPlanWorker` with a
+"Computing diff…" progress dialog so the UI stays responsive on
+multi-tens-of-thousands-of-ROM libraries.
 
 See [sync-design.md](sync-design.md) for the full spec.
 
@@ -514,8 +589,8 @@ Per the **CI/CD Local Validation Rule** in `CLAUDE.md`, the workflow's
 exact commands are run locally on Windows before any release tag is
 pushed.
 
-Current state: **918 tests passing, 1 skipped** (POSIX-only chmod test,
-skipped on Windows because NTFS ACLs are inherited).
+Current state: **1,003 tests passing, 1 skipped** (POSIX-only chmod
+test, skipped on Windows because NTFS ACLs are inherited).
 
 ---
 
@@ -581,9 +656,11 @@ ROMulous/
 │   │   ├── hasher.py             # SHA-1/CRC32 + header stripping
 │   │   ├── dat_parser.py         # Logiqx XML DAT parser
 │   │   ├── organizer.py          # Library reorganization
-│   │   ├── exporter.py           # Destination profile export engine
-│   │   ├── sync.py               # 5-mode sync + 4-tier identity match
+│   │   ├── exporter.py           # Destination profile export engine (incl. include_roms)
+│   │   ├── sync.py               # 5-mode sync + 4-tier identity + O(N+M) tier-2 index
 │   │   ├── dest_inventory.py     # Destination FS scanner + cache
+│   │   ├── importer.py           # Staging-folder import (analyse + apply)
+│   │   ├── scrub.py              # Reverse-direction DB ↔ disk verifier
 │   │   ├── local_cover_finder.py # Disk-side cover discovery + linking
 │   │   └── atomic.py             # tempfile.mkstemp + os.replace helpers
 │   ├── metadata/
@@ -610,11 +687,18 @@ ROMulous/
 │       ├── organize_preview.py
 │       ├── export_dialog.py
 │       ├── sync_preview.py
-│       ├── workers.py            # QThread workers
+│       ├── sync_diff_progress.py    # "Computing diff…" between dest scan + preview
+│       ├── import_dialog.py         # Import ROMs preview + apply
+│       ├── scrub_dialog.py          # Verify Library bucketed-checkbox preview
+│       ├── scrub_progress.py        # Verify Library analyse phase
+│       ├── clean_missing_progress.py # Clean Missing Entries determinate progress
+│       ├── per_system_summary_dialog.py # Post-Export / post-Sync breakdown table
+│       ├── _grouped_tree.py         # Tri-state group header + right-click toggle mixin
+│       ├── workers.py            # QThread workers (every long op)
 │       ├── artwork/              # Bundled per-platform logos
 │       ├── icons/                # CD-ROM disc app icon
 │       └── themes/               # light / dark / wbm_classic .qss
-└── tests/                        # pytest, 919 collected (918 + 1 skipped)
+└── tests/                        # pytest, 1004 collected (1003 + 1 skipped)
 ```
 
 ---
@@ -654,10 +738,22 @@ they don't surprise you.
    per-file progress callback is wired up; only the headline ETA is
    missing.
 
-7. **No Import ROMs workflow yet.** See
-   [import-design.md](import-design.md) for the planned design — a
-   staging-folder → library importer with conflict resolution.
-
-8. **Linux / macOS distribution is source-only.** The portable Windows
+7. **Linux / macOS distribution is source-only.** The portable Windows
    build is the supported distribution for v0.3.0. Run from source on
    other platforms.
+
+8. **Sync engine still walks the full destination for an artwork-only
+   refresh.** The `Include ROMs` checkbox shortcut lives in the Export
+   dialog (synchronous, no diff phase). If you reach for **Scan
+   destination → Sync** with Include ROMs unchecked, the dialog
+   actively disables that button — but a fully-symmetric "Sync
+   artwork only" mode isn't implemented yet. Workaround: use Export
+   with Include ROMs unchecked. The destination doesn't need pre-
+   walking because `copy_artwork` size+mtime-compares per file.
+
+9. **Per-system summary doesn't drill down to filenames.** The dialog
+   shows counts (Copied: 30, Refused: 1, …) but not which specific
+   files landed in which bucket. For diagnostics, grep
+   `logs/romulus.log` — the exporter logs every skip with reason
+   (`skip-unsupported`, `skip-already-present`, `refuse-overwrite`)
+   and source/dest paths at DEBUG level.

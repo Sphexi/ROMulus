@@ -1,153 +1,268 @@
-# Import ROMs — design notes
+# Import ROMs — Feature Reference
 
-**Status:** future feature, not started. Captured here so the next
-session has the requirements + an obvious implementation path in
-front of it instead of re-deriving them.
+**Status:** shipped in v0.3.0 (commit `d4d79e8`, later refined).
+**Code:** [`src/romulus/core/importer.py`](../src/romulus/core/importer.py),
+[`src/romulus/ui/import_dialog.py`](../src/romulus/ui/import_dialog.py),
+[`src/romulus/ui/workers.py`](../src/romulus/ui/workers.py)
+(`ImportAnalyseWorker` + `ImportApplyWorker`).
+**Authoritative reference:** this doc. Implementation diverging from
+it must update the doc in the same commit.
+
+This file replaces the original "future feature design notes" doc —
+the import workflow ships and works. Section §11 captures
+post-implementation notes for future work.
 
 ---
 
-## What the user wants
+## 1. Goals
 
-Quoting the request verbatim:
+The user has a staging folder of ROMs sitting somewhere outside the
+managed library (Downloads, a USB stick, a mounted archive). Import
+should:
 
-> If I download more ROMs, I want to be able to import them into the
-> library, meaning scan them wherever they are (like a download folder
-> or staging area), identify them via fuzzy/dat matching, then match
-> them to a system, and copy them to the correct location in the
-> existing library based on the setup. Some logic around if a system
-> folder doesn't exist to create it (maybe prompt for it), otherwise
-> to put them into the correct folders, but also check for existing
-> dupes and provide feedback on that (skip all dupes or replace local
-> with new versions, all or nothing).
+1. **Identify every file** via the same Quick + Heavy pipeline the
+   scanner uses — no separate "import-only" identifier. Same fuzzy
+   filename parsing, header sniffing, hash + DAT lookup.
+2. **Surface three levels of duplicate detection** before any byte
+   moves: same target path, same filename, same hash.
+3. **Make conflict resolution per-row.** The user picks copy / move /
+   skip / replace / keep-both per file, with a bulk-apply shortcut for
+   long lists.
+4. **Atomically commit** the approved plan — no half-imported files,
+   no DB rows pointing at sources that never finished copying.
+5. **Treat staging-into-library as a footgun.** Refuse to import if
+   `staging_path` is inside `library_root` (or vice-versa).
 
 In one sentence: **"Sync, but inbound from a staging folder into the
-library."** The shape of the workflow rhymes with the existing
-Export / Sync engine — preview → confirm → apply, with per-action
-conflict handling.
+library."** The Sync engine's analyse → preview → apply shape applies
+unchanged.
 
 ---
 
-## Workflow
+## 2. Workflow
 
-1. **User chooses a staging folder** (Downloads, USB stick, mounted
-   ZIP, etc.). Sources outside the current library_root only.
-2. **Walk + identify** the staging folder using the existing scanner
-   + identifier pipeline:
-   - L1 fuzzy filename → tentative system from folder aliases OR
-     extension lookup.
-   - L2 header sniff (for systems with a `header_rule`).
-   - Optional L3 hash + DAT match if the user ticks "Heavy identify
-     before import" (slower, but disambiguates lookalikes).
-3. **Build the import plan** — one row per staging file:
-   - **Resolved system** + **target system folder name** under
-     `library_root`. Missing system_id → goes to a fallback
-     `_unsorted/` bucket like the sync engine already does.
+Triggered via **Tools → Import ROMs…** or the toolbar button.
+
+1. **User picks a staging folder.** The dialog also surfaces a list of
+   recently-used staging paths so re-importing from the same source is
+   one click.
+2. **Sanity gate.** If `staging_path` is inside `library_root` (or
+   vice-versa), `analyse_import` raises `ValueError` and the dialog
+   surfaces the error. Prevents self-recursion footguns.
+3. **Walk + identify** the staging folder. Heavy identification (SHA-1
+   + DAT match) runs on **every** file in the staging area —
+   unconditionally. Without it the hash-level dupe check can't fire
+   and the user would get false-negative "this is new" badges for
+   files that are actually already in the library under a different
+   name. The dialog warns about duration up front when the staging
+   folder is large.
+4. **Build the import plan** — one `ImportAction` per staging file:
+   - **Resolved system** + **target system folder** under `library_root`.
    - **Target path** = `<library_root>/<system_folder>/<filename>`.
-     When DAT-matched, optionally use the canonical name (toggle:
-     "Rename to DAT canonical on import").
-   - **Action**: `copy` / `move` / `skip` / `replace` / `keep-both`.
-4. **Preview dialog** — table of planned actions with totals at the
-   top ("N new, M dupes (skip), K conflicts (resolve)"). Conflict
-   resolution columns:
-   - Skip (default for `dupe-same-content`)
-   - Replace (default for `dupe-different-content` + user confirmed)
-   - Keep both with disambiguating suffix
-5. **Apply** via a QThread worker:
-   - Create system folders as needed (prompt once at the top of the
-     run: "create N new folders for previously-unseen systems?" with
-     a per-system checklist).
-   - Atomic copy via `core/atomic.py` (`tempfile.mkstemp` + `os.replace`).
-   - Enroll the new rom rows into the library DB (via the same
-     `upsert_rom` path the scanner uses).
-   - On `move`: unlink the source after the copy succeeds (NOT
-     before — partial transfers must leave the source intact).
+   - **Status** classifying the action (see §3).
+   - **Default resolution** based on status (see §4).
+5. **Preview dialog** shows a per-file table grouped by system, with
+   the same tri-state group headers + right-click toggle that
+   Organize / Sync / Verify Library use.
+6. **Apply** via `ImportApplyWorker`:
+   - Per-action SAVEPOINT — failure on one row doesn't roll back the
+     rest.
+   - Atomic copy via `core/atomic.py` (`tempfile.mkstemp` +
+     `os.replace`).
+   - On `move`: unlink source only after copy succeeds (NOT before —
+     partial transfers must leave the source intact).
+   - New ROM rows enrolled via the same path-keyed `upsert_rom` the
+     scanner uses, so importing a file whose target path matches a
+     `missing=1` row un-tombstones the row rather than duplicating it.
 
 ---
 
-## Duplicate detection — three levels
+## 3. Status taxonomy
 
-| Level | Check | Default action |
+Each `ImportAction` is classified with one of these statuses at
+analyse time:
+
+| Status | Trigger | Default resolution |
 |---|---|---|
-| **Path** | A file already lives at the planned target path | Skip (it's literally already there) |
-| **Filename** | Same basename, different content (size or hash differs) | Conflict → user picks `replace` / `keep-both` / `skip`. Default `skip`. |
-| **Hash** | Same hash exists somewhere in the library under a different filename | Report as "already in library (different name)" and skip. Don't auto-replace — the user may have a renamed copy on purpose. |
+| `new` | No path / filename / hash match in the library | `copy` |
+| `dupe_path` | A file already lives at the planned target path | `skip` |
+| `dupe_filename` | Same basename, different content (size or hash differs) | `skip` (user picks `replace` / `keep_both`) |
+| `dupe_hash` | Same hash exists in the library under a different filename | `skip` (already have this byte-identical ROM) |
+| `multi_rom_archive` | Archive (.zip / .7z) containing multiple ROM entries | `skip` (out of scope; user unpacks manually) |
 
-Conflict resolution should also be available as **"apply this to all
-remaining conflicts"** so a large import doesn't require N clicks.
-The Sync engine has the same UX pattern in `sync_preview.py`; reuse
-the components.
+The detection order is **path → filename → hash**, mirroring the
+sync engine. A file that hits multiple levels gets the strongest
+classification (path > filename > hash).
 
 ---
 
-## System folder creation
+## 4. Conflict resolution
+
+Each row's `resolution` field is one of:
+
+| Resolution | Effect |
+|---|---|
+| `copy` | Copy source → target. Source untouched. |
+| `move` | Copy source → target, then unlink source. |
+| `skip` | No-op. Row stays in the plan for the summary. |
+| `replace` | Overwrite the existing target file with the source. |
+| `keep_both` | Append a disambiguating suffix (`Mario (2).sfc`) and copy. |
+
+`replace` and `keep_both` only apply to `dupe_*` statuses. The
+preview dialog also offers an **"apply this to all remaining
+conflicts"** button so a large import doesn't require N clicks.
+
+---
+
+## 5. System folder creation
 
 When a staging file resolves to a system that doesn't have a folder
-under `library_root` yet:
+under `library_root` yet, the system shows up as `(new)` in the
+preview header. The apply step creates the folder lazily on first
+write — no separate "create N new folders?" confirm prompt (the
+preview header already flags it). Created folders use the **first**
+entry in the system's `folder_aliases` list, matching Organize /
+Export.
 
-1. The preview dialog flags the system with a `(new)` badge.
-2. The Apply step shows a one-shot confirmation: "Create N new
-   system folders: atari7800, dreamcast, segacd?" with checkboxes
-   per system so the user can opt out of specific ones (those files
-   then either move to `_unsorted/` or get dropped from the plan).
-3. The created folders use the **first** entry in the system's
-   `folder_aliases` list (matches how Organize / Export pick a
-   canonical folder name).
+If a staging file's system can't be resolved at all (extension not in
+any system's allowlist, no folder-name hint), it lands in the
+sentinel `_unsorted/` bucket — same fallback the Sync engine uses.
 
 ---
 
-## Implementation surface
-
-New modules + glue:
+## 6. Implementation surface
 
 ```
 src/romulus/core/importer.py
-  ImportPlan         — list[ImportAction]
+  ImportStatus       — Literal["new", "dupe_path", "dupe_filename",
+                                "dupe_hash", "multi_rom_archive"]
+  ImportResolution   — Literal["copy", "move", "skip", "replace",
+                                "keep_both"]
   ImportAction       — source_path, target_path, system_id, status,
-                       resolution (skip/copy/move/replace/keep_both)
-  analyse_import(    — walks staging path, builds the plan against
-    conn, staging,     the current library state
-    options)
+                       resolution, confidence, size_bytes, reason,
+                       existing_rom_path, existing_rom_id, executed,
+                       error
+  ImportPlan         — staging_root, library_root, list[ImportAction],
+                       created_systems, heavy_identify, total_bytes
+                       (with to_json / from_json round-trip)
+  ImportOptions      — default_resolution, heavy_identify (always True)
+  ImportSummary      — files_imported, files_skipped, files_replaced,
+                       files_kept_both, bytes_imported, systems_touched,
+                       errors
+  analyse_import(    — walks staging, builds the plan
+    conn, staging,
+    library, options)
   apply_plan(        — executes the plan; atomic per file; updates
-    conn, plan,        the library DB rows via upsert_rom; cleans
-    progress_cb)       up moved sources
+    conn, plan,        the library DB rows via upsert_rom; cleans up
+    progress_cb)       moved sources
+
 src/romulus/ui/import_dialog.py
   ImportDialog       — preview table + conflict resolution + Apply
+
 src/romulus/ui/workers.py
-  ImportWorker       — runs analyse / apply on a QThread with
-                       the existing cooperative-cancel pattern
+  ImportAnalyseWorker — runs analyse_import on a QThread
+  ImportApplyWorker   — runs apply_plan on a QThread
+
 src/romulus/ui/main_window.py
-  Tools → "Import ROMs..." menu entry + toolbar button
+  Tools → "Import ROMs…" menu entry + toolbar button
 ```
 
-Reuse:
+### Reuses
 
 * **Identifier pipeline** — `core/scanner._resolve_system_for_directory`,
   `core/identifier.parse_header`, `core/hasher.hash_rom`. Same code
   paths the regular Quick Scan / Heavy Scan use.
-* **Atomic write helpers** — `core/atomic.atomic_copy` (already
-  exists, used by sync apply).
+* **Atomic write helpers** — `core/atomic.atomic_copy`.
 * **Sync engine's conflict-resolution UX** — `sync_preview.py`'s
-  per-action dropdown + "apply to all remaining" pattern is the
-  closest thing the codebase already has.
+  per-action dropdown + "apply to all remaining" pattern.
+* **GroupedCheckboxTreeMixin** — tri-state group headers and
+  right-click bulk toggle on the preview dialog.
 
 ---
 
-## Open questions
+## 7. Plan JSON round-trip
 
-* **Copy vs move default?** Probably `copy` — preserves the staging
-  area for re-imports / rollback. Move is opt-in via checkbox.
-* **What about archives (.zip / .7z) in the staging folder?** The
-  scanner already accepts archive containers as ROMs for every
-  system. Likely the right thing is to import the archive verbatim
-  (don't unpack). But what if the archive contains MULTIPLE ROMs?
-  Probably out of scope for v1 — flag and skip with a "this looks
-  like a multi-ROM archive" badge.
-* **Should import auto-trigger Enrich Metadata + Find Covers on the
-  imported ROMs?** Probably no auto, but a "post-import: also run..."
-  checklist at the top of the dialog would be a small extra plumb.
-* **Dry-run mode for the apply step?** The preview *is* a dry run.
-  An optional "save the import plan as a .json file" would let the
-  user audit, then re-run later.
-* **Tier on staging-folder source identity to avoid re-importing the
-  same file twice across runs.** Probably file hash → skip if already
-  in the library. Already covered by the hash-level dupe check.
+`ImportPlan.to_json()` / `ImportPlan.from_json()` produce a versioned
+self-describing JSON document:
+
+```json
+{
+  "version": 1,
+  "kind": "romulus.import_plan",
+  "generated_at": "2026-05-19T12:34:56+00:00",
+  "staging_root": "D:/RetroDump",
+  "library_root": "//nas/Retro Files/Console ROMs",
+  "heavy_identify": true,
+  "total_bytes": 2438217482,
+  "created_systems": ["dreamcast", "saturn"],
+  "actions": [
+    {"source_path": "…", "target_path": "…", "system_id": "snes",
+     "status": "new", "resolution": "copy", "confidence": "dat_verified",
+     "size_bytes": 524288, "reason": "", "existing_rom_path": null,
+     "existing_rom_id": null, "executed": false, "error": null},
+    ...
+  ]
+}
+```
+
+The dialog doesn't expose a "save plan" button yet, but the round-trip
+exists so a future audit / replay feature can use it.
+
+---
+
+## 8. Cancellation
+
+Cooperative cancel works exactly like the Sync engine — the worker's
+progress callback raises `_ImportCancelled` if the user clicked
+Cancel since the last tick. The currently-executing action's
+SAVEPOINT is rolled back; already-committed actions stay applied.
+
+The dialog disables Cancel **during** an in-flight atomic copy
+(there's no safe interruption point inside `atomic.atomic_copy`).
+Cancel resumes between actions.
+
+---
+
+## 9. Safety properties
+
+| Property | Enforced by |
+|---|---|
+| Source files are never deleted before the destination copy succeeds | `apply_plan` only unlinks on `move` after `atomic_copy` returns |
+| Half-copied files never appear at the target path | `atomic.atomic_copy` (`tempfile.mkstemp` + `os.replace`) |
+| DB never drifts from disk on partial failure | Per-action SAVEPOINT — failed row rolls back its DB writes too |
+| Staging inside the library doesn't loop forever | `_validate_staging_outside_library` raises `ValueError` |
+| `missing=1` rows are revived, not duplicated, when matching paths re-appear | Path-keyed `upsert_rom` |
+
+---
+
+## 10. Tests
+
+`tests/test_importer.py` (23 tests):
+
+* Plan analysis — dupe levels, extension fallback, multi-rom-zip
+  detection, staging-inside-library refusal.
+* Apply — atomic copy, move-after-copy ordering, replace, keep_both,
+  SAVEPOINT rollback on per-action failure, cancel between actions,
+  upsert path-revival of tombstoned rows.
+* JSON round-trip — `to_json` → `from_json` preserves every field.
+* `find_rom_by_path` / `find_rom_by_sha1` helpers used by the
+  identifier path.
+
+---
+
+## 11. Open questions / future work
+
+* **Copy vs move default.** Currently `copy` to preserve the staging
+  area for re-imports. Move stays opt-in via per-row dropdown.
+* **Archive containing multiple ROMs.** Currently classified as
+  `multi_rom_archive` and skipped with a badge. Unpacking is out of
+  scope — the user unpacks manually and re-runs Import.
+* **Post-import enrichment.** Not auto-triggered today. A "post-import:
+  also run Enrich Metadata / Find Covers" checklist at the top of the
+  dialog would be a small extra plumb. Out of scope for v0.3.0.
+* **Save plan as `.json`.** The round-trip exists in code; no UI
+  button. Easy add when a real audit / replay use case shows up.
+* **Streaming progress for large archives.** Heavy identification on a
+  large staging folder can take minutes; the dialog warns about
+  duration but doesn't show per-file progress until Apply. A
+  per-file analyse progress tick would match what the scanner does.

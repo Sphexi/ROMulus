@@ -9,8 +9,11 @@ No server. No cloud account. No external services to keep running. SQLite +
 files on disk, nothing else.
 
 **Project status:** v0.3.0 (in development). The full
-scan → identify → enrich → organize → export / sync pipeline works.
-See [CHANGELOG.md](CHANGELOG.md) for the per-release breakdown.
+scan → identify → enrich → organize → import / export / sync pipeline
+works end-to-end. Per-system summary dialog after Export and Sync, a
+reverse-direction **Verify Library** integrity check, and an
+artwork-only export mode for refreshing sidecars without re-copying
+ROMs. See [CHANGELOG.md](CHANGELOG.md) for the per-release breakdown.
 
 **License:** [Apache License 2.0](LICENSE).
 
@@ -118,21 +121,41 @@ The first time you run ROMulus the window is empty. The recommended workflow:
 6. **Organize** (toolbar) — previews proposed library cleanups (alias
    folder merges, canonical renames, duplicate removal). Every action is
    reviewed and approved before anything moves.
-7. **Export / Sync** (toolbar) — pick a destination profile (Batocera,
+7. **Import ROMs** (toolbar / Tools menu) — walks a staging folder
+   (Downloads, USB stick, mounted archive), identifies every file via
+   the same Quick + Heavy pipeline, surfaces three levels of duplicate
+   detection (path / filename / hash), and atomically copies or moves
+   the approved files into the current library.
+8. **Export / Sync** (toolbar) — pick a destination profile (Batocera,
    RetroPie, MiSTer, Anbernic, etc.), pick a target folder, and run a
    one-shot **Export** or a **Sync** with one of five modes (push
    merge/mirror/wipe, pull merge, two-way). Every sync produces a preview
    with per-action counts; destructive modes require a double-confirm.
-8. **Tools → Clean Missing Entries** — removes tombstoned rows the user is
-   confident are gone for good (and cascades to dependent rows).
+   After Apply finishes a **per-system summary dialog** breaks down what
+   each system contributed (copied / bytes / covers refreshed /
+   unsupported / refused / errors). To push fresh artwork without
+   re-copying ROMs, uncheck **Include ROMs** in the Export Options.
+9. **Tools → Verify Library** — reverse-direction integrity check.
+   Walks the database and verifies every row against disk; surfaces
+   four buckets (missing-on-disk, outside-current-library, flagged-but-
+   present, size/mtime drift) and lets you fix each one per-bucket.
+10. **Tools → Clean Missing Entries** — removes tombstoned rows the user
+    is confident are gone for good (and cascades to dependent
+    `hashes` / `dest_inventory` / `metadata` / `covers` /
+    `collection_games` rows + prunes orphan games).
 
 **Right-click a game** in the table for: Add to Favorites / Add to
 Collection / Heavy Scan this game / Enrich this game / Find covers for
 this game / Reveal in Explorer / Delete this ROM. Right-click a system
-in the sidebar for a system-scoped Quick Scan.
+in the sidebar for a system-scoped Quick Scan / Heavy Scan / Enrich /
+Find Covers.
 
 **Click a game** to see its detail panel — cover art with prev/next
 cycling, platform logo, key/value metadata grid, and description.
+
+**Right-click a group header** in any preview dialog (Organize / Sync /
+Verify Library) for tri-state bulk toggle — flip an entire bucket
+without per-row clicking on multi-thousand-row plans.
 
 ---
 
@@ -160,6 +183,8 @@ diagnostics without touching Settings. The log file is at
 
 ## Troubleshooting
 
+### Library & scanning
+
 **"No library configured" when I click Quick Scan.** Use **File → Open
 Library...** first to point ROMulus at the root of your ROM folder.
 
@@ -179,9 +204,14 @@ removed" prompt.** ROMulus treats one library folder at a time as the
 source of truth. Pick "Yes" to drop the previous library's rows; pick "No"
 to back out of the switch.
 
-**DEBUG log level in Settings looks like nothing happens.** Set
-`ROMULUS_LOG_LEVEL=DEBUG` in the environment before launching — the env
-var beats the Settings value on startup.
+**The DB has more ROM rows than my disk has files.** Run **Tools →
+Verify Library**. It walks every row in the database and classifies
+mismatches into four buckets — missing on disk (not yet flagged),
+pointing outside the current library root, wrongly flagged missing
+when the file is back, and rows whose stored size/mtime have drifted
+from disk. Each bucket can be applied independently.
+
+### Heavy Scan & identification
 
 **Heavy Scan completes but the dialog says "cache up to date".** Quick
 Scan must run first to detect file changes; Heavy Scan only hashes ROMs
@@ -192,11 +222,45 @@ files, run Quick Scan and then Heavy Scan again.
 DAT file is in `dats/` — bundled DATs cover ~80 systems but not
 everything. Add user DATs via **Settings → DATs → Add folder...**.
 
+### Enrichment & covers
+
 **Cover art doesn't appear after Find Covers.** libretro-thumbnails keys
 covers by the *canonical* No-Intro game name. A ROM that didn't pick up a
 canonical name (no header, no hash match, no DAT entry) won't fetch
 online covers cleanly. Right-click → **Heavy Scan (this game's ROMs)** to
 upgrade the identifier confidence, then re-run Find Covers.
+
+**I want to push fresh covers without re-syncing the whole library.**
+Open **Export / Sync**, uncheck **Include ROMs** at the top of Options,
+click Export. The ROM copy loop is skipped entirely; only `gamelist.xml`
+and the cover folders are touched. `copy_artwork` does a size + mtime
+compare so only the covers that actually changed get re-pushed.
+
+**ScreenScraper "Test connection" says invalid even though my credentials
+work on the website.** ScreenScraper occasionally returns non-JSON HTML
+during maintenance windows; the test treats that as failure. Retry after
+a few minutes.
+
+### Export & Sync
+
+**Some systems are marked checked but the destination has no folder for
+them.** Each destination profile knows which systems the target device
+actually supports. The Anbernic RGLauncher profile, for instance,
+explicitly marks home computers (Amiga, C64, ZX Spectrum, Atari ST,
+Amstrad CPC) as `supported: false` because the stock launcher can't
+display them even if files are copied. The Export per-system summary
+shows these as "Unsupported" so you can see exactly how many files were
+skipped per system. If you want them on the device anyway, switch to a
+launcher that supports those systems (ES-DE Android, Daijisho) and
+either pick or write a matching profile.
+
+**Sync per-system summary shows "Refused" errors on MAME / Mega Drive
+files.** This is the security guard refusing to overwrite a pre-existing
+destination file whose size differs from the source. Almost always means
+you have two ROMs in the library with the same filename (e.g. multiple
+MAME romset versions of `1941.zip`) and both want to land at the same
+destination path. The first wins; the second is refused. Dedupe in the
+library with **Organize → Delete Duplicate** before re-running.
 
 **Sync preview shows everything as "identical" or nothing matches.** The
 sync engine's identity matcher requires the destination file's folder to
@@ -204,17 +268,36 @@ map to the same system as the local ROM. If your destination uses
 non-standard folder names, the profile YAML's `systems.<id>.folder` field
 needs to match what's actually on disk.
 
-**ScreenScraper "Test connection" says invalid even though my credentials
-work on the website.** ScreenScraper occasionally returns non-JSON HTML
-during maintenance windows; the test treats that as failure. Retry after
-a few minutes.
+**Export progress bar sits at 100% for minutes.** That's the sidecar
+pass (artwork + `gamelist.xml`) running after the ROM copy completes.
+v0.3.0 added explicit phase-2 progress ticks — the bar now rescales to
+the system count and the label switches to "Refreshing sidecars:
+<system_id>" so you can see motion. If you're on an older build,
+update.
+
+**Sync froze during "Computing diff…" or right after the dest scan.**
+Fixed in v0.3.0. The pre-fix bug was an O(N·M) fuzzy-key scan during
+plan-build on large libraries (38K × 17K ≈ ~600M regex calls). The
+post-fix version pre-indexes the destination by `(fuzzy_key, region,
+system_id)` and runs `build_plan` on a worker thread with a "Computing
+diff…" progress dialog. If you still see a freeze, grep
+`logs/romulus.log` for `build_plan: start` and `build_plan: complete`
+to see whether the diff phase finished.
+
+### Logging & operations
+
+**DEBUG log level in Settings looks like nothing happens.** Set
+`ROMULUS_LOG_LEVEL=DEBUG` in the environment before launching — the env
+var beats the Settings value on startup.
 
 **The app froze during a long operation.** The end of Quick Scan now
 disables the Cancel button while it finalises the DB (the
 "Marking missing entries…" / "Linking ROMs to games…" /
 "Finalising scan history…" labels are post-walk phases that can't be
-safely cancelled). For genuine UI freezes, please open an issue with the
-worker name, library size, and what was happening.
+safely cancelled). The Clean Missing Entries and Verify Library
+apply phases also disable cancel during chunked deletes. For other
+freezes, please open an issue with the worker name, library size, and
+the last log line.
 
 **Starting a second copy of ROMulus errors out about the log file.** Only
 one instance can hold `logs/romulus.log` at a time. Close the first
@@ -234,8 +317,8 @@ the Debian/Ubuntu list (even though CI itself now runs on
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Architecture, design rules, schema, config reference, destination profile format, packaging, limitations |
 | [docs/TECHNICAL_PLAN.md](docs/TECHNICAL_PLAN.md) | Full implementation spec — schema details, identifier pipeline, every subsystem in depth |
-| [docs/sync-design.md](docs/sync-design.md) | Destination sync engine spec (modes, identity matcher, dest_inventory, sync_plans) |
-| [docs/import-design.md](docs/import-design.md) | Import ROMs feature design (future) |
+| [docs/sync-design.md](docs/sync-design.md) | Destination sync engine spec (modes, identity matcher, dest_inventory, sync_plans, perf notes) |
+| [docs/import-design.md](docs/import-design.md) | Import ROMs feature reference (shipped) |
 | [docs/forking-with-claude-code.md](docs/forking-with-claude-code.md) | How to fork this repo and continue building it with Claude Code |
 | [docs/ROM-FORMATS-REFERENCE.md](docs/ROM-FORMATS-REFERENCE.md) | Extension tables, naming conventions, folder aliases |
 | [docs/ROM-DEDUP-METHODOLOGY.md](docs/ROM-DEDUP-METHODOLOGY.md) | Three-layer identification pipeline methodology |
@@ -259,8 +342,8 @@ pip install -e ".[dev]"
 .venv/Scripts/python.exe -m ruff check src/ tests/
 ```
 
-Current state: **918 tests passing, 1 skipped** (POSIX-only chmod test;
-skipped on Windows because NTFS ACLs are inherited). CI runs on
+Current state: **1,003 tests passing, 1 skipped** (POSIX-only chmod
+test; skipped on Windows because NTFS ACLs are inherited). CI runs on
 `windows-latest`.
 
 See [docs/architecture.md](docs/architecture.md) for code-style notes,
