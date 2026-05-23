@@ -36,7 +36,6 @@ from romulus.core.scanner import (
     SIDE_FILE_EXTENSIONS,
     _resolve_system_for_directory,
     generate_fuzzy_key,
-    group_into_games,
     is_rom_file,
     is_side_file,
     parse_filename,
@@ -729,10 +728,6 @@ def apply_plan(
                 exc,
             )
 
-    # Re-link any system whose ROM count changed — same idempotent
-    # ``group_into_games`` call Quick Scan makes after enrolment.
-    for system_id in summary.systems_touched:
-        group_into_games(conn, system_id)
     conn.commit()
     return summary
 
@@ -829,6 +824,7 @@ def _enrol_rom(
     if system_id is None:
         return -1
 
+    title = parsed.display_title or parsed.clean_name or target.name
     rom_data = {
         "path": str(target),
         "filename": target.name,
@@ -839,6 +835,13 @@ def _enrol_rom(
         "fuzzy_key": fuzzy,
         "match_confidence": action.confidence or "fuzzy",
         "library_root": library_root_str,
+        # Identity fields from filename parser — mirrors the Quick Scan path.
+        # COALESCE in upsert_rom means these never overwrite stronger DAT values.
+        "title": title,
+        "region": parsed.region,
+        "revision": parsed.revision,
+        "is_hack": parsed.is_hack,
+        "is_homebrew": parsed.is_homebrew,
     }
     return q.upsert_rom(conn, rom_data)
 

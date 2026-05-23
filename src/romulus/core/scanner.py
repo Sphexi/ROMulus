@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import sqlite3
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -519,64 +518,6 @@ def generate_fuzzy_key(clean_name: str, release_type: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Game grouping
-# ---------------------------------------------------------------------------
-
-
-def group_into_games(conn: sqlite3.Connection, system_id: str) -> int:
-    """Group ROMs in `system_id` into logical games by their fuzzy_key.
-
-    For each unique non-empty fuzzy_key, either reuse an existing game (linked
-    via another ROM with the same key) or create a new one using the first
-    ROM's parsed title. All ROMs in the group are then linked to that game.
-
-    Returns the number of distinct games this call linked ROMs into.
-    """
-    rows = conn.execute(
-        """
-        SELECT id, filename, fuzzy_key
-        FROM roms
-        WHERE system_id = ? AND fuzzy_key IS NOT NULL AND fuzzy_key != ''
-        ORDER BY filename
-        """,
-        (system_id,),
-    ).fetchall()
-
-    groups: defaultdict[str, list[tuple[int, str]]] = defaultdict(list)
-    for row in rows:
-        rom_id, filename, fuzzy = row[0], row[1], row[2]
-        groups[fuzzy].append((rom_id, filename))
-
-    games_touched = 0
-    for fuzzy, rom_list in groups.items():
-        # Prefer an already-linked game for this fuzzy_key.
-        existing_id = queries.find_game_id_for_fuzzy_key(conn, system_id, fuzzy)
-        if existing_id is not None:
-            game_id = existing_id
-        else:
-            _rom_id, first_filename = rom_list[0]
-            parsed = parse_filename(first_filename)
-            title = parsed.display_title or parsed.clean_name or first_filename
-            game_id = queries.upsert_game(
-                conn,
-                {
-                    "title": title,
-                    "system_id": system_id,
-                    "region": parsed.region,
-                    "revision": parsed.revision,
-                    "is_hack": parsed.is_hack,
-                    "is_homebrew": parsed.is_homebrew,
-                },
-            )
-        for rom_id, _ in rom_list:
-            queries.link_rom_to_game(conn, rom_id, game_id)
-        games_touched += 1
-
-    conn.commit()
-    return games_touched
-
-
-# ---------------------------------------------------------------------------
 # Main scan entrypoint
 # ---------------------------------------------------------------------------
 
@@ -600,22 +541,24 @@ def scan_library(
     progress_callback: Callable[[int, str], None] | None = None,
     scope_system_id: str | None = None,
 ) -> ScanResult:
-    """Walk `library_path`, enroll ROMs, and group them into logical games.
+    """Walk `library_path`, enroll ROMs with identity fields, and sweep for missing.
+
+    Identity fields (``title``, ``region``, ``revision``, ``is_hack``,
+    ``is_homebrew``) are populated directly on each ``roms`` row at upsert time
+    from the filename parser.  There is no post-walk grouping phase — the
+    ``games`` table was removed in v0.4.0.
 
     `progress_callback(files_so_far, current_filename)` is invoked once per
     enrolled ROM during the walk, AND once per phase transition during the
-    post-walk DB work ("Marking missing entries…", "Linking ROMs to games:
-    <system>…", "Finalising scan history…") so the user sees activity
-    rather than a frozen Cancel button. The callback is optional; in
-    tests we usually leave it None.
+    post-walk DB work ("Marking missing entries…", "Finalising scan history…")
+    so the user sees activity rather than a frozen Cancel button. The callback
+    is optional; in tests we usually leave it None.
 
     ``scope_system_id`` restricts the scan to one platform. When set:
 
     * Files whose resolved system_id doesn't match are skipped during
       the walk (counted as ``files_skipped``, not ``files_with_system``).
     * The missing-row sweep only flags rows belonging to that system.
-    * ``group_into_games`` only runs for that system — other systems'
-      unlinked roms are left alone for a global scan to pick up.
 
     Returns a `ScanResult` summarizing the run. A `scan_history` row is also
     written and finalized before returning. `errors` counts files that were
@@ -720,12 +663,17 @@ def scan_library(
 
             parsed = parse_filename(filename)
             fuzzy = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
+            # Use display_title as the human-readable title stored on the row.
+            # Fall back through clean_name then the raw filename so the column
+            # is never empty.
+            title = parsed.display_title or parsed.clean_name or filename
             logger.debug(
-                "scan enroll: path=%s system=%s fuzzy=%s size=%d",
+                "scan enroll: path=%s system=%s fuzzy=%s size=%d title=%s",
                 file_path,
                 system_id,
                 fuzzy or "<empty>",
                 stat.st_size,
+                title,
             )
 
             rom_id = queries.upsert_rom(
@@ -741,6 +689,14 @@ def scan_library(
                     "fuzzy_key": fuzzy,
                     "match_confidence": "fuzzy" if fuzzy else "unmatched",
                     "library_root": library_root_str,
+                    # Identity fields — written at Quick Scan time from the
+                    # filename parser.  COALESCE in upsert_rom means a rescan
+                    # never clobbers a stronger DAT-derived value.
+                    "title": title,
+                    "region": parsed.region,
+                    "revision": parsed.revision,
+                    "is_hack": parsed.is_hack,
+                    "is_homebrew": parsed.is_homebrew,
                 },
             )
             visited_rom_ids.add(rom_id)
@@ -781,52 +737,6 @@ def scan_library(
             library_root_str,
         )
     conn.commit()
-
-    # Self-heal: a previous scan may have crashed (e.g. the v0.3.0
-    # ``too many SQL variables`` regression in ``mark_missing_under_root``)
-    # after upserting roms but BEFORE reaching this game-grouping step,
-    # leaving the affected system's roms with NULL ``game_id`` forever
-    # — they can't be enriched, can't be exported, and the right-click
-    # menu had nothing to bind to.
-    #
-    # ``systems_seen`` only catches systems whose roms were walked
-    # this scan; that's the happy path. The query below catches the
-    # crash-recovery case: any system with at least one rom that has
-    # a fuzzy_key but no linked game. ``group_into_games`` is
-    # idempotent — it re-uses existing game rows when the fuzzy_key
-    # already maps to one — so the union doesn't cause duplication.
-    # Self-heal is intentionally library-wide on a global scan (catches
-    # damage from older partial-scan crashes regardless of which systems
-    # the user walked this time), but a SCOPED scan should only touch
-    # its own system — we don't want a "rescan Atari 7800" to start
-    # rewriting linkage rows for NES.
-    if scope_system_id is None:
-        unlinked_systems_rows = conn.execute(
-            """
-            SELECT DISTINCT system_id
-            FROM roms
-            WHERE game_id IS NULL
-              AND system_id IS NOT NULL
-              AND fuzzy_key IS NOT NULL
-              AND fuzzy_key != ''
-            """
-        ).fetchall()
-    else:
-        unlinked_systems_rows = []
-    systems_to_group = set(systems_seen)
-    systems_to_group.update(row[0] for row in unlinked_systems_rows)
-    if unlinked_systems_rows:
-        logger.info(
-            "scan: self-heal — grouping %d system(s) with unlinked roms "
-            "from a prior partial scan",
-            len(unlinked_systems_rows),
-        )
-    for system_id in systems_to_group:
-        if progress_callback is not None:
-            progress_callback(
-                files_found, f"Linking ROMs to games: {system_id}…"
-            )
-        group_into_games(conn, system_id)
 
     if progress_callback is not None:
         progress_callback(files_found, "Finalising scan history…")

@@ -25,7 +25,12 @@ from pathlib import Path
 import defusedxml.ElementTree as ET  # noqa: N817
 from defusedxml.common import DefusedXmlException
 
-from romulus.core._no_intro_tokens import REGION_COUNTRY_TOKENS, REVISION_RE
+from romulus.core._no_intro_tokens import (
+    REGION_COUNTRY_TOKENS,
+    REVISION_RE,
+    ParsedTokens,
+    parse_no_intro_tokens,
+)
 from romulus.db import queries
 from romulus.models.system import SYSTEM_REGISTRY
 
@@ -262,6 +267,52 @@ def load_all_dats(
     return inserted
 
 
+def _update_identity_from_dat(
+    conn: sqlite3.Connection,
+    rom_id: int,
+    tokens: ParsedTokens,
+    entry: sqlite3.Row,
+) -> None:
+    """Write DAT-authoritative identity columns onto a matched roms row.
+
+    Called immediately after :func:`~romulus.db.queries.update_rom_match`
+    stamps ``dat_match`` + ``match_confidence``.  Updates ``canonical_name``,
+    ``region``, ``revision``, and ``is_bios`` in place.  ``title`` is also
+    set to the cleaned DAT title (parens stripped) so the game list shows a
+    tidy display name once Heavy Scan completes.
+
+    ``COALESCE`` logic is NOT used here — the DAT hit is authoritative, so
+    we overwrite filename-derived values unconditionally.
+
+    Args:
+        conn: SQLite connection (caller owns the transaction).
+        rom_id: The rom row to update.
+        tokens: Result of ``parse_no_intro_tokens(entry["game_name"])``.
+        entry: The matched ``dat_entries`` row.
+    """
+    canonical_name = str(entry["game_name"])
+    is_bios = bool(entry["is_bios"]) if entry["is_bios"] else False
+    conn.execute(
+        """
+        UPDATE roms
+        SET canonical_name = ?,
+            title          = ?,
+            region         = COALESCE(?, region),
+            revision       = COALESCE(?, revision),
+            is_bios        = CASE WHEN ? THEN 1 ELSE is_bios END
+        WHERE id = ?
+        """,
+        (
+            canonical_name,
+            tokens.title or canonical_name,
+            tokens.region,
+            tokens.revision,
+            is_bios,
+            rom_id,
+        ),
+    )
+
+
 def match_hashes(
     conn: sqlite3.Connection,
     scope_rom_ids: list[int] | None = None,
@@ -329,6 +380,14 @@ def match_hashes(
             entry["dat_file"],
         )
         queries.update_rom_match(conn, rom_id, entry["game_name"], "dat_verified")
+
+        # Write identity fields derived from the canonical DAT name onto the
+        # roms row so the title, region, and revision are DAT-authoritative
+        # after Heavy Scan.  parse_no_intro_tokens parses the canonical game
+        # name (e.g. "Super Mario World (USA) (Rev 1)") the same way the
+        # filename parser would parse a user filename.
+        dat_tokens = parse_no_intro_tokens(str(entry["game_name"]))
+        _update_identity_from_dat(conn, rom_id, dat_tokens, entry)
         matched += 1
 
     conn.commit()

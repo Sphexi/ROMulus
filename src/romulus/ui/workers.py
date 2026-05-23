@@ -171,15 +171,13 @@ class ScanWorker(_DbWorker):
     the others. Standardizing on ``(current, total | None, label)`` is
     tracked as a v0.3.0 follow-up.
 
-    During the post-walk DB phases (missing sweep, game grouping, scan
-    history finalisation) the scanner emits progress events with phase
-    labels — so the user sees "Marking missing entries…" / "Linking
-    ROMs to games: snes…" / "Finalising scan history…" instead of a
-    frozen Cancel button. The dialog detects these labels (any string
-    ending with a literal Unicode ellipsis) and disables the Cancel
-    button itself — a mid-rebuild cancel would leave the DB partial,
-    so the worker also stops honouring ``_check_cancel`` once it sees
-    a post-walk label.
+    During the post-walk DB phases (missing sweep, scan history finalisation)
+    the scanner emits progress events with phase labels — so the user sees
+    "Marking missing entries…" / "Finalising scan history…" instead of a
+    frozen Cancel button. The dialog detects these labels (any string ending
+    with a literal Unicode ellipsis) and disables the Cancel button itself —
+    a mid-rebuild cancel would leave the DB partial, so the worker also stops
+    honouring ``_check_cancel`` once it sees a post-walk label.
 
     ``scope_system_id`` restricts the scan to one platform — see
     :func:`romulus.core.scanner.scan_library`. Wired to the sidebar

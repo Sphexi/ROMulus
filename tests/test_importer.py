@@ -708,6 +708,64 @@ class TestPlanJson:
 
 
 # ---------------------------------------------------------------------------
+# Identity fields threaded through upsert_rom during import
+# ---------------------------------------------------------------------------
+
+
+class TestImportIdentityFields:
+    def test_apply_writes_title_region_to_rom_row(
+        self, seeded_db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """``apply_plan`` must populate title / region / revision on the enrolled row."""
+        library = tmp_path / "library"
+        library.mkdir()
+        staging = tmp_path / "staging"
+        (staging / "snes").mkdir(parents=True)
+        _make_rom_file(
+            staging / "snes" / "Chrono Trigger (USA) (Rev 1).sfc",
+            content=b"ct-bytes",
+        )
+        plan = analyse_import(
+            seeded_db, staging, library, ImportOptions(heavy_identify=False)
+        )
+        assert len(plan.actions) == 1
+        apply_plan(seeded_db, plan)
+
+        row = seeded_db.execute(
+            "SELECT title, region, revision, is_hack FROM roms "
+            "WHERE filename = 'Chrono Trigger (USA) (Rev 1).sfc'"
+        ).fetchone()
+        assert row is not None
+        assert row["title"] == "Chrono Trigger"
+        assert row["region"] == "USA"
+        assert row["revision"] == "Rev 1"
+        assert row["is_hack"] == 0
+
+    def test_apply_sets_is_hack_for_bracket_h_file(
+        self, seeded_db: sqlite3.Connection, tmp_path: Path
+    ) -> None:
+        """A file with ``[h1]`` in its name must land with ``is_hack=1``."""
+        library = tmp_path / "library"
+        library.mkdir()
+        staging = tmp_path / "staging"
+        (staging / "snes").mkdir(parents=True)
+        _make_rom_file(
+            staging / "snes" / "Super Mario World [h1].sfc",
+            content=b"hack-bytes",
+        )
+        plan = analyse_import(
+            seeded_db, staging, library, ImportOptions(heavy_identify=False)
+        )
+        apply_plan(seeded_db, plan)
+
+        row = seeded_db.execute(
+            "SELECT is_hack FROM roms WHERE filename LIKE '%[h1]%'"
+        ).fetchone()
+        assert row is not None
+        assert row["is_hack"] == 1
+
+
+# ---------------------------------------------------------------------------
 # find_rom_by_path / find_rom_by_sha1 queries
 # ---------------------------------------------------------------------------
 

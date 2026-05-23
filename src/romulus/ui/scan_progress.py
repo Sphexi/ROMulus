@@ -25,13 +25,13 @@ class ScanProgressDialog(QProgressDialog):
 
         Detects the post-walk phase by the literal Unicode ellipsis
         suffix on the label (the scanner emits "Marking missing
-        entries…" / "Linking ROMs to games: …" / "Finalising scan
-        history…" — none of which can collide with a real ROM
-        filename). When detected, the Cancel button is removed:
-        cancelling mid-rebuild would leave the DB inconsistent with
-        disk, and the scanner has no safe abort points inside those
-        phases. ``on_finished`` / ``on_failed`` re-create a "Close"
-        button via ``setCancelButtonText`` when the worker is done.
+        entries…" / "Finalising scan history…" — none of which can
+        collide with a real ROM filename). When detected, the Cancel
+        button is removed: cancelling mid-rebuild would leave the DB
+        inconsistent with disk, and the scanner has no safe abort
+        points inside those phases. ``on_finished`` / ``on_failed``
+        re-create a "Close" button via ``setCancelButtonText`` when
+        the worker is done.
         """
         if filename.endswith("…"):
             # QProgressDialog doesn't expose its cancel button

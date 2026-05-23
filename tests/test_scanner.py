@@ -319,13 +319,12 @@ class TestFullScan:
         result = scan_library(seeded_db, tmp_path)
         assert result.files_found == 1
 
-    def test_release_type_keeps_cartridge_and_vc_as_distinct_games(
+    def test_release_type_keeps_cartridge_and_vc_as_distinct_roms(
         self, seeded_db, tmp_path
     ):
-        """Regression for user-reported bug: a cartridge dump and a
-        Virtual Console dump must NOT collapse into the same logical game.
-        The release_type tag is appended to the fuzzy_key so the grouper
-        creates two separate Game records.
+        """Regression: a cartridge dump and a Virtual Console dump must NOT
+        collapse into the same fuzzy_key.  The release_type tag is appended
+        to fuzzy_key so the two ROMs are distinguishable.
         """
         md = tmp_path / "genesis"
         md.mkdir()
@@ -333,22 +332,14 @@ class TestFullScan:
         (md / "Alien Soldier (USA) (Virtual Console).zip").write_bytes(b"PK\x03\x04")
         scan_library(seeded_db, tmp_path)
 
-        games = seeded_db.execute(
-            "SELECT id, title FROM games WHERE system_id = 'megadrive' "
-            "ORDER BY title"
+        rows = seeded_db.execute(
+            "SELECT fuzzy_key FROM roms WHERE system_id = 'megadrive' "
+            "ORDER BY fuzzy_key"
         ).fetchall()
-        assert len(games) == 2, f"expected 2 distinct games, got: {[g['title'] for g in games]}"
-        titles = {g["title"] for g in games}
-        # One game's title contains the release tag; the other doesn't.
-        assert any("Virtual Console" in t for t in titles)
-        assert any("Virtual Console" not in t for t in titles)
-
-        # Each game has exactly one ROM linked.
-        for game in games:
-            count = seeded_db.execute(
-                "SELECT COUNT(*) FROM roms WHERE game_id = ?", (game["id"],)
-            ).fetchone()[0]
-            assert count == 1, f"game {game['title']!r} should have 1 rom, has {count}"
+        assert len(rows) == 2
+        keys = {r["fuzzy_key"] for r in rows}
+        # The VC rom must have a distinct fuzzy_key from the plain one.
+        assert len(keys) == 2, "cartridge and VC roms must have distinct fuzzy_keys"
 
     def test_scan_walks_subdirectories(self, seeded_db, tmp_path):
         _make_tree(tmp_path)
@@ -379,18 +370,6 @@ class TestFullScan:
         assert row["files_found"] == 6
         assert row["finished_at"] is not None
 
-    def test_scan_groups_addams_family_into_one_game(self, seeded_db, tmp_path):
-        _make_tree(tmp_path)
-        scan_library(seeded_db, tmp_path)
-        # Both "Addams Family, The (USA)" and "The Addams Family (Europe)" should
-        # collapse to the SAME logical game by fuzzy_key.
-        rows = seeded_db.execute(
-            "SELECT DISTINCT game_id FROM roms WHERE filename LIKE '%Addams Family%'"
-        ).fetchall()
-        game_ids = {row[0] for row in rows}
-        assert len(game_ids) == 1, "Both Addams Family ROMs must share one game"
-        assert None not in game_ids
-
     def test_scan_progress_callback_invoked(self, seeded_db, tmp_path):
         _make_tree(tmp_path)
         seen: list[tuple[int, str]] = []
@@ -399,12 +378,11 @@ class TestFullScan:
             tmp_path,
             progress_callback=lambda n, name: seen.append((n, name)),
         )
-        # The scanner now also emits phase-transition labels during
-        # the post-walk DB rebuild ("Marking missing entries…",
-        # "Linking ROMs to games: …", "Finalising scan history…") so
-        # the UI dialog can show activity instead of a frozen Cancel
-        # button. Filter those out — they all end with the literal
-        # Unicode ellipsis — and check only the per-file ticks.
+        # The scanner emits phase-transition labels during the post-walk DB
+        # phases ("Marking missing entries…", "Finalising scan history…") so
+        # the UI dialog can show activity instead of a frozen Cancel button.
+        # Filter those out — they all end with the literal Unicode ellipsis —
+        # and check only the per-file ticks.
         file_events = [
             (n, name) for n, name in seen if not name.endswith("…")
         ]
@@ -432,40 +410,6 @@ class TestFullScan:
             "SELECT system_id FROM roms WHERE filename = 'Game.sfc'"
         ).fetchone()
         assert row[0] == "snes"
-
-
-# ---------------------------------------------------------------------------
-# Game grouping
-# ---------------------------------------------------------------------------
-
-
-class TestGameGrouping:
-    def test_two_regions_same_game(self, seeded_db, tmp_path):
-        snes = tmp_path / "snes"
-        snes.mkdir()
-        (snes / "Super Metroid (USA).sfc").write_bytes(b"\x00" * 1024)
-        (snes / "Super Metroid (Japan).sfc").write_bytes(b"\x00" * 1024)
-        scan_library(seeded_db, tmp_path)
-        # One game, two ROMs.
-        games = seeded_db.execute(
-            "SELECT COUNT(*) FROM games WHERE system_id = 'snes'"
-        ).fetchone()[0]
-        assert games == 1
-        roms = seeded_db.execute(
-            "SELECT COUNT(*) FROM roms WHERE system_id = 'snes'"
-        ).fetchone()[0]
-        assert roms == 2
-
-    def test_distinct_games_get_distinct_records(self, seeded_db, tmp_path):
-        snes = tmp_path / "snes"
-        snes.mkdir()
-        (snes / "Super Metroid (USA).sfc").write_bytes(b"\x00" * 1024)
-        (snes / "Super Mario World (USA).sfc").write_bytes(b"\x00" * 1024)
-        scan_library(seeded_db, tmp_path)
-        games = seeded_db.execute(
-            "SELECT COUNT(*) FROM games WHERE system_id = 'snes'"
-        ).fetchone()[0]
-        assert games == 2
 
 
 # ---------------------------------------------------------------------------
@@ -563,3 +507,109 @@ class TestRescanPreservesMatchConfidence:
             "SELECT match_confidence FROM roms WHERE id = ?", (rom_id,)
         ).fetchone()
         assert row["match_confidence"] == "dat_verified"
+
+
+# ---------------------------------------------------------------------------
+# Identity fields written directly to roms rows (v0.4.0 — no games table)
+# ---------------------------------------------------------------------------
+
+
+class TestIdentityFieldsOnRoms:
+    """Quick Scan must populate title / region / revision / is_hack on roms rows."""
+
+    def test_title_populated_from_filename(self, seeded_db, tmp_path):
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Super Mario World (USA).sfc").write_bytes(b"\x00" * 1024)
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT title FROM roms WHERE filename = 'Super Mario World (USA).sfc'"
+        ).fetchone()
+        assert row is not None
+        assert row["title"] == "Super Mario World"
+
+    def test_region_populated_from_filename(self, seeded_db, tmp_path):
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Chrono Trigger (USA).sfc").write_bytes(b"\x00" * 1024)
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT region FROM roms WHERE filename = 'Chrono Trigger (USA).sfc'"
+        ).fetchone()
+        assert row is not None
+        assert row["region"] == "USA"
+
+    def test_revision_populated_from_filename(self, seeded_db, tmp_path):
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Street Fighter II (USA) (Rev 1).sfc").write_bytes(b"\x00" * 1024)
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT revision FROM roms WHERE filename LIKE 'Street Fighter%'"
+        ).fetchone()
+        assert row is not None
+        assert row["revision"] == "Rev 1"
+
+    def test_is_hack_set_for_bracket_h_tag(self, seeded_db, tmp_path):
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Super Mario World [h1].sfc").write_bytes(b"\x00" * 1024)
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT is_hack FROM roms WHERE filename LIKE '%[h1]%'"
+        ).fetchone()
+        assert row is not None
+        assert row["is_hack"] == 1
+
+    def test_no_region_when_not_present(self, seeded_db, tmp_path):
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Mystery Game.sfc").write_bytes(b"\x00" * 1024)
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT title, region FROM roms WHERE filename = 'Mystery Game.sfc'"
+        ).fetchone()
+        assert row is not None
+        assert row["title"] == "Mystery Game"
+        assert row["region"] is None
+
+    def test_two_regions_same_title_have_distinct_regions(self, seeded_db, tmp_path):
+        """USA and Japan regional variants must each keep their own region value."""
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Super Metroid (USA).sfc").write_bytes(b"\x00" * 1024)
+        (snes / "Super Metroid (Japan).sfc").write_bytes(b"\x00" * 1024)
+        scan_library(seeded_db, tmp_path)
+        rows = seeded_db.execute(
+            "SELECT region FROM roms WHERE filename LIKE 'Super Metroid%' "
+            "ORDER BY filename"
+        ).fetchall()
+        assert len(rows) == 2
+        regions = {r["region"] for r in rows}
+        assert "USA" in regions
+        assert "Japan" in regions
+
+    def test_rescan_does_not_overwrite_dat_derived_title(self, seeded_db, tmp_path):
+        """A Quick Scan rescan must not clobber a DAT-derived canonical_name."""
+        snes = tmp_path / "snes"
+        snes.mkdir()
+        (snes / "Game.sfc").write_bytes(b"\x00" * 1024)
+
+        scan_library(seeded_db, tmp_path)
+        rom_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Game.sfc'"
+        ).fetchone()[0]
+
+        # Simulate Heavy Scan stamping a canonical_name.
+        seeded_db.execute(
+            "UPDATE roms SET canonical_name = 'Canonical Title (USA)' WHERE id = ?",
+            (rom_id,),
+        )
+        seeded_db.commit()
+
+        # Rescan — canonical_name must survive via COALESCE.
+        scan_library(seeded_db, tmp_path)
+        row = seeded_db.execute(
+            "SELECT canonical_name FROM roms WHERE id = ?", (rom_id,)
+        ).fetchone()
+        assert row["canonical_name"] == "Canonical Title (USA)"
