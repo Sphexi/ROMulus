@@ -105,13 +105,11 @@ class LocalCoverMatch:
 
     Attributes:
         rom_id: The database row ID of the matched ROM.
-        game_id: The database row ID of the game this ROM belongs to.
         image_path: Absolute path to the discovered image file.
         cover_type: Inferred cover type (e.g. ``"Named_Boxarts"``).
     """
 
     rom_id: int
-    game_id: int
     image_path: str
     cover_type: str
 
@@ -264,12 +262,13 @@ def _build_image_bucket(
 
 def find_local_covers_for_rom(
     rom_id: int,
-    game_id: int,
     rom_path: str,
     fuzzy_key: str,
     clean_name: str,
     system_dir: Path,
     image_bucket: dict[str, list[tuple[str, str]]] | None = None,
+    *,
+    game_id: int | None = None,  # retained for call-site compat; unused
 ) -> list[LocalCoverMatch]:
     """Find local image files whose name matches ``rom_path``'s title.
 
@@ -284,12 +283,12 @@ def find_local_covers_for_rom(
 
     Args:
         rom_id: DB row ID of the ROM.
-        game_id: DB row ID of the owning game.
         rom_path: Absolute path string of the ROM file.
         fuzzy_key: Pre-computed fuzzy key from ``roms.fuzzy_key``.
         clean_name: Tag-stripped title from ``parse_filename().clean_name``.
         system_dir: Root directory of the system containing this ROM.
         image_bucket: Pre-built image bucket (optional).
+        game_id: Ignored (retained for call-site backward compatibility only).
 
     Returns:
         List of :class:`LocalCoverMatch` instances (may be empty).
@@ -359,7 +358,6 @@ def find_local_covers_for_rom(
             matches.append(
                 LocalCoverMatch(
                     rom_id=rom_id,
-                    game_id=game_id,
                     image_path=img_path,
                     cover_type=cover_type,
                 )
@@ -376,47 +374,50 @@ def find_local_covers_for_rom(
 # ---------------------------------------------------------------------------
 
 
-def _get_roms_with_games(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return all ROM rows that are linked to a game.
+def _get_roms_for_cover_scan(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return ROM rows eligible for local cover discovery.
 
-    Columns: rom_id, rom_path, system_id, game_id, fuzzy_key, clean_name.
-    ROMs without a game_id are excluded — covers are attached to games, not ROMs.
+    A ROM is eligible when it has a fuzzy_key (identity signal for matching)
+    AND does not already have a ``Named_Boxarts`` cover row (avoids rescanning
+    ROMs that were already processed).  ROMs with other cover types but no
+    boxart are still included — the discovery loop inserts missing types.
+
+    Columns: ``rom_id``, ``rom_path``, ``system_id``, ``fuzzy_key``,
+    ``clean_name``.
     """
     return conn.execute(
         """
         SELECT r.id       AS rom_id,
                r.path     AS rom_path,
                r.system_id,
-               r.game_id,
                r.fuzzy_key,
                COALESCE(r.dat_match, '') AS clean_name
         FROM roms r
-        WHERE r.game_id IS NOT NULL
-          AND r.fuzzy_key IS NOT NULL
+        LEFT JOIN covers c
+          ON c.rom_id = r.id AND c.cover_type = 'Named_Boxarts'
+        WHERE r.fuzzy_key IS NOT NULL
           AND r.fuzzy_key != ''
+          AND c.id IS NULL
         ORDER BY r.system_id, r.id
         """
     ).fetchall()
 
 
 def _has_cover_for_path(
-    conn: sqlite3.Connection, game_id: int, local_path: str
+    conn: sqlite3.Connection, rom_id: int, local_path: str
 ) -> bool:
-    """Return True if a cover row with this exact local_path already exists.
+    """Return True if a cover row with this exact local_path already exists for the ROM.
 
     Used for idempotent re-runs — avoids inserting duplicate rows when the
     discovery is run more than once on the same library.
 
     Args:
         conn: SQLite connection.
-        game_id: Game to check.
+        rom_id: ROM to check.
         local_path: Absolute path string of the image.
     """
-    row = conn.execute(
-        "SELECT 1 FROM covers WHERE game_id = ? AND local_path = ? LIMIT 1",
-        (game_id, local_path),
-    ).fetchone()
-    return row is not None
+    from romulus.db.queries import has_cover_for_path as _q_has_cover
+    return _q_has_cover(conn, rom_id, local_path)
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +453,9 @@ def discover_local_covers(
     Returns:
         :class:`DiscoveryResult` summary.
     """
-    from romulus.db.queries import insert_cover
+    from romulus.db.queries import _ensure_preferred, insert_cover
 
-    rows = _get_roms_with_games(conn)
+    rows = _get_roms_for_cover_scan(conn)
     if scope_rom_ids is not None:
         allowed = frozenset(scope_rom_ids)
         rows = [r for r in rows if int(r["rom_id"]) in allowed]
@@ -495,7 +496,6 @@ def discover_local_covers(
         for row in dir_rows:
             roms_scanned += 1
             rom_path = row["rom_path"]
-            game_id = int(row["game_id"])
             rom_id = int(row["rom_id"])
             fuzzy_key = row["fuzzy_key"] or ""
             clean_name = row["clean_name"] or ""
@@ -506,7 +506,6 @@ def discover_local_covers(
             try:
                 matches = find_local_covers_for_rom(
                     rom_id=rom_id,
-                    game_id=game_id,
                     rom_path=rom_path,
                     fuzzy_key=fuzzy_key,
                     clean_name=clean_name,
@@ -523,27 +522,25 @@ def discover_local_covers(
                 continue
 
             for match in matches:
-                if _has_cover_for_path(conn, match.game_id, match.image_path):
+                if _has_cover_for_path(conn, match.rom_id, match.image_path):
                     covers_skipped += 1
                     continue
                 try:
                     insert_cover(
                         conn,
-                        match.game_id,
+                        match.rom_id,
                         match.cover_type,
                         source_url=None,
                         local_path=match.image_path,
                     )
-                    # Promote the first cover per (game_id, cover_type) to
+                    # Promote the first cover per (rom_id, cover_type) to
                     # preferred without overriding an existing user choice.
-                    from romulus.db.queries import _ensure_preferred
-
-                    _ensure_preferred(conn, match.game_id, match.cover_type)
+                    _ensure_preferred(conn, match.rom_id, match.cover_type)
                     covers_found += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.debug(
-                        "local_cover_finder: insert_cover failed game_id=%d err=%s",
-                        match.game_id,
+                        "local_cover_finder: insert_cover failed rom_id=%d err=%s",
+                        match.rom_id,
                         exc,
                     )
                     errors += 1

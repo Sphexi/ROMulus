@@ -234,10 +234,10 @@ class ScanWorker(_DbWorker):
 class EnrichWorker(_DbWorker):
     """Run `enrich_library` against the configured DB on a worker thread.
 
-    Optional scope kwargs narrow processing to a specific set of games:
-        game_ids: Limit to these game ids.
-        system_id: Limit to games in this system.
-        collection_id: Limit to games in this collection.
+    Optional scope kwargs narrow processing to a specific set of ROMs:
+        rom_ids: Limit to these ROM ids.
+        system_id: Limit to ROMs in this system.
+        collection_id: Limit to ROMs in this collection.
     """
 
     progress = Signal(int, int, str)
@@ -251,7 +251,7 @@ class EnrichWorker(_DbWorker):
         cache_dir: Path | str | None = None,
         launchbox_xml_path: Path | str | None = None,
         *,
-        game_ids: list[int] | None = None,
+        rom_ids: list[int] | None = None,
         system_id: str | None = None,
         collection_id: int | None = None,
         include_fuzzy: bool = False,
@@ -261,7 +261,7 @@ class EnrichWorker(_DbWorker):
         super().__init__(db_path)
         self._cache_dir = cache_dir
         self._launchbox_xml_path = launchbox_xml_path
-        self._game_ids = game_ids
+        self._rom_ids = rom_ids
         self._system_id = system_id
         self._collection_id = collection_id
         self._include_fuzzy = include_fuzzy
@@ -278,7 +278,7 @@ class EnrichWorker(_DbWorker):
             cache_dir=self._cache_dir,
             progress_callback=_progress,
             launchbox_xml_path=self._launchbox_xml_path,
-            game_ids=self._game_ids,
+            rom_ids=self._rom_ids,
             system_id=self._system_id,
             collection_id=self._collection_id,
             include_fuzzy=self._include_fuzzy,
@@ -510,7 +510,8 @@ class CoverFinderWorker(_DbWorker):
             errors = 0
 
         # Phase 2: online libretro-thumbnail fetch for the same scope.
-        # Per-game, not per-rom — the helper resolves rom_ids -> game_ids.
+        # Operates per-rom — the sibling-copy gate inside the helper
+        # avoids redundant network calls for byte-identical duplicates.
         online_covers = 0
         if self._include_online:
             online_covers = fetch_online_covers_for_scope(

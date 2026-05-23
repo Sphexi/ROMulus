@@ -1,8 +1,22 @@
 """Metadata clients — libretro-thumbnails, Hasheous, LaunchBox, ScreenScraper.
 
-Public entry point: `enrich_library` walks DAT-verified games that have no
-metadata yet and tries each source in priority order (Hasheous -> LaunchBox
--> ScreenScraper for metadata; libretro-thumbnails for covers).
+Public entry points:
+
+* :func:`enrich_library` — walks ROM rows that have no metadata yet and
+  tries each source in priority order (local-first, network-last).
+* :func:`fetch_online_covers_for_scope` — fetches libretro thumbnails for
+  every ROM in a given scope.
+
+Both functions are rom-keyed: they operate on ``roms.id`` directly.  There is
+no longer a ``games`` table — each ROM owns its own metadata and cover rows.
+
+Sibling-copy optimisation: before any network source is attempted,
+:func:`_fetch_metadata_for_rom` and :func:`fetch_online_covers_for_scope`
+check whether any *other* ROM with the same identity (SHA-1 → canonical_name
+→ fuzzy_key) already has a metadata/cover row.  If one exists the row is
+copied verbatim — same data, no API call.  This keeps TheGamesDB quota
+consumption proportional to the number of *distinct* titles rather than the
+number of file copies.
 """
 
 from __future__ import annotations
@@ -17,7 +31,8 @@ from typing import TypedDict
 
 import httpx
 
-from romulus.db import get_config, queries, set_config
+from romulus.db import get_config, set_config
+from romulus.db import queries as q
 from romulus.db.config import DEFAULT_COVER_CACHE_DIR
 from romulus.metadata import (
     gamedb,
@@ -125,48 +140,42 @@ def _resolve_cache_dir(conn: sqlite3.Connection, cache_dir: Path | str | None) -
     return DEFAULT_COVER_CACHE_DIR
 
 
-def _get_sha1_for_game(conn: sqlite3.Connection, game_id: int) -> str | None:
-    """Find one SHA-1 belonging to any DAT-matched ROM of this game."""
+def _get_sha1_for_rom(conn: sqlite3.Connection, rom_id: int) -> str | None:
+    """Return the SHA-1 for a ROM from the hashes table, or None.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to look up.
+    """
     row = conn.execute(
-        """
-        SELECT h.sha1
-        FROM roms r
-        JOIN hashes h ON h.rom_id = r.id
-        WHERE r.game_id = ?
-          AND r.match_confidence = 'dat_verified'
-          AND h.sha1 IS NOT NULL
-        LIMIT 1
-        """,
-        (game_id,),
+        "SELECT sha1 FROM hashes WHERE rom_id = ? AND sha1 IS NOT NULL LIMIT 1",
+        (rom_id,),
     ).fetchone()
     return row[0] if row else None
 
 
-def _get_crc32_for_game(conn: sqlite3.Connection, game_id: int) -> str | None:
-    """Find one CRC32 belonging to any hashed ROM of this game.
+def _get_crc32_for_rom(conn: sqlite3.Connection, rom_id: int) -> str | None:
+    """Return the CRC32 for a ROM from the hashes table, or None.
 
-    Unlike :func:`_get_sha1_for_game` this does *not* require
+    Unlike :func:`_get_sha1_for_rom` this does *not* require
     ``dat_verified`` — GameDB's CRC index is independent of our DAT
     pipeline, so it's worth trying even on fuzzy-matched games when the
     caller has opted in to include_fuzzy.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to look up.
     """
     row = conn.execute(
-        """
-        SELECT h.crc32
-        FROM roms r
-        JOIN hashes h ON h.rom_id = r.id
-        WHERE r.game_id = ?
-          AND h.crc32 IS NOT NULL
-        LIMIT 1
-        """,
-        (game_id,),
+        "SELECT crc32 FROM hashes WHERE rom_id = ? AND crc32 IS NOT NULL LIMIT 1",
+        (rom_id,),
     ).fetchone()
     return row[0] if row else None
 
 
 def _try_libretro_metadat(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     system_id: str | None,
     crc32: str | None,
 ) -> bool:
@@ -179,6 +188,12 @@ def _try_libretro_metadat(
     populates, we commit and stop. Identifier-only hits never happen
     here because the lookup is *per-dimension*: if no dimension carried
     the CRC, the merged dict is empty and we fall through.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to attach metadata to.
+        system_id: System identifier for index selection.
+        crc32: CRC32 hash string (may be None).
     """
     if not system_id or not crc32:
         return False
@@ -191,7 +206,7 @@ def _try_libretro_metadat(
     payload = libretro_metadat.entry_to_metadata(entry)
     # Defensive: empty payload (e.g. an only-franchise hit, which we
     # don't surface in the UI yet) should fall through to the next
-    # provider rather than locking the game out of further enrichment.
+    # provider rather than locking the ROM out of further enrichment.
     if not any(
         payload.get(k)
         for k in (
@@ -200,13 +215,13 @@ def _try_libretro_metadat(
         )
     ):
         return False
-    queries.upsert_metadata(conn, game_id, payload, source="libretro_metadat")
+    q.upsert_metadata(conn, rom_id, payload, source="libretro_metadat")
     return True
 
 
 def _try_gamedb(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     title: str,
     system_id: str | None,
     crc32: str | None,
@@ -216,7 +231,15 @@ def _try_gamedb(
 
     Match order: CRC32 (precise, only if Heavy Scan has run for this rom)
     -> canonical_name (closest to GameDB's release_name format) ->
-    game.title (last-ditch fuzzy fallback).
+    title (last-ditch fuzzy fallback).
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to attach metadata to.
+        title: Display title to use as a fuzzy fallback.
+        system_id: System identifier for index selection.
+        crc32: CRC32 hash string (may be None).
+        canonical_name: DAT-derived canonical name (may be None).
     """
     if not system_id:
         return False
@@ -233,17 +256,17 @@ def _try_gamedb(
     payload = gamedb.entry_to_metadata(entry)
     # GameDB carries identifier-only fields for most consoles; only
     # commit metadata when at least one user-facing field is populated.
-    # Otherwise we'd insert an effectively-empty row that locks the game
+    # Otherwise we'd insert an effectively-empty row that locks the ROM
     # out of subsequent richer providers under the default filters.
     if not any(payload.get(k) for k in ("publisher", "release_date", "release_year")):
         return False
-    queries.upsert_metadata(conn, game_id, payload, source="gamedb")
+    q.upsert_metadata(conn, rom_id, payload, source="gamedb")
     return True
 
 
-def _fetch_metadata_for_game(
+def _fetch_metadata_for_rom(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     title: str,
     system_id: str | None,
     sha1: str | None,
@@ -251,14 +274,20 @@ def _fetch_metadata_for_game(
     canonical_name: str | None,
     launchbox_index: LaunchBoxIndex | None,
     credentials: dict[str, str] | None,
-    http_client: httpx.Client | None,
+    http_client_inst: httpx.Client | None,
     tgdb_state: _TgdbRunState,
     *,
     include_online: bool,
 ) -> bool:
     """Try each metadata provider in priority order. Returns True on success.
 
-    Order is deliberate:
+    The sibling-copy gate runs FIRST — before any source is attempted.  If
+    another ROM with the same identity (SHA-1 → canonical_name → fuzzy_key)
+    already has a metadata row, we copy it verbatim and return immediately.
+    This prevents TheGamesDB quota from being burnt linearly by duplicate ROM
+    copies.
+
+    Source order when no sibling is found:
 
     0. libretro-database (metadat) — bundled clrmamepro DATs, offline.
        CRC32-keyed; carries genre, developer, publisher, release year,
@@ -277,46 +306,74 @@ def _fetch_metadata_for_game(
        *Online* — skipped when ``include_online`` is False.
 
     When ``include_online`` is False every network-touching block is
-    bypassed; only libretro / GameDB / LaunchBox run. Games with no
+    bypassed; only libretro / GameDB / LaunchBox run. ROMs with no
     offline match return False (the caller reports them as
     processed-but-not-enriched in the run stats).
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to enrich.
+        title: Display title (fuzzy fallback for name-based sources).
+        system_id: Platform identifier.
+        sha1: SHA-1 hash (may be None — Heavy Scan populates this).
+        crc32: CRC32 hash (may be None).
+        canonical_name: DAT-derived canonical name (may be None).
+        launchbox_index: Pre-loaded LaunchBox index or None.
+        credentials: ScreenScraper username/password dict.
+        http_client_inst: Shared httpx.Client for this run (may be None).
+        tgdb_state: Per-run TheGamesDB quota tracker.
+        include_online: When False, skip all network sources.
     """
-    if _try_libretro_metadat(conn, game_id, system_id, crc32):
+    # -----------------------------------------------------------------------
+    # Sibling-copy gate — MUST run before any source attempt.
+    # If another ROM with the same identity already has metadata, copy it.
+    # -----------------------------------------------------------------------
+    sibling = q.find_sibling_metadata(conn, rom_id)
+    if sibling is not None:
+        q.copy_metadata(conn, source_rom_id=sibling["rom_id"], dest_rom_id=rom_id)
+        logger.debug(
+            "enrich: sibling-copied metadata rom_id=%d from=%d",
+            rom_id,
+            sibling["rom_id"],
+        )
         return True
 
-    if _try_gamedb(conn, game_id, title, system_id, crc32, canonical_name):
+    if _try_libretro_metadat(conn, rom_id, system_id, crc32):
+        return True
+
+    if _try_gamedb(conn, rom_id, title, system_id, crc32, canonical_name):
         return True
 
     if include_online and sha1:
-        result = hasheous.lookup_by_hash(sha1, client=http_client)
+        result = hasheous.lookup_by_hash(sha1, client=http_client_inst)
         if result:
-            queries.upsert_metadata(conn, game_id, result, source="hasheous")
+            q.upsert_metadata(conn, rom_id, result, source="hasheous")
             return True
 
     if launchbox_index is not None:
         entry = launchbox.match_game(title, system_id, launchbox_index)
         if entry is not None:
-            queries.upsert_metadata(
+            q.upsert_metadata(
                 conn,
-                game_id,
+                rom_id,
                 launchbox.entry_to_metadata(entry),
                 source="launchbox",
             )
             return True
 
     if include_online and sha1 and screenscraper.has_credentials(credentials):
-        result = screenscraper.lookup_game(sha1, system_id, credentials, client=http_client)
+        result = screenscraper.lookup_game(sha1, system_id, credentials, client=http_client_inst)
         if result:
-            queries.upsert_metadata(conn, game_id, result, source="screenscraper")
+            q.upsert_metadata(conn, rom_id, result, source="screenscraper")
             return True
 
     if include_online and tgdb_state.is_active():
         payload, remaining = thegamesdb.lookup_game(
-            title, system_id, tgdb_state.apikey, client=http_client
+            title, system_id, tgdb_state.apikey, client=http_client_inst
         )
         tgdb_state.update_allowance(remaining)
         if payload:
-            queries.upsert_metadata(conn, game_id, payload, source="thegamesdb")
+            q.upsert_metadata(conn, rom_id, payload, source="thegamesdb")
             return True
 
     return False
@@ -377,25 +434,52 @@ class _TgdbRunState:
         )
 
 
-def _fetch_covers_for_game(
+def _fetch_covers_for_rom(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     system_id: str | None,
     canonical_name: str | None,
     cache_dir: Path,
-    http_client: httpx.Client | None,
+    http_client_inst: httpx.Client | None,
 ) -> int:
-    """Try to fetch all three cover types from libretro-thumbnails.
+    """Try to fetch all three cover types from libretro-thumbnails for one ROM.
 
-    Returns the count of cover rows written (covers already on file are skipped
-    without a refetch).
+    A sibling-cover gate runs before any network request: if another ROM
+    with the same identity already has cover rows, those rows are copied to
+    this ROM (reusing the same on-disk files) and the network is not touched.
+
+    Returns the count of cover rows written (covers already on file, or
+    sibling-copied, are not counted here — they return 0 to the caller so
+    the running total only reflects *new* disk operations).
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to attach covers to.
+        system_id: Platform identifier for the libretro folder lookup.
+        canonical_name: Game title used to build the libretro thumbnail URL.
+        cache_dir: Root directory for cached cover images.
+        http_client_inst: Shared httpx.Client for this run (may be None).
     """
+    # Sibling-cover gate: reuse an existing ROM's cover rows when possible.
+    sibling_covers = q.find_sibling_covers(conn, rom_id)
+    if sibling_covers:
+        # All sibling cover rows belong to a single source ROM; use its id.
+        source_id = int(sibling_covers[0]["rom_id"])
+        q.copy_covers(conn, source_rom_id=source_id, dest_rom_id=rom_id)
+        logger.debug(
+            "covers: sibling-copied rom_id=%d from=%d types=%d",
+            rom_id,
+            source_id,
+            len(sibling_covers),
+        )
+        return 0  # no new disk I/O
+
     libretro_name = _system_libretro_name(system_id)
     if not libretro_name or not canonical_name or not system_id:
         return 0
     count = 0
     for cover_type in libretro.COVER_TYPES:
-        if queries.has_cover(conn, game_id, cover_type):
+        if q.has_cover(conn, rom_id, cover_type):
             continue
         result = libretro.fetch_cover(
             libretro_name,
@@ -403,14 +487,14 @@ def _fetch_covers_for_game(
             canonical_name,
             cover_type,
             cache_dir,
-            client=http_client,
+            client=http_client_inst,
         )
         if result is None:
             continue
         local_path, source_url = result
-        queries.insert_cover(
+        q.insert_cover(
             conn,
-            game_id,
+            rom_id,
             cover_type,
             source_url=source_url,
             local_path=str(local_path),
@@ -424,8 +508,8 @@ def enrich_library(
     cache_dir: Path | str | None = None,
     progress_callback: ProgressCallback | None = None,
     launchbox_xml_path: Path | str | None = None,
-    http_client: httpx.Client | None = None,
-    game_ids: list[int] | None = None,
+    http_client: httpx.Client | None = None,  # noqa: A002 — intentional shadow for caller API compat
+    rom_ids: list[int] | None = None,
     system_id: str | None = None,
     collection_id: int | None = None,
     *,
@@ -433,30 +517,42 @@ def enrich_library(
     include_already_enriched: bool = False,
     include_online: bool = True,
 ) -> EnrichmentStats:
-    """Walk DAT-verified games that have no metadata and try each source.
+    """Walk ROM rows that have no metadata and try each source in priority order.
 
     Returns a small stats dict: {games_processed, metadata_added, covers_added}.
-    Commits after each game so a long enrichment run survives interruption.
+    Commits after each ROM so a long enrichment run survives interruption.
 
-    Optional scope filters (Approach 1 — single code path):
-        game_ids: Limit enrichment to these specific game ids.
-        system_id: Limit enrichment to games belonging to this system.
-        collection_id: Limit enrichment to games in this collection.
-    When multiple are supplied game_ids wins, then system_id, then collection_id.
+    Optional scope filters (narrowest wins):
+        rom_ids: Limit enrichment to these specific ROM ids.
+        system_id: Limit enrichment to ROMs in this system.
+        collection_id: Limit enrichment to ROMs in this collection.
     When none are supplied the full library is enriched.
 
-    Filter-loosening flags (forwarded to ``get_games_needing_enrichment``):
-        include_fuzzy: also enrich fuzzy/header matched games.
-        include_already_enriched: re-enrich games that already have a
+    Filter-loosening flags (forwarded to ``get_roms_needing_enrichment``):
+        include_fuzzy: also enrich fuzzy/header matched ROMs.
+        include_already_enriched: re-enrich ROMs that already have a
             metadata row (e.g. to top up after adding a new provider).
 
     Network gate:
         include_online: when False, only the bundled offline sources
             (libretro-database, GameDB, LaunchBox XML) run. Hasheous,
-            ScreenScraper, and TheGamesDB are skipped — games with no
+            ScreenScraper, and TheGamesDB are skipped — ROMs with no
             offline match get reported as processed-but-not-enriched.
             Cover-art lookups (libretro thumbnails) ARE still online;
             ``include_online`` only governs metadata providers.
+
+    Args:
+        conn: SQLite connection.
+        cache_dir: Override for the cover-image cache directory.
+        progress_callback: ``(current, total, title)`` callback per ROM.
+        launchbox_xml_path: Path to a LaunchBox Metadata.xml file.
+        http_client: Shared httpx.Client (passed through to clients).
+        rom_ids: Scope to specific ROM ids.
+        system_id: Scope to a single system.
+        collection_id: Scope to a collection.
+        include_fuzzy: Include fuzzy/header-matched ROMs.
+        include_already_enriched: Include ROMs that already have metadata.
+        include_online: Enable online metadata sources.
     """
     cache_dir = _resolve_cache_dir(conn, cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -475,42 +571,42 @@ def enrich_library(
         launchbox_index = launchbox.build_index(entries)
         logger.info("loaded launchbox entries: count=%d", len(entries))
 
-    rows = queries.get_games_needing_enrichment(
+    rows = q.get_roms_needing_enrichment(
         conn,
         include_fuzzy=include_fuzzy,
         include_already_enriched=include_already_enriched,
     )
 
     # Apply scope filter — narrow the candidate list to the requested scope.
-    if game_ids is not None:
-        allowed = frozenset(game_ids)
+    if rom_ids is not None:
+        allowed = frozenset(rom_ids)
         rows = [r for r in rows if r["id"] in allowed]
     elif system_id is not None:
         rows = [r for r in rows if r["system_id"] == system_id]
     elif collection_id is not None:
-        coll_game_ids = frozenset(queries.get_collection_games(conn, collection_id))
-        rows = [r for r in rows if r["id"] in coll_game_ids]
+        coll_rom_ids = frozenset(q.get_collection_roms(conn, collection_id))
+        rows = [r for r in rows if r["id"] in coll_rom_ids]
 
     total = len(rows)
     metadata_added = 0
 
     for idx, row in enumerate(rows, start=1):
-        game_id = row["id"]
+        rom_id = row["id"]
         title = row["title"]
-        system_id = row["system_id"]
+        cur_system_id = row["system_id"]
         canonical_name = row["canonical_name"] or row["dat_match"] or title
 
         if progress_callback is not None:
             progress_callback(idx, total, title)
 
-        sha1 = _get_sha1_for_game(conn, game_id)
-        crc32 = _get_crc32_for_game(conn, game_id)
+        sha1 = _get_sha1_for_rom(conn, rom_id)
+        crc32 = _get_crc32_for_rom(conn, rom_id)
 
-        if _fetch_metadata_for_game(
+        if _fetch_metadata_for_rom(
             conn,
-            game_id,
+            rom_id,
             title,
-            system_id,
+            cur_system_id,
             sha1,
             crc32,
             canonical_name,
@@ -534,8 +630,8 @@ def enrich_library(
         # ``covers_added`` is kept in the stats dict for backwards-
         # compatible signal signatures (EnrichWorker.finished_ok still
         # emits the same three ints) but cover fetching is now driven
-        # by ``find_covers_for_scope`` — the enrich path no longer
-        # touches the cover cache.
+        # by ``fetch_online_covers_for_scope`` — the enrich path no
+        # longer touches the cover cache.
         "covers_added": 0,
     }
 
@@ -545,71 +641,79 @@ def fetch_online_covers_for_scope(
     scope_rom_ids: list[int] | None = None,
     cache_dir: Path | str | None = None,
     progress_callback: ProgressCallback | None = None,
-    http_client: httpx.Client | None = None,
+    http_client: httpx.Client | None = None,  # noqa: A002 — intentional shadow
 ) -> int:
-    """Fetch libretro thumbnails for every game in *scope_rom_ids*.
+    """Fetch libretro thumbnails for every ROM in ``scope_rom_ids``.
 
-    Walks DISTINCT game_ids reachable from the supplied rom-id scope
-    (or every game with metadata if ``scope_rom_ids`` is None) and
-    issues one libretro lookup per missing cover type per game. Returns
-    the count of new cover rows inserted.
+    Walks every ROM in the scope (or every ROM with a fuzzy_key when
+    ``scope_rom_ids`` is None) and issues libretro-thumbnail lookups for
+    missing cover types.  A sibling-cover gate inside
+    :func:`_fetch_covers_for_rom` short-circuits network calls for ROMs
+    whose identity matches another ROM that already has covers.
+
+    Returns the count of new cover rows inserted (sibling-copied rows are
+    not counted — they required no network I/O).
 
     Pairs with :func:`romulus.core.local_cover_finder.discover_local_covers`
-    on the offline side — the UI's "Find Covers" workflow runs one,
-    the other, or both based on the user's dialog choices.
+    on the offline side — the UI's "Find Covers" workflow runs one, the
+    other, or both based on the user's dialog choices.
+
+    Args:
+        conn: SQLite connection.
+        scope_rom_ids: Explicit list of ROM ids to process, or None for all.
+        cache_dir: Override for the cover-image cache directory.
+        progress_callback: ``(current, total, title)`` callback per ROM.
+        http_client: Shared httpx.Client (passed through to libretro client).
     """
     cache_dir = _resolve_cache_dir(conn, cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resolve scope -> game rows. We need (id, system_id, canonical_name)
-    # per game; canonical_name drives the libretro filename lookup.
     if scope_rom_ids is None:
         rows = conn.execute(
             """
-            SELECT DISTINCT g.id, g.system_id, g.canonical_name, g.title
-            FROM games g
-            JOIN roms r ON r.game_id = g.id
-            ORDER BY g.system_id, g.title
+            SELECT r.id       AS rom_id,
+                   r.system_id,
+                   r.canonical_name,
+                   COALESCE(r.title, r.filename) AS title
+            FROM roms r
+            WHERE r.fuzzy_key IS NOT NULL AND r.fuzzy_key != ''
+            ORDER BY r.system_id, r.id
             """
         ).fetchall()
     elif not scope_rom_ids:
         return 0
     else:
-        # SQLite parameter limit defaults to 999; ROM-id lists from
-        # ``get_rom_ids_for_scope`` rarely exceed that, but chunk
-        # defensively to keep us inside the limit.
         rows = []
-        seen: set[int] = set()
         chunk_size = 500
         for i in range(0, len(scope_rom_ids), chunk_size):
             chunk = scope_rom_ids[i : i + chunk_size]
             placeholders = ",".join("?" * len(chunk))
             cursor = conn.execute(
                 f"""
-                SELECT DISTINCT g.id, g.system_id, g.canonical_name, g.title
-                FROM games g
-                JOIN roms r ON r.game_id = g.id
+                SELECT r.id       AS rom_id,
+                       r.system_id,
+                       r.canonical_name,
+                       COALESCE(r.title, r.filename) AS title
+                FROM roms r
                 WHERE r.id IN ({placeholders})
+                  AND r.fuzzy_key IS NOT NULL AND r.fuzzy_key != ''
+                ORDER BY r.system_id, r.id
                 """,
                 chunk,
             )
-            for row in cursor.fetchall():
-                if row["id"] in seen:
-                    continue
-                seen.add(row["id"])
-                rows.append(row)
+            rows.extend(cursor.fetchall())
 
     total = len(rows)
     covers_added = 0
     for idx, row in enumerate(rows, start=1):
-        game_id = int(row["id"])
+        rom_id = int(row["rom_id"])
         title = str(row["title"] or "")
         canonical_name = row["canonical_name"] or title
         if progress_callback is not None:
             progress_callback(idx, total, title)
-        covers_added += _fetch_covers_for_game(
+        covers_added += _fetch_covers_for_rom(
             conn,
-            game_id,
+            rom_id,
             row["system_id"],
             canonical_name,
             cache_dir,

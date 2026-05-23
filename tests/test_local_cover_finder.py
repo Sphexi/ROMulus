@@ -40,8 +40,11 @@ def _enroll_rom(
     filename: str,
     system_id: str = "snes",
     fuzzy_key: str = "sonicthehedgehog",
-) -> tuple[int, int]:
-    """Insert a ROM and link it to a game; return (rom_id, game_id)."""
+) -> int:
+    """Insert a ROM and return its rom_id.
+
+    Post Session-13/14 schema: no ``games`` table; each ROM stands alone.
+    """
     rom_id = queries.upsert_rom(
         conn,
         {
@@ -52,14 +55,11 @@ def _enroll_rom(
             "mtime": 0.0,
             "system_id": system_id,
             "fuzzy_key": fuzzy_key,
+            "title": "Sonic the Hedgehog",
         },
     )
-    game_id = queries.upsert_game(
-        conn, {"title": "Sonic the Hedgehog", "system_id": system_id}
-    )
-    queries.link_rom_to_game(conn, rom_id, game_id)
     conn.commit()
-    return rom_id, game_id
+    return rom_id
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +329,12 @@ class TestDiscoverLocalCovers:
         assert result.covers_skipped_existing == 0
 
     def test_discover_is_idempotent(self, db, tmp_path) -> None:
-        """Running discovery twice does not create duplicate cover rows."""
+        """Running discovery twice does not create duplicate cover rows.
+
+        After the first run, the ROM has a Named_Boxarts cover row so
+        ``_get_roms_for_cover_scan`` excludes it entirely on the second run.
+        The result is roms_scanned=0 (not scanned), covers_found=0, no dupes.
+        """
         system_dir = tmp_path / "snes"
         system_dir.mkdir()
         rom_path = system_dir / "Sonic the Hedgehog (USA).sfc"
@@ -338,38 +343,77 @@ class TestDiscoverLocalCovers:
 
         _enroll_rom(db, str(rom_path), rom_path.name)
         discover_local_covers(db, tmp_path)
+        # Second run: the ROM was given a boxart cover in the first run, so
+        # it is excluded from the scan query entirely.
         result2 = discover_local_covers(db, tmp_path)
 
         assert result2.covers_found == 0
-        assert result2.covers_skipped_existing == 1
+        assert result2.roms_scanned == 0  # excluded before scan, not skipped mid-scan
+        # Confirm only one cover row was ever created.
+        rom_id = db.execute("SELECT id FROM roms LIMIT 1").fetchone()["id"]
+        from romulus.db import queries as q
+        assert q.count_covers(db, rom_id, "Named_Boxarts") == 1
 
     def test_discovery_result_skipped_count(self, db, tmp_path) -> None:
-        """DiscoveryResult.covers_skipped_existing counts pre-existing rows."""
+        """A ROM with a pre-existing Named_Boxarts cover is excluded from scanning.
+
+        Post Session-15: ``_get_roms_for_cover_scan`` filters out ROMs that
+        already have a ``Named_Boxarts`` cover row. Such ROMs are not returned
+        to the scan loop at all, so ``roms_scanned == 0`` and
+        ``covers_skipped_existing == 0`` (skipped at query level, not scan level).
+        """
         system_dir = tmp_path / "snes"
         system_dir.mkdir()
         rom_path = system_dir / "Sonic the Hedgehog (USA).sfc"
         img = system_dir / "Sonic the Hedgehog (USA).png"
         img.write_bytes(b"PNG")
 
-        _, game_id = _enroll_rom(db, str(rom_path), rom_path.name)
-        # Pre-insert a cover so second run sees an existing one.
+        rom_id = _enroll_rom(db, str(rom_path), rom_path.name)
+        # Pre-insert a Named_Boxarts cover — this exclusion happens at query level.
         queries.insert_cover(
-            db, game_id, "Named_Boxarts", source_url=None,
+            db, rom_id, "Named_Boxarts", source_url=None,
             local_path=str(img.resolve())
         )
         db.commit()
 
         result = discover_local_covers(db, tmp_path)
-        assert result.covers_skipped_existing >= 1
+        # The ROM was excluded from the scan by the query filter.
+        assert result.roms_scanned == 0
+        assert result.covers_found == 0
 
-    def test_roms_without_game_are_skipped(self, db, tmp_path) -> None:
-        """ROMs not yet linked to a game do not cause errors and yield 0 covers."""
+    def test_roms_with_existing_boxart_are_excluded(self, db, tmp_path) -> None:
+        """ROMs that already have a Named_Boxarts cover are excluded from the scan.
+
+        Post Session-15 schema: the old ``game_id IS NOT NULL`` filter is gone.
+        The new filter is ``LEFT JOIN covers WHERE c.id IS NULL`` for Named_Boxarts.
+        A ROM with an existing boxart cover should NOT be re-scanned.
+        """
         system_dir = tmp_path / "snes"
         system_dir.mkdir()
         rom_path = system_dir / "Sonic.sfc"
-        (system_dir / "Sonic.png").write_bytes(b"PNG")
+        img = system_dir / "Sonic.png"
+        img.write_bytes(b"PNG")
 
-        # Enroll a ROM but do NOT link it to a game.
+        rom_id = _enroll_rom(db, str(rom_path), rom_path.name, fuzzy_key="sonic")
+        # Pre-insert a Named_Boxarts cover — this excludes the ROM from discovery.
+        queries.insert_cover(
+            db, rom_id, "Named_Boxarts", source_url=None, local_path=str(img)
+        )
+        db.commit()
+
+        result = discover_local_covers(db, tmp_path)
+        # The ROM was already covered so it should not appear in roms_scanned.
+        assert result.roms_scanned == 0
+        assert result.covers_found == 0
+
+    def test_roms_without_fuzzy_key_are_excluded(self, db, tmp_path) -> None:
+        """ROMs with no fuzzy_key (unidentified) are skipped — no identity to match on."""
+        system_dir = tmp_path / "snes"
+        system_dir.mkdir()
+        rom_path = system_dir / "Unknown.sfc"
+        (system_dir / "Unknown.png").write_bytes(b"PNG")
+
+        # Enroll a ROM with no fuzzy_key set.
         queries.upsert_rom(
             db,
             {
@@ -379,7 +423,7 @@ class TestDiscoverLocalCovers:
                 "size_bytes": 512,
                 "mtime": 0.0,
                 "system_id": "snes",
-                "fuzzy_key": "sonic",
+                # No fuzzy_key — eligible filter requires fuzzy_key IS NOT NULL.
             },
         )
         db.commit()
@@ -479,12 +523,12 @@ class TestHasCoverForPath:
         system_dir = tmp_path / "snes"
         system_dir.mkdir()
         rom_path = system_dir / "Sonic.sfc"
-        _, game_id = _enroll_rom(db, str(rom_path), rom_path.name, fuzzy_key="sonic")
+        rom_id = _enroll_rom(db, str(rom_path), rom_path.name, fuzzy_key="sonic")
         queries.insert_cover(
-            db, game_id, "Named_Boxarts", source_url=None, local_path="/img/sonic.png"
+            db, rom_id, "Named_Boxarts", source_url=None, local_path="/img/sonic.png"
         )
         db.commit()
-        assert _has_cover_for_path(db, game_id, "/img/sonic.png") is True
+        assert _has_cover_for_path(db, rom_id, "/img/sonic.png") is True
 
 
 # ---------------------------------------------------------------------------

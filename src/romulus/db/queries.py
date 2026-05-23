@@ -2119,28 +2119,57 @@ def get_roms_with_enrichment_status(
 def find_sibling_metadata(
     conn: sqlite3.Connection,
     rom_id: int,
-    system_id: str,
-    canonical_name: str | None,
-    sha1: str | None,
 ) -> sqlite3.Row | None:
     """Find a metadata row attached to a *different* ROM with the same identity.
 
-    Identity resolution order:
-    1. SHA-1 match (most precise): any ROM whose hash matches ``sha1``.
-    2. ``(system_id, canonical_name)`` match (title-based fallback).
+    Identity resolution priority (highest to lowest):
 
-    Returns the first matching metadata row, or None if no sibling exists.
-    Used by Session 15's copy-on-enrich logic to avoid re-fetching metadata
-    for byte-identical or title-equivalent duplicates.
+    1. **SHA-1 match** — when both ROMs have a hash entry with the same ``sha1``
+       the match is byte-identical content.  Highest confidence; no false
+       positives because SHA-1 collisions are cryptographically negligible
+       for ROM files.
+
+    2. **``(system_id, canonical_name)`` match** — both ROMs resolved to the
+       same canonical title on the same platform.  Same game, different dump
+       paths (e.g. two copies of ``Super Mario World (USA).sfc`` in different
+       sub-folders).  Requires ``canonical_name`` to be populated (Heavy Scan).
+
+    3. **``(system_id, fuzzy_key)`` match** — lower-confidence fallback for
+       Quick-Scan-only libraries that haven't been Heavy-Scanned.  Two ROMs
+       with the same title tokens on the same platform are *probably* the same
+       game, but region/revision differences mean this tier can copy metadata
+       from e.g. a Japanese release onto a USA release.  Accepted trade-off:
+       the user gets *some* metadata rather than none, and re-enriching after
+       Heavy Scan will overwrite with a more precise result.
+
+    Returns one matching ``metadata`` row (including its ``rom_id`` so the
+    caller knows the source), or None if no sibling exists yet.
 
     Args:
         conn: SQLite connection.
-        rom_id: The ROM we are enriching (excluded from the search).
-        system_id: Platform to restrict the title-based fallback to.
-        canonical_name: Canonical title to match (may be None).
-        sha1: SHA-1 of the ROM payload (may be None).
+        rom_id: The ROM we are about to enrich (excluded from the search so
+            we never copy from ourselves).
     """
-    # Tier 1 — SHA-1 match
+    # Look up the target rom's own identity fields + sha1 in one query.
+    self_row = conn.execute(
+        """
+        SELECT r.system_id, r.canonical_name, r.fuzzy_key, h.sha1
+        FROM roms r
+        LEFT JOIN hashes h ON h.rom_id = r.id
+        WHERE r.id = ?
+        LIMIT 1
+        """,
+        (rom_id,),
+    ).fetchone()
+    if self_row is None:
+        return None
+
+    sha1 = self_row["sha1"]
+    system_id = self_row["system_id"]
+    canonical_name = self_row["canonical_name"]
+    fuzzy_key = self_row["fuzzy_key"]
+
+    # Tier 1 — SHA-1 match (byte-identical content)
     if sha1:
         row = conn.execute(
             """
@@ -2156,8 +2185,8 @@ def find_sibling_metadata(
         if row is not None:
             return row
 
-    # Tier 2 — (system_id, canonical_name) match
-    if canonical_name:
+    # Tier 2 — (system_id, canonical_name) match (same game, different path)
+    if system_id and canonical_name:
         row = conn.execute(
             """
             SELECT m.*
@@ -2169,6 +2198,27 @@ def find_sibling_metadata(
             LIMIT 1
             """,
             (system_id, canonical_name, rom_id),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    # Tier 3 — (system_id, fuzzy_key) match (Quick-Scan-only fallback).
+    # Lower confidence: same title tokens on the same platform.  Region or
+    # revision may differ.  Documented trade-off: gives the user *something*
+    # without a network call; Heavy Scan + re-enrich will correct any
+    # mis-match later.
+    if system_id and fuzzy_key:
+        row = conn.execute(
+            """
+            SELECT m.*
+            FROM metadata m
+            JOIN roms r ON r.id = m.rom_id
+            WHERE r.system_id = ?
+              AND r.fuzzy_key = ?
+              AND m.rom_id != ?
+            LIMIT 1
+            """,
+            (system_id, fuzzy_key, rom_id),
         ).fetchone()
         if row is not None:
             return row
@@ -2233,25 +2283,42 @@ def copy_metadata(
 def find_sibling_covers(
     conn: sqlite3.Connection,
     rom_id: int,
-    system_id: str,
-    canonical_name: str | None,
-    sha1: str | None,
 ) -> list[sqlite3.Row]:
     """Find cover rows attached to a *different* ROM with the same identity.
 
-    Identity resolution order mirrors :func:`find_sibling_metadata` —
-    SHA-1 first, then ``(system_id, canonical_name)`` fallback.
+    Identity resolution priority mirrors :func:`find_sibling_metadata`:
 
-    Returns all matching cover rows (may be empty). Used by Session 15's
-    copy-on-enrich logic.
+    1. **SHA-1 match** — byte-identical content.
+    2. **``(system_id, canonical_name)`` match** — same game, different path.
+    3. **``(system_id, fuzzy_key)`` match** — Quick-Scan-only fallback.
+
+    Returns all cover rows from the *first* sibling found (all three cover
+    types in one shot) so the caller can copy the complete artwork set.
+    Returns an empty list when no sibling has covers.
 
     Args:
         conn: SQLite connection.
-        rom_id: The ROM we are enriching (excluded from the search).
-        system_id: Platform to restrict the title-based fallback to.
-        canonical_name: Canonical title to match (may be None).
-        sha1: SHA-1 of the ROM payload (may be None).
+        rom_id: The ROM we are about to fetch covers for (excluded from
+            the search so we never copy from ourselves).
     """
+    self_row = conn.execute(
+        """
+        SELECT r.system_id, r.canonical_name, r.fuzzy_key, h.sha1
+        FROM roms r
+        LEFT JOIN hashes h ON h.rom_id = r.id
+        WHERE r.id = ?
+        LIMIT 1
+        """,
+        (rom_id,),
+    ).fetchone()
+    if self_row is None:
+        return []
+
+    sha1 = self_row["sha1"]
+    system_id = self_row["system_id"]
+    canonical_name = self_row["canonical_name"]
+    fuzzy_key = self_row["fuzzy_key"]
+
     # Tier 1 — SHA-1 match
     if sha1:
         rows = conn.execute(
@@ -2268,7 +2335,7 @@ def find_sibling_covers(
             return list(rows)
 
     # Tier 2 — (system_id, canonical_name) match
-    if canonical_name:
+    if system_id and canonical_name:
         rows = conn.execute(
             """
             SELECT c.*
@@ -2279,6 +2346,22 @@ def find_sibling_covers(
               AND c.rom_id != ?
             """,
             (system_id, canonical_name, rom_id),
+        ).fetchall()
+        if rows:
+            return list(rows)
+
+    # Tier 3 — (system_id, fuzzy_key) match
+    if system_id and fuzzy_key:
+        rows = conn.execute(
+            """
+            SELECT c.*
+            FROM covers c
+            JOIN roms r ON r.id = c.rom_id
+            WHERE r.system_id = ?
+              AND r.fuzzy_key = ?
+              AND c.rom_id != ?
+            """,
+            (system_id, fuzzy_key, rom_id),
         ).fetchall()
         if rows:
             return list(rows)
@@ -2296,6 +2379,10 @@ def copy_covers(
     this is a no-op. Existing cover rows for ``dest_rom_id`` are left in
     place — this is an additive operation, not a replace.
 
+    After all rows are inserted, :func:`_ensure_preferred` is called for
+    each distinct ``cover_type`` so the destination ROM ends up with exactly
+    one preferred cover per type (required by the detail-panel display logic).
+
     Used by Session 15's copy-on-enrich logic.
 
     Args:
@@ -2306,10 +2393,18 @@ def copy_covers(
     source_rows = conn.execute(
         "SELECT * FROM covers WHERE rom_id = ?", (source_rom_id,)
     ).fetchall()
+    cover_types_seen: set[str] = set()
     for src in source_rows:
+        # Skip rows where the destination already has a cover at the same path.
+        # The covers table has no UNIQUE constraint on (rom_id, local_path) so
+        # we guard manually to keep copy_covers idempotent.
+        local_path = src["local_path"]
+        if local_path and has_cover_for_path(conn, dest_rom_id, local_path):
+            cover_types_seen.add(str(src["cover_type"]))
+            continue
         conn.execute(
             """
-            INSERT OR IGNORE INTO covers (
+            INSERT INTO covers (
                 rom_id, cover_type, source_url, local_path,
                 width, height, is_preferred
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2318,9 +2413,13 @@ def copy_covers(
                 dest_rom_id,
                 src["cover_type"],
                 src["source_url"],
-                src["local_path"],
+                local_path,
                 src["width"],
                 src["height"],
                 src["is_preferred"],
             ),
         )
+        cover_types_seen.add(str(src["cover_type"]))
+    # Ensure at least one preferred cover per type for the destination ROM.
+    for cover_type in cover_types_seen:
+        _ensure_preferred(conn, dest_rom_id, cover_type)

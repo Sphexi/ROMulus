@@ -14,7 +14,7 @@ results into the shared :class:`MetadataPayload` shape at lookup time.
 Coverage is broader than GameDB (49 systems with genre data versus 1
 in GameDB; 52 with developer versus 1 in GameDB) so this source slots
 in *before* GameDB in the enrichment chain — see
-``romulus.metadata._fetch_metadata_for_game``.
+``romulus.metadata._fetch_metadata_for_rom``.
 
 Source: https://github.com/libretro/libretro-database
 """

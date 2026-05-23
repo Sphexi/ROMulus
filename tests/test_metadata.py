@@ -549,79 +549,108 @@ class TestScreenScraperTestConnection:
 
 class TestMetadataQueries:
     def test_upsert_and_get_metadata(self, seeded_db) -> None:
-        game_id = q.upsert_game(seeded_db, {"title": "Tetris", "system_id": "gb"})
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Tetris.gb",
+                "filename": "Tetris.gb",
+                "extension": ".gb",
+                "size_bytes": 32768,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "title": "Tetris",
+                "match_confidence": "dat_verified",
+            },
+        )
         q.upsert_metadata(
             seeded_db,
-            game_id,
+            rom_id,
             {"description": "Falling blocks.", "genre": "Puzzle"},
             source="hasheous",
         )
-        row = q.get_metadata(seeded_db, game_id)
+        row = q.get_metadata(seeded_db, rom_id)
         assert row is not None
         assert row["description"] == "Falling blocks."
         assert row["genre"] == "Puzzle"
         assert row["source"] == "hasheous"
 
     def test_upsert_replaces_existing(self, seeded_db) -> None:
-        game_id = q.upsert_game(seeded_db, {"title": "Tetris", "system_id": "gb"})
-        q.upsert_metadata(
-            seeded_db, game_id, {"description": "v1"}, source="hasheous"
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Tetris2.gb",
+                "filename": "Tetris2.gb",
+                "extension": ".gb",
+                "size_bytes": 32768,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "title": "Tetris 2",
+                "match_confidence": "dat_verified",
+            },
         )
-        q.upsert_metadata(
-            seeded_db, game_id, {"description": "v2"}, source="launchbox"
-        )
-        row = q.get_metadata(seeded_db, game_id)
+        q.upsert_metadata(seeded_db, rom_id, {"description": "v1"}, source="hasheous")
+        q.upsert_metadata(seeded_db, rom_id, {"description": "v2"}, source="launchbox")
+        row = q.get_metadata(seeded_db, rom_id)
         assert row["description"] == "v2"
         assert row["source"] == "launchbox"
 
     def test_insert_and_get_covers(self, seeded_db) -> None:
-        game_id = q.upsert_game(seeded_db, {"title": "Tetris", "system_id": "gb"})
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Tetris3.gb",
+                "filename": "Tetris3.gb",
+                "extension": ".gb",
+                "size_bytes": 32768,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "title": "Tetris 3",
+                "match_confidence": "dat_verified",
+            },
+        )
         q.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             "Named_Boxarts",
             "https://example.com/Tetris.png",
             "/tmp/Tetris.png",
         )
-        covers = q.get_covers(seeded_db, game_id)
+        covers = q.get_covers(seeded_db, rom_id)
         assert len(covers) == 1
         assert covers[0]["cover_type"] == "Named_Boxarts"
-        assert q.has_cover(seeded_db, game_id, "Named_Boxarts") is True
-        assert q.has_cover(seeded_db, game_id, "Named_Snaps") is False
+        assert q.has_cover(seeded_db, rom_id, "Named_Boxarts") is True
+        assert q.has_cover(seeded_db, rom_id, "Named_Snaps") is False
 
-    def test_get_games_needing_enrichment(self, seeded_db) -> None:
-        # Verified game with no metadata -> appears.
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Tetris", "system_id": "gb", "canonical_name": "Tetris (World)"}
-        )
+    def test_get_roms_needing_enrichment(self, seeded_db) -> None:
+        # Verified ROM with no metadata -> appears.
         rom_id = q.upsert_rom(
             seeded_db,
             {
-                "path": "/lib/gb/Tetris.gb",
-                "filename": "Tetris.gb",
+                "path": "/lib/gb/TetrisQ.gb",
+                "filename": "TetrisQ.gb",
                 "extension": ".gb",
                 "size_bytes": 32768,
                 "mtime": time.time(),
                 "system_id": "gb",
+                "title": "Tetris",
+                "canonical_name": "Tetris (World)",
                 "dat_match": "Tetris (World)",
                 "match_confidence": "dat_verified",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
-        rows = q.get_games_needing_enrichment(seeded_db)
+        rows = q.get_roms_needing_enrichment(seeded_db)
         assert len(rows) == 1
         assert rows[0]["title"] == "Tetris"
 
         # Now add metadata — it should disappear from the queue.
-        q.upsert_metadata(seeded_db, game_id, {"description": "x"}, source="hasheous")
-        rows = q.get_games_needing_enrichment(seeded_db)
+        q.upsert_metadata(seeded_db, rom_id, {"description": "x"}, source="hasheous")
+        rows = q.get_roms_needing_enrichment(seeded_db)
         assert rows == []
 
-    def test_unverified_games_are_excluded(self, seeded_db) -> None:
-        game_id = q.upsert_game(seeded_db, {"title": "Mystery", "system_id": "gb"})
-        rom_id = q.upsert_rom(
+    def test_unverified_roms_are_excluded(self, seeded_db) -> None:
+        q.upsert_rom(
             seeded_db,
             {
                 "path": "/lib/gb/Mystery.gb",
@@ -630,80 +659,66 @@ class TestMetadataQueries:
                 "size_bytes": 1024,
                 "mtime": time.time(),
                 "system_id": "gb",
+                "title": "Mystery",
                 "match_confidence": "fuzzy",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
-        assert q.get_games_needing_enrichment(seeded_db) == []
+        assert q.get_roms_needing_enrichment(seeded_db) == []
 
     def test_include_fuzzy_surfaces_fuzzy_matches(self, seeded_db) -> None:
         """include_fuzzy=True must drop the dat_verified filter."""
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Mystery", "system_id": "gb"}
-        )
         rom_id = q.upsert_rom(
             seeded_db,
             {
-                "path": "/lib/gb/Mystery.gb",
-                "filename": "Mystery.gb",
+                "path": "/lib/gb/MysteryF.gb",
+                "filename": "MysteryF.gb",
                 "extension": ".gb",
                 "size_bytes": 1024,
                 "mtime": time.time(),
                 "system_id": "gb",
+                "title": "Mystery Fuzzy",
                 "match_confidence": "fuzzy",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         # Default: excluded.
-        assert q.get_games_needing_enrichment(seeded_db) == []
+        assert q.get_roms_needing_enrichment(seeded_db) == []
         # Loosened: surfaced.
-        rows = q.get_games_needing_enrichment(seeded_db, include_fuzzy=True)
+        rows = q.get_roms_needing_enrichment(seeded_db, include_fuzzy=True)
         assert len(rows) == 1
-        assert rows[0]["id"] == game_id
+        assert rows[0]["id"] == rom_id
 
     def test_include_already_enriched_keeps_metadata_rows(self, seeded_db) -> None:
-        """include_already_enriched=True must drop the m.game_id IS NULL filter."""
-        game_id = q.upsert_game(
-            seeded_db,
-            {"title": "Tetris", "system_id": "gb", "canonical_name": "Tetris"},
-        )
+        """include_already_enriched=True must drop the m.rom_id IS NULL filter."""
         rom_id = q.upsert_rom(
             seeded_db,
             {
-                "path": "/lib/gb/Tetris.gb",
-                "filename": "Tetris.gb",
+                "path": "/lib/gb/TetrisE.gb",
+                "filename": "TetrisE.gb",
                 "extension": ".gb",
                 "size_bytes": 32768,
                 "mtime": time.time(),
                 "system_id": "gb",
-                "dat_match": "Tetris",
+                "title": "Tetris Enriched",
+                "canonical_name": "Tetris Enriched",
+                "dat_match": "Tetris Enriched",
                 "match_confidence": "dat_verified",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
-        q.upsert_metadata(
-            seeded_db, game_id, {"description": "x"}, source="hasheous"
-        )
+        q.upsert_metadata(seeded_db, rom_id, {"description": "x"}, source="hasheous")
         seeded_db.commit()
 
         # Default: excluded (already has metadata).
-        assert q.get_games_needing_enrichment(seeded_db) == []
+        assert q.get_roms_needing_enrichment(seeded_db) == []
         # Loosened: surfaced for a re-run.
-        rows = q.get_games_needing_enrichment(
-            seeded_db, include_already_enriched=True
-        )
+        rows = q.get_roms_needing_enrichment(seeded_db, include_already_enriched=True)
         assert len(rows) == 1
-        assert rows[0]["id"] == game_id
+        assert rows[0]["id"] == rom_id
 
     def test_both_flags_combine_multiplicatively(self, seeded_db) -> None:
         """Both flags True must return fuzzy AND already-enriched rows."""
-        # A fuzzy game that already has metadata.
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Forced", "system_id": "gb"}
-        )
         rom_id = q.upsert_rom(
             seeded_db,
             {
@@ -713,32 +728,25 @@ class TestMetadataQueries:
                 "size_bytes": 1024,
                 "mtime": time.time(),
                 "system_id": "gb",
+                "title": "Forced",
                 "match_confidence": "fuzzy",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
-        q.upsert_metadata(
-            seeded_db, game_id, {"description": "x"}, source="hasheous"
-        )
+        q.upsert_metadata(seeded_db, rom_id, {"description": "x"}, source="hasheous")
         seeded_db.commit()
 
         # Either flag alone leaves it filtered out.
-        assert q.get_games_needing_enrichment(seeded_db) == []
-        assert q.get_games_needing_enrichment(seeded_db, include_fuzzy=True) == []
-        assert (
-            q.get_games_needing_enrichment(
-                seeded_db, include_already_enriched=True
-            )
-            == []
-        )
+        assert q.get_roms_needing_enrichment(seeded_db) == []
+        assert q.get_roms_needing_enrichment(seeded_db, include_fuzzy=True) == []
+        assert q.get_roms_needing_enrichment(seeded_db, include_already_enriched=True) == []
         # Both together: surfaced.
-        rows = q.get_games_needing_enrichment(
+        rows = q.get_roms_needing_enrichment(
             seeded_db,
             include_fuzzy=True,
             include_already_enriched=True,
         )
         assert len(rows) == 1
-        assert rows[0]["id"] == game_id
+        assert rows[0]["id"] == rom_id
 
 
 # ---------------------------------------------------------------------------
@@ -747,11 +755,17 @@ class TestMetadataQueries:
 
 
 def _seed_verified_game(db, *, title: str, system_id: str, sha1: str | None) -> int:
-    """Insert a verified game + linked ROM, returning the game id."""
-    game_id = q.upsert_game(
-        db,
-        {"title": title, "system_id": system_id, "canonical_name": title},
-    )
+    """Insert a verified ROM and return its rom_id.
+
+    The Session-15 schema is strict 1:1 rom→game — there is no ``games`` table
+    and no ``link_rom_to_game``. A "verified game" is just a rom row with
+    ``match_confidence='dat_verified'`` and a populated ``canonical_name``.
+
+    ``fuzzy_key`` is derived from the title so the ROM appears in queries that
+    require ``fuzzy_key IS NOT NULL`` (e.g. ``fetch_online_covers_for_scope``).
+    """
+    # Simple fuzzy_key: lowercase alphanumeric only.
+    fuzzy_key = "".join(c for c in title.lower() if c.isalnum())
     rom_id = q.upsert_rom(
         db,
         {
@@ -761,15 +775,17 @@ def _seed_verified_game(db, *, title: str, system_id: str, sha1: str | None) -> 
             "size_bytes": 1024,
             "mtime": time.time(),
             "system_id": system_id,
+            "title": title,
+            "canonical_name": title,
             "dat_match": title,
+            "fuzzy_key": fuzzy_key,
             "match_confidence": "dat_verified",
         },
     )
-    q.link_rom_to_game(db, rom_id, game_id)
     if sha1:
         q.upsert_hash(db, rom_id, crc32="ffffffff", sha1=sha1, md5=None)
     db.commit()
-    return game_id
+    return rom_id
 
 
 class TestEnrichLibrary:
@@ -782,7 +798,7 @@ class TestEnrichLibrary:
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
 
         sha1 = "a" * 40
-        _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Super Mario World", system_id="snes", sha1=sha1
         )
 
@@ -821,13 +837,13 @@ class TestEnrichLibrary:
         assert stats["covers_added"] == 0
         assert progress_events == [(1, 1, "Super Mario World")]
 
-        meta = q.get_metadata(seeded_db, 1)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["description"] == "Mario in Dinosaur Land."
         assert meta["source"] == "hasheous"
 
         # No covers should have been inserted — enrich is metadata-only now.
-        assert q.get_covers(seeded_db, 1) == []
+        assert q.get_covers(seeded_db, rom_id) == []
 
     def test_enrich_falls_back_to_launchbox(
         self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -836,7 +852,7 @@ class TestEnrichLibrary:
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
 
-        _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Super Mario World", system_id="snes", sha1="b" * 40
         )
 
@@ -861,7 +877,7 @@ class TestEnrichLibrary:
 
         assert stats["metadata_added"] == 1
         assert stats["covers_added"] == 0
-        meta = q.get_metadata(seeded_db, 1)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "launchbox"
         assert meta["developer"] == "Nintendo EAD"
@@ -873,11 +889,11 @@ class TestEnrichLibrary:
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
 
-        game_id = _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Tetris", system_id="gb", sha1="c" * 40
         )
         q.upsert_metadata(
-            seeded_db, game_id, {"description": "already here"}, source="manual"
+            seeded_db, rom_id, {"description": "already here"}, source="manual"
         )
         seeded_db.commit()
 
@@ -926,10 +942,9 @@ class TestEnrichLibrary:
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
 
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Fuzzy", "system_id": "gb"}
-        )
-        rom_id = q.upsert_rom(
+        # In the 1:1 schema there is no games table — a fuzzy-confidence ROM
+        # stands on its own.
+        q.upsert_rom(
             seeded_db,
             {
                 "path": "/lib/gb/Fuzzy.gb",
@@ -938,10 +953,10 @@ class TestEnrichLibrary:
                 "size_bytes": 1024,
                 "mtime": time.time(),
                 "system_id": "gb",
+                "title": "Fuzzy",
                 "match_confidence": "fuzzy",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         client = httpx.Client(
@@ -954,7 +969,7 @@ class TestEnrichLibrary:
         )
         assert stats["games_processed"] == 0
 
-        # With the flag: the fuzzy game is processed (still no metadata
+        # With the flag: the fuzzy ROM is processed (still no metadata
         # found because every provider 404s, but the worker reached it).
         stats = enrich_library(
             seeded_db,
@@ -967,17 +982,17 @@ class TestEnrichLibrary:
     def test_force_path_re_enriches_existing(
         self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Both flags True + scoped game_ids must re-run an already-enriched game."""
+        """Both flags True + scoped rom_ids must re-run an already-enriched ROM."""
         seed_defaults(seeded_db)
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
 
-        game_id = _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Tetris", system_id="gb", sha1="f" * 40
         )
         # Seed a stale metadata row from a prior enrich.
         q.upsert_metadata(
-            seeded_db, game_id, {"description": "stale"}, source="manual"
+            seeded_db, rom_id, {"description": "stale"}, source="manual"
         )
         seeded_db.commit()
 
@@ -995,13 +1010,13 @@ class TestEnrichLibrary:
             seeded_db,
             cache_dir=tmp_path / "covers",
             http_client=client,
-            game_ids=[game_id],
+            rom_ids=[rom_id],
             include_fuzzy=True,
             include_already_enriched=True,
         )
         assert stats["games_processed"] == 1
         assert stats["metadata_added"] == 1
-        meta = q.get_metadata(seeded_db, game_id)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["description"] == "fresh"
 
@@ -1270,7 +1285,7 @@ class TestTgdbEnrichmentChain:
         monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
         monkeypatch.setattr(thegamesdb, "MIN_REQUEST_INTERVAL", 0.0)
 
-        _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Super Mario World", system_id="snes", sha1="c" * 40
         )
 
@@ -1296,7 +1311,7 @@ class TestTgdbEnrichmentChain:
         )
 
         assert stats["metadata_added"] == 1
-        meta = q.get_metadata(seeded_db, 1)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "thegamesdb"
         assert meta["description"] == "Mario via TGDB"
@@ -1555,13 +1570,13 @@ class TestGameDBEnrichmentChain:
         gamedb.reset_cache_for_tests()
         self._disable_libretro(monkeypatch)
 
-        game_id = _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Dezaemon 3D", system_id="n64", sha1="a" * 40
         )
         # Inject a CRC32 on the hash row so GameDB has something to match.
         q.upsert_hash(
             seeded_db,
-            1,  # rom_id from _seed_verified_game (single rom)
+            rom_id,
             crc32="9e978488",
             sha1="a" * 40,
             md5=None,
@@ -1595,7 +1610,7 @@ class TestGameDBEnrichmentChain:
         assert non_cover_calls == [], (
             f"Expected only libretro cover calls; got: {non_cover_calls}"
         )
-        meta = q.get_metadata(seeded_db, game_id)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "gamedb"
         assert meta["publisher"] == "Athena"
@@ -1617,11 +1632,11 @@ class TestGameDBEnrichmentChain:
         gamedb.reset_cache_for_tests()
         self._disable_libretro(monkeypatch)
 
-        _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Super Mario 64", system_id="n64", sha1="b" * 40
         )
         q.upsert_hash(
-            seeded_db, 1, crc32="bb95e7d5", sha1="b" * 40, md5=None
+            seeded_db, rom_id, crc32="bb95e7d5", sha1="b" * 40, md5=None
         )
         seeded_db.commit()
 
@@ -1645,7 +1660,7 @@ class TestGameDBEnrichmentChain:
             seeded_db, cache_dir=tmp_path / "covers", http_client=client
         )
         assert stats["metadata_added"] == 1
-        meta = q.get_metadata(seeded_db, 1)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         # GameDB had only release_name/title (no publisher/date), so chain
         # progressed to Hasheous which DID return user-facing data.
@@ -1662,9 +1677,8 @@ class TestGameDBEnrichmentChain:
         gamedb.reset_cache_for_tests()
         self._disable_libretro(monkeypatch)
 
-        # Force-enrich pathway (include_already_enriched=True equivalent
-        # not needed here; we just use a verified game with no CRC).
-        game_id = _seed_verified_game(
+        # Use a verified ROM with no CRC (sha1 only for identity).
+        rom_id = _seed_verified_game(
             seeded_db, title="Dezaemon 3D", system_id="n64", sha1="c" * 40
         )
         # No CRC32 written — sha1 only.
@@ -1682,7 +1696,7 @@ class TestGameDBEnrichmentChain:
         enrich_library(
             seeded_db, cache_dir=tmp_path / "covers", http_client=client
         )
-        meta = q.get_metadata(seeded_db, game_id)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "gamedb"
         assert meta["release_year"] == 1998
@@ -1894,12 +1908,12 @@ class TestLibretroMetadatEnrichmentChain:
             "romulus.app._resolve_install_dir", lambda: tmp_path
         )
 
-        # Seed a GBA game with CRC32 matching the fixture entry.
-        game_id = _seed_verified_game(
+        # Seed a GBA ROM with CRC32 matching the fixture entry.
+        rom_id = _seed_verified_game(
             seeded_db, title="Game One", system_id="gba", sha1="a" * 40
         )
         q.upsert_hash(
-            seeded_db, 1, crc32="56c83c16", sha1="a" * 40, md5=None
+            seeded_db, rom_id, crc32="56c83c16", sha1="a" * 40, md5=None
         )
         seeded_db.commit()
 
@@ -1920,7 +1934,7 @@ class TestLibretroMetadatEnrichmentChain:
         )
 
         assert stats["metadata_added"] == 1
-        meta = q.get_metadata(seeded_db, game_id)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "libretro_metadat"
         assert meta["genre"] == "Shooter"
@@ -1953,11 +1967,11 @@ class TestLibretroMetadatEnrichmentChain:
             "romulus.app._resolve_install_dir", lambda: tmp_path
         )
 
-        game_id = _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Game", system_id="gba", sha1="b" * 40
         )
         q.upsert_hash(
-            seeded_db, 1, crc32="56c83c16", sha1="b" * 40, md5=None
+            seeded_db, rom_id, crc32="56c83c16", sha1="b" * 40, md5=None
         )
         seeded_db.commit()
 
@@ -1984,7 +1998,7 @@ class TestLibretroMetadatEnrichmentChain:
             seeded_db, cache_dir=tmp_path / "covers", http_client=client
         )
 
-        meta = q.get_metadata(seeded_db, game_id)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         # Libretro had only franchise (no user-facing payload), so the
         # chain progressed to GameDB which had publisher data.
@@ -2059,11 +2073,11 @@ class TestEnrichIncludeOnlineFlag:
             "romulus.app._resolve_install_dir", lambda: tmp_path
         )
 
-        game_id = _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Game One", system_id="gba", sha1="1" * 40
         )
         q.upsert_hash(
-            seeded_db, 1, crc32="56c83c16", sha1="1" * 40, md5=None
+            seeded_db, rom_id, crc32="56c83c16", sha1="1" * 40, md5=None
         )
         seeded_db.commit()
 
@@ -2079,7 +2093,7 @@ class TestEnrichIncludeOnlineFlag:
             include_online=False,
         )
         assert stats["metadata_added"] == 1
-        meta = q.get_metadata(seeded_db, game_id)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "libretro_metadat"
 
@@ -2099,7 +2113,7 @@ class TestEnrichIncludeOnlineFlag:
             gamedb, "get_index_for_system", lambda _sid: None
         )
 
-        _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db, title="Game", system_id="gb", sha1="2" * 40
         )
 
@@ -2115,7 +2129,7 @@ class TestEnrichIncludeOnlineFlag:
             seeded_db, cache_dir=tmp_path / "covers", http_client=client
         )
         assert stats["metadata_added"] == 1
-        meta = q.get_metadata(seeded_db, 1)
+        meta = q.get_metadata(seeded_db, rom_id)
         assert meta is not None
         assert meta["source"] == "hasheous"
 
@@ -2134,7 +2148,7 @@ class TestFetchOnlineCoversForScope:
 
         seed_defaults(seeded_db)
         set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
-        game_id = _seed_verified_game(
+        rom_id = _seed_verified_game(
             seeded_db,
             title="Super Mario World",
             system_id="snes",
@@ -2152,7 +2166,8 @@ class TestFetchOnlineCoversForScope:
             raise AssertionError(f"unexpected host: {host}")
 
         client = httpx.Client(transport=httpx.MockTransport(handler))
-        rom_ids = q.get_rom_ids_for_scope(seeded_db, game_id=game_id)
+        # get_rom_ids_for_scope resolves a single rom_id scope.
+        rom_ids = q.get_rom_ids_for_scope(seeded_db, rom_id=rom_id)
         n = fetch_online_covers_for_scope(
             seeded_db,
             scope_rom_ids=rom_ids,
@@ -2160,7 +2175,7 @@ class TestFetchOnlineCoversForScope:
             http_client=client,
         )
         assert n == 1
-        covers = q.get_covers(seeded_db, game_id)
+        covers = q.get_covers(seeded_db, rom_id)
         assert len(covers) == 1
 
     def test_empty_scope_returns_zero(
@@ -2175,3 +2190,244 @@ class TestFetchOnlineCoversForScope:
             cache_dir=tmp_path / "covers",
         )
         assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# TestSiblingMetadataCopy — sibling-copy gate in the enrichment chain
+# ---------------------------------------------------------------------------
+
+
+class TestSiblingMetadataCopy:
+    """Verify that the sibling-copy gate copies metadata from an existing ROM
+    and skips every source provider so no network quota is spent.
+
+    Three scenarios: SHA-1 match, canonical_name match, and no-sibling fallthrough.
+    """
+
+    def _make_mock_client(self, call_log: list[str]) -> httpx.Client:
+        """Return a client that records every host contacted."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            call_log.append(request.url.host)
+            return httpx.Response(404)
+
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def test_sibling_copy_via_sha1(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two ROMs with identical SHA-1: second copies metadata from first, zero API calls."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(
+            libretro_metadat, "get_index_for_system", lambda _sid: None
+        )
+
+        shared_sha1 = "ab" * 20  # 40-char hex
+
+        # First ROM — enrich it directly so it already has a metadata row.
+        rom1_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/snes/Mario.sfc",
+                "filename": "Mario.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "title": "Super Mario World",
+                "canonical_name": "Super Mario World",
+                "dat_match": "Super Mario World",
+                "match_confidence": "dat_verified",
+            },
+        )
+        q.upsert_hash(seeded_db, rom1_id, crc32="aabbccdd", sha1=shared_sha1, md5=None)
+        q.upsert_metadata(
+            seeded_db,
+            rom1_id,
+            {"description": "Mario in Dinosaur Land.", "genre": "Platformer"},
+            source="hasheous",
+        )
+
+        # Second ROM — same SHA-1, no metadata yet.
+        rom2_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/snes/Mario (Alt).sfc",
+                "filename": "Mario (Alt).sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "snes",
+                "title": "Super Mario World",
+                "canonical_name": "Super Mario World",
+                "dat_match": "Super Mario World",
+                "match_confidence": "dat_verified",
+            },
+        )
+        q.upsert_hash(seeded_db, rom2_id, crc32="aabbccdd", sha1=shared_sha1, md5=None)
+        seeded_db.commit()
+
+        api_calls: list[str] = []
+        client = self._make_mock_client(api_calls)
+
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+        )
+
+        # The second ROM should have been enriched via sibling-copy.
+        assert stats["games_processed"] == 1
+        assert stats["metadata_added"] == 1
+
+        meta2 = q.get_metadata(seeded_db, rom2_id)
+        assert meta2 is not None
+        assert meta2["description"] == "Mario in Dinosaur Land."
+        assert meta2["genre"] == "Platformer"
+
+        # No metadata API should have been contacted (the sibling gate fired first).
+        metadata_api_hosts = [
+            h for h in api_calls
+            if "hasheous" in h or "thegamesdb" in h or "screenscraper" in h
+        ]
+        assert metadata_api_hosts == [], (
+            f"Expected zero metadata API calls; got: {metadata_api_hosts}"
+        )
+
+    def test_sibling_copy_via_canonical_name(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two ROMs with same (system_id, canonical_name) but no SHA-1: sibling-copy fires."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(
+            libretro_metadat, "get_index_for_system", lambda _sid: None
+        )
+
+        # First ROM — has metadata, no hash row.
+        rom1_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Tetris.gb",
+                "filename": "Tetris.gb",
+                "extension": ".gb",
+                "size_bytes": 32768,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "title": "Tetris",
+                "canonical_name": "Tetris (World)",
+                "dat_match": "Tetris (World)",
+                "match_confidence": "dat_verified",
+            },
+        )
+        q.upsert_metadata(
+            seeded_db,
+            rom1_id,
+            {"description": "Classic falling blocks.", "genre": "Puzzle"},
+            source="gamedb",
+        )
+
+        # Second ROM — same system_id + canonical_name, no SHA-1, no metadata.
+        rom2_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Tetris (Rev B).gb",
+                "filename": "Tetris (Rev B).gb",
+                "extension": ".gb",
+                "size_bytes": 32768,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "title": "Tetris",
+                "canonical_name": "Tetris (World)",
+                "dat_match": "Tetris (World)",
+                "match_confidence": "dat_verified",
+            },
+        )
+        seeded_db.commit()
+
+        api_calls: list[str] = []
+        client = self._make_mock_client(api_calls)
+
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+        )
+
+        assert stats["games_processed"] == 1
+        assert stats["metadata_added"] == 1
+
+        meta2 = q.get_metadata(seeded_db, rom2_id)
+        assert meta2 is not None
+        assert meta2["description"] == "Classic falling blocks."
+        assert meta2["genre"] == "Puzzle"
+
+        metadata_api_hosts = [
+            h for h in api_calls
+            if "hasheous" in h or "thegamesdb" in h or "screenscraper" in h
+        ]
+        assert metadata_api_hosts == [], (
+            "Expected zero metadata API calls via canonical_name sibling; "
+            f"got: {metadata_api_hosts}"
+        )
+
+    def test_no_sibling_falls_through_to_source_chain(
+        self, seeded_db, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When no sibling exists, the full source chain runs normally."""
+        seed_defaults(seeded_db)
+        set_config(seeded_db, "cover_cache_path", str(tmp_path / "covers"))
+        monkeypatch.setattr(hasheous, "MIN_REQUEST_INTERVAL", 0.0)
+        monkeypatch.setattr(
+            libretro_metadat, "get_index_for_system", lambda _sid: None
+        )
+
+        rom_id = q.upsert_rom(
+            seeded_db,
+            {
+                "path": "/lib/gb/Zelda.gb",
+                "filename": "Zelda.gb",
+                "extension": ".gb",
+                "size_bytes": 1024,
+                "mtime": time.time(),
+                "system_id": "gb",
+                "title": "The Legend of Zelda: Link's Awakening",
+                "canonical_name": "Legend of Zelda, The - Link's Awakening (USA, Europe)",
+                "dat_match": "Legend of Zelda, The - Link's Awakening (USA, Europe)",
+                "match_confidence": "dat_verified",
+            },
+        )
+        q.upsert_hash(seeded_db, rom_id, crc32="12345678", sha1="cc" * 20, md5=None)
+        seeded_db.commit()
+
+        hasheous_calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            host = request.url.host
+            if "hasheous" in host:
+                hasheous_calls.append(host)
+                return httpx.Response(
+                    200,
+                    json={"title": "Zelda", "description": "Adventure in Koholint."},
+                )
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+
+        stats = enrich_library(
+            seeded_db,
+            cache_dir=tmp_path / "covers",
+            http_client=client,
+        )
+
+        assert stats["games_processed"] == 1
+        assert stats["metadata_added"] == 1
+        # Hasheous was reached because there was no sibling to copy from.
+        assert len(hasheous_calls) == 1
+
+        meta = q.get_metadata(seeded_db, rom_id)
+        assert meta is not None
+        assert meta["source"] == "hasheous"
+        assert meta["description"] == "Adventure in Koholint."
