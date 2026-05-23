@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import stat
 import sys
+import time
 
 import pytest
 
@@ -17,6 +18,7 @@ from romulus.db import (
     seed_defaults,
     set_config,
 )
+from romulus.db import queries as q
 
 
 def test_get_connection_creates_db_file(tmp_path):
@@ -55,20 +57,22 @@ def test_get_connection_restricts_db_file_permissions(tmp_path):
         conn.close()
 
 
+# v0.4.0: games table is gone; collection_games renamed to collection_roms.
 EXPECTED_TABLES = {
     "config",
     "systems",
     "roms",
     "hashes",
     "dat_entries",
-    "games",
     "metadata",
     "covers",
     "collections",
-    "collection_games",
+    "collection_roms",
     "scan_history",
     "organize_plans",
 }
+
+ABSENT_TABLES = {"games", "collection_games"}
 
 
 def test_create_tables_creates_all_tables(db):
@@ -77,6 +81,16 @@ def test_create_tables_creates_all_tables(db):
     ).fetchall()
     names = {row[0] for row in rows}
     assert EXPECTED_TABLES.issubset(names)
+
+
+def test_create_tables_no_games_table(db):
+    """The games table must NOT exist after create_tables() in v0.4.0."""
+    rows = db.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()
+    names = {row[0] for row in rows}
+    for absent in ABSENT_TABLES:
+        assert absent not in names, f"Table '{absent}' should not exist in v0.4.0 schema"
 
 
 def test_create_tables_is_idempotent(db):
@@ -144,10 +158,6 @@ def test_insert_helpers_return_nonnull_int(seeded_db):
     the happy path so a future refactor that drops the assertion still has a
     safety net against the ``None`` slipping through to the caller.
     """
-    import time
-
-    from romulus.db import queries as q
-
     rom_id = q.upsert_rom(
         seeded_db,
         {
@@ -160,11 +170,6 @@ def test_insert_helpers_return_nonnull_int(seeded_db):
         },
     )
     assert isinstance(rom_id, int) and rom_id > 0
-
-    game_id = q.upsert_game(
-        seeded_db, {"title": "Mario", "system_id": "snes"}
-    )
-    assert isinstance(game_id, int) and game_id > 0
 
     scan_id = q.insert_scan_history(
         seeded_db,
@@ -181,7 +186,7 @@ def test_insert_helpers_return_nonnull_int(seeded_db):
     assert isinstance(coll_id, int) and coll_id > 0
 
     cover_id = q.insert_cover(
-        seeded_db, game_id, "Named_Boxarts", "http://x", "/tmp/c.png"
+        seeded_db, rom_id, "Named_Boxarts", "http://x", "/tmp/c.png"
     )
     assert isinstance(cover_id, int) and cover_id > 0
 
@@ -227,3 +232,170 @@ def test_confidence_rank_is_single_source_of_truth():
     from romulus.ui import detail_panel
 
     assert detail_panel.CONFIDENCE_RANK is CONFIDENCE_RANK
+
+
+# ---------------------------------------------------------------------------
+# Session 13 acceptance-criteria tests
+# ---------------------------------------------------------------------------
+
+
+def test_pragma_foreign_keys_on(tmp_path):
+    """Every connection returned by get_connection must have PRAGMA foreign_keys = 1.
+
+    FK cascades on roms.id only fire when foreign_keys is ON. This test
+    verifies the pragma is always enabled — a regression here would silently
+    break cascade deletes of metadata / covers / collection_roms rows.
+    """
+    conn = get_connection(tmp_path / "fk_test.db")
+    try:
+        result = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        assert result == 1, "PRAGMA foreign_keys must be 1 on every connection"
+    finally:
+        conn.close()
+
+
+def test_upsert_rom_identity_fields_round_trip(seeded_db):
+    """upsert_rom accepts all identity fields; fetching by id returns the same values."""
+    rom_id = q.upsert_rom(
+        seeded_db,
+        {
+            "path": "/lib/snes/Zelda.sfc",
+            "filename": "Zelda.sfc",
+            "extension": ".sfc",
+            "size_bytes": 1024,
+            "mtime": time.time(),
+            "system_id": "snes",
+            "title": "The Legend of Zelda: A Link to the Past",
+            "canonical_name": "Legend of Zelda, The - A Link to the Past (USA)",
+            "region": "USA",
+            "revision": "Rev A",
+            "is_hack": False,
+            "is_homebrew": False,
+            "is_bios": False,
+        },
+    )
+    seeded_db.commit()
+
+    row = q.get_rom_by_id(seeded_db, rom_id)
+    assert row is not None
+    assert row["title"] == "The Legend of Zelda: A Link to the Past"
+    assert row["canonical_name"] == "Legend of Zelda, The - A Link to the Past (USA)"
+    assert row["region"] == "USA"
+    assert row["revision"] == "Rev A"
+    assert row["is_hack"] == 0
+    assert row["is_homebrew"] == 0
+    assert row["is_bios"] == 0
+
+
+def test_upsert_rom_omitted_identity_fields_preserve_existing(seeded_db):
+    """Re-upserting without identity fields must not clobber previously stored values.
+
+    Scenario:
+    1. First upsert — supply all identity fields (simulates Heavy Scan result).
+    2. Second upsert — supply identity fields again with new values.
+    3. Third upsert — omit ALL identity fields (simulates a plain path-refresh
+       rescan that only touches mtime/size). The second upsert's values must
+       survive unchanged.
+    """
+    path = "/lib/nes/SMB.nes"
+    base: q.RomUpsertData = {
+        "path": path,
+        "filename": "SMB.nes",
+        "extension": ".nes",
+        "size_bytes": 40960,
+        "mtime": time.time(),
+        "system_id": "nes",
+    }
+
+    # First upsert — no identity fields yet.
+    rom_id = q.upsert_rom(seeded_db, {**base})
+    seeded_db.commit()
+
+    # Second upsert — add identity fields.
+    q.upsert_rom(
+        seeded_db,
+        {
+            **base,
+            "title": "Super Mario Bros.",
+            "canonical_name": "Super Mario Bros. (World)",
+            "region": "World",
+            "revision": None,
+            "is_hack": False,
+            "is_homebrew": False,
+            "is_bios": False,
+        },
+    )
+    seeded_db.commit()
+
+    # Third upsert — omit identity fields entirely (plain rescan).
+    q.upsert_rom(
+        seeded_db,
+        {
+            **base,
+            "mtime": time.time() + 1,  # simulate file touch
+        },
+    )
+    seeded_db.commit()
+
+    row = q.get_rom_by_id(seeded_db, rom_id)
+    assert row is not None, "ROM row must still exist after third upsert"
+    assert row["title"] == "Super Mario Bros.", (
+        "title must survive a re-upsert that omits identity fields"
+    )
+    assert row["canonical_name"] == "Super Mario Bros. (World)"
+    assert row["region"] == "World"
+    assert row["missing"] == 0, "missing flag must be reset to 0 on every upsert"
+
+
+def test_cascade_delete_clears_dependents(seeded_db):
+    """Deleting a roms row must cascade to metadata, covers, and collection_roms."""
+    # Insert ROM
+    rom_id = q.upsert_rom(
+        seeded_db,
+        {
+            "path": "/lib/gb/Tetris.gb",
+            "filename": "Tetris.gb",
+            "extension": ".gb",
+            "size_bytes": 32768,
+            "mtime": time.time(),
+            "system_id": "gb",
+        },
+    )
+    seeded_db.commit()
+
+    # Attach metadata
+    q.upsert_metadata(
+        seeded_db,
+        rom_id,
+        {"description": "The classic puzzle game", "genre": "Puzzle"},
+        source="test",
+    )
+
+    # Attach cover
+    q.insert_cover(seeded_db, rom_id, "Named_Boxarts", None, "/cache/gb/Tetris.png")
+
+    # Attach collection membership
+    coll_id = q.create_collection(seeded_db, "Classics")
+    q.add_rom_to_collection(seeded_db, coll_id, rom_id)
+
+    seeded_db.commit()
+
+    # Verify all three dependents exist before deletion
+    assert q.get_metadata(seeded_db, rom_id) is not None, "metadata row should exist"
+    assert len(q.get_covers(seeded_db, rom_id)) == 1, "cover row should exist"
+    assert q.is_rom_in_collection(seeded_db, coll_id, rom_id), "collection link should exist"
+
+    # Delete the ROM row — CASCADE should clean up dependents
+    seeded_db.execute("DELETE FROM roms WHERE id = ?", (rom_id,))
+    seeded_db.commit()
+
+    # All dependents must be gone
+    assert q.get_metadata(seeded_db, rom_id) is None, (
+        "metadata row must be CASCADE-deleted when roms row is deleted"
+    )
+    assert q.get_covers(seeded_db, rom_id) == [], (
+        "covers rows must be CASCADE-deleted when roms row is deleted"
+    )
+    assert not q.is_rom_in_collection(seeded_db, coll_id, rom_id), (
+        "collection_roms row must be CASCADE-deleted when roms row is deleted"
+    )

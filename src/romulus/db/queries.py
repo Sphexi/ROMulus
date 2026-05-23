@@ -3,6 +3,12 @@
 Keeping SQL in one place makes it easier to audit, optimize indexes, and swap
 storage backends if we ever need to. Other modules should call these helpers
 rather than constructing their own queries.
+
+v0.4.0 — strict 1:1 ROM model: the ``games`` table is gone. Every function
+that previously referenced ``game_id`` now references ``rom_id`` directly.
+Collection membership uses the renamed ``collection_roms`` table. Cascade
+deletes on ``roms.id`` mean there is no longer a ``prune_orphan_*`` helper —
+deleting a rom row atomically clears its metadata, covers, and collection rows.
 """
 
 from __future__ import annotations
@@ -55,7 +61,15 @@ _UPSERT_ROM_CONFIDENCE_CASE: str = _sql_confidence_case("roms.match_confidence")
 
 
 class RomUpsertData(TypedDict):
-    """Shape of the dict accepted by :func:`upsert_rom`."""
+    """Shape of the dict accepted by :func:`upsert_rom`.
+
+    Required keys: path, filename, extension, size_bytes, mtime, system_id.
+    Optional identity keys (title … is_bios): supplied by the filename parser
+    on Quick Scan; by the DAT matcher on Heavy Scan. Omitting them on a
+    subsequent upsert preserves whatever was stored previously (COALESCE
+    pattern in the SQL). ``match_confidence`` is monotonic — a rescan never
+    downgrades a stronger match.
+    """
 
     path: str
     filename: str
@@ -69,13 +83,8 @@ class RomUpsertData(TypedDict):
     dat_match: NotRequired[str | None]
     match_confidence: NotRequired[str]
     library_root: NotRequired[str | None]
-
-
-class GameUpsertData(TypedDict):
-    """Shape of the dict accepted by :func:`upsert_game`."""
-
-    title: str
-    system_id: str
+    # Identity fields merged from the old games table
+    title: NotRequired[str | None]
     canonical_name: NotRequired[str | None]
     region: NotRequired[str | None]
     revision: NotRequired[str | None]
@@ -106,33 +115,68 @@ class ScanHistoryUpdate(TypedDict, total=False):
     files_new: int
     errors: int
 
+
 # ---------------------------------------------------------------------------
 # ROMs
 # ---------------------------------------------------------------------------
 
 
 def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
-    """Insert a ROM row or update it in place if `path` already exists.
+    """Insert a ROM row or update it in place if ``path`` already exists.
 
     Returns the row id of the upserted ROM. Caller is responsible for committing
     the surrounding transaction; this function does not commit on its own so
     bulk scans can batch many upserts.
 
-    `match_confidence` is monotonic — a rescan never downgrades a previously
-    stronger match (e.g. dat_verified) back to a weaker one (fuzzy).
+    ``match_confidence`` is monotonic — a rescan never downgrades a previously
+    stronger match (e.g. ``dat_verified``) back to a weaker one (``fuzzy``).
 
     Every successful upsert resets ``missing = 0`` — re-scanning a file that
-    was previously marked missing (USB drive reconnected, network share
-    remounted, file moved back) un-tombstones it without losing any prior
-    enrichment work. ``library_root`` is stamped on each upsert so the scan
-    sweep can find rows belonging to the current root.
+    was previously marked missing un-tombstones it without losing any prior
+    enrichment work. ``library_root`` is stamped on each upsert.
+
+    Identity fields (``title``, ``canonical_name``, ``region``, ``revision``,
+    ``is_hack``, ``is_homebrew``, ``is_bios``) are written when supplied and
+    preserved via ``COALESCE(excluded.field, roms.field)`` when omitted so a
+    follow-up upsert that doesn't include them (e.g. a plain path-refresh
+    rescan) doesn't wipe DAT-derived values that Heavy Scan populated earlier.
 
     Required keys: path, filename, extension, size_bytes, mtime, system_id.
     Optional keys: fuzzy_key, header_title, scan_id, dat_match,
-    match_confidence, library_root.
+    match_confidence, library_root, title, canonical_name, region, revision,
+    is_hack, is_homebrew, is_bios.
     """
     incoming_confidence = rom_data.get("match_confidence", "unmatched")
     incoming_rank = CONFIDENCE_RANK.get(incoming_confidence, 0)
+
+    # Convert optional booleans to integers for SQLite storage.
+    # The INSERT leg must always supply a concrete integer (schema: NOT NULL DEFAULT 0).
+    # Use 0 when the caller omits the flag so the default is respected; COALESCE
+    # in the UPDATE leg preserves the existing value when the incoming integer is 0
+    # AND the column is already non-zero — but that case is fine because 0 is the
+    # "not a hack" default. The only case where we truly need COALESCE is when the
+    # caller omits the key entirely and a previous upsert stored a non-zero value.
+    # To distinguish "omitted" from "explicitly False", we use a sentinel: when
+    # the key is absent from rom_data we pass NULL to the INSERT leg too, which
+    # would fail the NOT NULL check — so instead we fall back to 0 for the INSERT
+    # column and NULL for the COALESCE slot in the UPDATE SET.
+    #
+    # Actual fix: for the INSERT values array, supply 0 (never None) for these
+    # three columns. For the UPDATE COALESCE, pass the same value — if the caller
+    # supplied a real flag, use it; if not, NULL so COALESCE keeps the old value.
+    is_hack_supplied = "is_hack" in rom_data
+    is_homebrew_supplied = "is_homebrew" in rom_data
+    is_bios_supplied = "is_bios" in rom_data
+
+    is_hack_insert = int(bool(rom_data.get("is_hack", False)))
+    is_homebrew_insert = int(bool(rom_data.get("is_homebrew", False)))
+    is_bios_insert = int(bool(rom_data.get("is_bios", False)))
+
+    # For UPDATE COALESCE: None means "not supplied → preserve existing value"
+    is_hack_update = is_hack_insert if is_hack_supplied else None
+    is_homebrew_update = is_homebrew_insert if is_homebrew_supplied else None
+    is_bios_update = is_bios_insert if is_bios_supplied else None
+
     # ``RETURNING id`` makes this work whether the UPSERT takes the INSERT or
     # UPDATE branch — ``cursor.lastrowid`` can't be trusted for the UPDATE
     # branch because SQLite's connection-level ``last_insert_rowid`` doesn't
@@ -145,8 +189,11 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
         INSERT INTO roms (
             path, filename, extension, size_bytes, mtime,
             system_id, scan_id, fuzzy_key, header_title,
-            dat_match, match_confidence, library_root, missing
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            dat_match, match_confidence, library_root, missing,
+            title, canonical_name, region, revision,
+            is_hack, is_homebrew, is_bios
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0,
+                  ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             filename = excluded.filename,
             extension = excluded.extension,
@@ -163,7 +210,14 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
                 ELSE roms.match_confidence
             END,
             library_root = COALESCE(excluded.library_root, roms.library_root),
-            missing = 0
+            missing = 0,
+            title          = COALESCE(excluded.title,          roms.title),
+            canonical_name = COALESCE(excluded.canonical_name, roms.canonical_name),
+            region         = COALESCE(excluded.region,         roms.region),
+            revision       = COALESCE(excluded.revision,       roms.revision),
+            is_hack        = COALESCE(?,                       roms.is_hack),
+            is_homebrew    = COALESCE(?,                       roms.is_homebrew),
+            is_bios        = COALESCE(?,                       roms.is_bios)
         RETURNING id
         """,
         (
@@ -179,7 +233,20 @@ def upsert_rom(conn: sqlite3.Connection, rom_data: RomUpsertData) -> int:
             rom_data.get("dat_match"),
             incoming_confidence,
             rom_data.get("library_root"),
+            # identity fields — INSERT leg (never None; NOT NULL DEFAULT 0 columns)
+            rom_data.get("title"),
+            rom_data.get("canonical_name"),
+            rom_data.get("region"),
+            rom_data.get("revision"),
+            is_hack_insert,
+            is_homebrew_insert,
+            is_bios_insert,
+            # confidence-rank parameter for the CASE expression
             incoming_rank,
+            # UPDATE COALESCE leg — None when caller omitted the flag (preserves DB value)
+            is_hack_update,
+            is_homebrew_update,
+            is_bios_update,
         ),
     ).fetchone()
     return row["id"]
@@ -305,11 +372,6 @@ def mark_missing_under_root(
     # ``OperationalError: too many SQL variables`` once the library
     # crosses ``SQLITE_MAX_VARIABLE_NUMBER``. ``executemany`` binds at
     # most one variable per statement so we can feed any size set.
-    #
-    # The temp table is named with a stable identifier so concurrent
-    # use within a single connection still funnels through here; it's
-    # dropped at the end of the call rather than relying on connection
-    # close so a long-lived app session can't accumulate temp objects.
     conn.execute(
         "CREATE TEMP TABLE IF NOT EXISTS _visited_rom_ids "
         "(id INTEGER PRIMARY KEY)"
@@ -341,21 +403,16 @@ def delete_missing_roms(
 ) -> int:
     """Permanently remove every row flagged ``missing = 1``. Returns count.
 
-    Caller owns the surrounding transaction commit. Cascading cleanup of
-    orphaned ``games`` rows (games whose only roms were just deleted) is
-    handled by :func:`prune_orphan_games`.
-
-    FK-dependent rows in ``hashes`` and ``dest_inventory`` are deleted
-    BEFORE the rom rows themselves — neither table declares
-    ``ON DELETE CASCADE`` (would require a table-recreate migration to
-    add) and ``PRAGMA foreign_keys = ON`` is enabled connection-wide, so
-    a plain DELETE on roms with dependent hashes/inventory entries would
-    raise ``IntegrityError: FOREIGN KEY constraint failed``.
+    Caller owns the surrounding transaction commit. FK ``ON DELETE CASCADE``
+    on ``metadata``, ``covers``, and ``collection_roms`` means dependents are
+    cleaned up automatically when the roms row is deleted. ``hashes`` and
+    ``dest_inventory`` do NOT have CASCADE (they predate v0.4.0 and adding
+    CASCADE requires a table-recreate migration), so we still delete those
+    explicitly via :func:`_delete_rom_dependents` first.
 
     ``progress_callback`` (optional, signature ``(current, total, label)``)
     fires once per dependent-row chunk so a worker thread can drive a
-    progress dialog. The ``current`` / ``total`` count is in units of rom
-    ids processed, not chunks — matches the other long-running ops.
+    progress dialog.
     """
     rom_ids = [
         row["id"]
@@ -383,14 +440,17 @@ def _delete_rom_dependents(
 ) -> None:
     """Drop ``hashes`` and ``dest_inventory`` rows referencing ``rom_ids``.
 
-    Internal helper used by every ``delete_*`` query that removes rom
-    rows. Splits the work into chunks of 500 ids so a very large clean
-    (e.g. the user switching libraries with tens of thousands of stale
-    entries) doesn't hit SQLite's parameter-count limit (default 999).
+    ``metadata``, ``covers``, and ``collection_roms`` rows are cleaned up
+    automatically via ``ON DELETE CASCADE`` when the ``roms`` row is deleted,
+    so they are NOT handled here.
+
+    Splits the work into chunks of 500 ids so a very large clean (e.g. the
+    user switching libraries with tens of thousands of stale entries) doesn't
+    hit SQLite's parameter-count limit (default 999).
 
     ``progress_callback`` (optional) fires once per processed chunk with
-    ``(done, total, label)`` so a worker can update a determinate
-    progress dialog during long deletes over SMB / spinning disks.
+    ``(done, total, label)`` so a worker can update a determinate progress
+    dialog during long deletes over SMB / spinning disks.
     """
     if not rom_ids:
         return
@@ -445,12 +505,7 @@ def count_roms_with_other_library_root(
     """Count rows whose ``library_root`` is set but doesn't equal ``current_root``.
 
     Used by the settings dialog to decide whether to prompt the user to
-    wipe old-library entries when they pick a new library path. Every
-    row enrolled by the v0.3.0+ scanner has ``library_root`` populated,
-    so a non-NULL filter is enough to identify "from a different
-    library" rows in a fresh install. NULL-handling and v0.2.x upgrade
-    support were intentionally not implemented; users on pre-v0.3.0 DBs
-    should wipe ``data/romulus.db`` and let the app rebuild.
+    wipe old-library entries when they pick a new library path.
     """
     row = conn.execute(
         "SELECT COUNT(*) AS n FROM roms "
@@ -471,9 +526,8 @@ def delete_roms_with_other_library_root(
 
     Safety: ``keep_root`` must be a non-empty string. Passing ``""`` or
     ``None`` would otherwise wipe rows whose library_root happens to be
-    empty (shouldn't exist post-v0.3.0 but defended against). Callers
-    are responsible for filtering empty values before invoking this —
-    see the guard in :meth:`MainWindow._on_open_library`.
+    empty. Callers are responsible for filtering empty values before
+    invoking this — see the guard in :meth:`MainWindow._on_open_library`.
     """
     if not keep_root:
         raise ValueError("keep_root must be a non-empty path")
@@ -494,167 +548,6 @@ def delete_roms_with_other_library_root(
         (keep_root,),
     )
     return cursor.rowcount
-
-
-def prune_orphan_games(conn: sqlite3.Connection) -> int:
-    """Delete games that no longer have any roms pointing at them.
-
-    Called after :func:`delete_missing_roms` or
-    :func:`delete_roms_with_other_library_root` so the games table doesn't
-    accumulate dangling rows. Returns the number of games dropped.
-
-    FK-dependent rows are cleared in this order before the games delete:
-
-    * ``metadata`` (1:1, FK on game_id without CASCADE) — DELETED.
-    * ``covers`` (FK on game_id without CASCADE) — DELETED.
-    * ``collection_games`` (FK on game_id without CASCADE) — DELETED.
-    * ``dest_inventory.game_id`` (FK on game_id without CASCADE) —
-      SET to NULL. The dest_inventory row itself is anchored by rom_id,
-      not game_id; if its rom is still alive the row stays. (Rows
-      pointing at deleted roms are already gone via
-      :func:`_delete_rom_dependents`.)
-
-    Without this dependent cleanup the games delete raises
-    ``IntegrityError: FOREIGN KEY constraint failed`` for any orphan
-    game that had been enriched (metadata / covers / collection
-    membership). This used to look fine in tests because the test
-    fixtures never attached metadata; real libraries trip it
-    immediately after a Clean Missing run.
-    """
-    orphan_ids = [
-        row["id"]
-        for row in conn.execute(
-            "SELECT id FROM games "
-            "WHERE id NOT IN "
-            "(SELECT DISTINCT game_id FROM roms WHERE game_id IS NOT NULL)"
-        ).fetchall()
-    ]
-    if not orphan_ids:
-        logger.info("prune_orphan_games: no orphans to prune")
-        return 0
-    logger.info(
-        "prune_orphan_games: clearing dependents for %d orphan game(s)",
-        len(orphan_ids),
-    )
-    _delete_game_dependents(conn, orphan_ids)
-    placeholders = ",".join("?" for _ in orphan_ids)
-    cursor = conn.execute(
-        f"DELETE FROM games WHERE id IN ({placeholders})", orphan_ids
-    )
-    logger.info("prune_orphan_games: pruned=%d", cursor.rowcount)
-    return cursor.rowcount
-
-
-def _delete_game_dependents(
-    conn: sqlite3.Connection, game_ids: list[int]
-) -> None:
-    """Drop FK-dependent rows that reference ``game_ids`` without CASCADE.
-
-    Mirrors :func:`_delete_rom_dependents` — chunks the work into 500
-    ids at a time to stay under SQLite's default parameter limit (999).
-    ``dest_inventory.game_id`` is NULLed rather than deleted because
-    the row is anchored on ``rom_id``; nuking the inventory entry
-    would lose the destination-side bookkeeping the next sync needs.
-    """
-    if not game_ids:
-        return
-    chunk_size = 500
-    total = len(game_ids)
-    for start in range(0, total, chunk_size):
-        chunk = game_ids[start : start + chunk_size]
-        placeholders = ",".join("?" for _ in chunk)
-        conn.execute(
-            f"DELETE FROM metadata WHERE game_id IN ({placeholders})", chunk
-        )
-        conn.execute(
-            f"DELETE FROM covers WHERE game_id IN ({placeholders})", chunk
-        )
-        conn.execute(
-            f"DELETE FROM collection_games WHERE game_id IN ({placeholders})",
-            chunk,
-        )
-        conn.execute(
-            f"UPDATE dest_inventory SET game_id = NULL "
-            f"WHERE game_id IN ({placeholders})",
-            chunk,
-        )
-        done = min(start + chunk_size, total)
-        logger.debug(
-            "_delete_game_dependents: chunk done=%d/%d",
-            done,
-            total,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Games
-# ---------------------------------------------------------------------------
-
-
-def upsert_game(conn: sqlite3.Connection, game_data: GameUpsertData) -> int:
-    """Insert a Game row, or return the existing id if one already matches.
-
-    Matches by (system_id, title) — this is good enough for Quick Scan, where
-    titles come from parsed filenames. Later sessions will add canonical-name
-    matching via DAT lookups.
-
-    Required keys: title, system_id.
-    Optional: canonical_name, region, revision, is_hack, is_homebrew, is_bios.
-    """
-    existing = conn.execute(
-        "SELECT id FROM games WHERE system_id = ? AND title = ?",
-        (game_data["system_id"], game_data["title"]),
-    ).fetchone()
-    if existing:
-        return existing[0]
-    cursor = conn.execute(
-        """
-        INSERT INTO games (
-            title, system_id, canonical_name, region, revision,
-            is_hack, is_homebrew, is_bios
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            game_data["title"],
-            game_data["system_id"],
-            game_data.get("canonical_name"),
-            game_data.get("region"),
-            game_data.get("revision"),
-            int(bool(game_data.get("is_hack", False))),
-            int(bool(game_data.get("is_homebrew", False))),
-            int(bool(game_data.get("is_bios", False))),
-        ),
-    )
-    new_id = cursor.lastrowid
-    assert new_id is not None, "INSERT into games did not produce a lastrowid"
-    return new_id
-
-
-def link_rom_to_game(conn: sqlite3.Connection, rom_id: int, game_id: int) -> None:
-    """Set roms.game_id = game_id for a single ROM."""
-    conn.execute("UPDATE roms SET game_id = ? WHERE id = ?", (game_id, rom_id))
-
-
-def find_game_id_for_fuzzy_key(
-    conn: sqlite3.Connection, system_id: str, fuzzy_key: str
-) -> int | None:
-    """Find an existing game id by joining through any ROM sharing the fuzzy key.
-
-    This avoids storing fuzzy_key on the games table directly while still
-    allowing the scanner to find "the game" that a new ROM belongs to.
-    Returns None if no ROM with that key is yet linked to a game.
-    """
-    row = conn.execute(
-        """
-        SELECT DISTINCT g.id
-        FROM games g
-        JOIN roms r ON r.game_id = g.id
-        WHERE g.system_id = ? AND r.fuzzy_key = ?
-        LIMIT 1
-        """,
-        (system_id, fuzzy_key),
-    ).fetchone()
-    return row["id"] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -697,8 +590,8 @@ def update_scan_history(
     """Update a scan_history row in place with arbitrary fields.
 
     The SQL SET clause is built dynamically, but column names are checked
-    against the hard-coded `allowed` whitelist before interpolation, so this
-    is not an injection vector — values are still passed as `?` parameters.
+    against the hard-coded ``allowed`` whitelist before interpolation, so this
+    is not an injection vector — values are still passed as ``?`` parameters.
     """
     if not updates:
         return
@@ -712,7 +605,7 @@ def update_scan_history(
     fields = [k for k in updates if k in allowed]
     if not fields:
         return
-    # Safe: each name in `fields` is guaranteed to be in the `allowed` whitelist.
+    # Safe: each name in ``fields`` is guaranteed to be in the ``allowed`` whitelist.
     set_clause = ", ".join(f"{f} = ?" for f in fields)
     values: list[object] = [updates[f] for f in fields]  # type: ignore[literal-required]
     values.append(scan_id)
@@ -733,8 +626,8 @@ def upsert_hash(
 ) -> None:
     """Insert or replace the hash row for a ROM.
 
-    `hashed_at` is stamped to the current wall-clock time; the heavy-scan
-    pipeline compares this against `roms.mtime` to detect stale entries.
+    ``hashed_at`` is stamped to the current wall-clock time; the heavy-scan
+    pipeline compares this against ``roms.mtime`` to detect stale entries.
     """
     conn.execute(
         """
@@ -819,7 +712,7 @@ def insert_dat_entry(conn: sqlite3.Connection, entry: DatEntry) -> int:
 def get_dat_by_sha1(
     conn: sqlite3.Connection, sha1: str | None
 ) -> sqlite3.Row | None:
-    """Authoritative DAT lookup by SHA-1. Returns None if `sha1` is falsy."""
+    """Authoritative DAT lookup by SHA-1. Returns None if ``sha1`` is falsy."""
     if not sha1:
         return None
     return conn.execute(
@@ -848,8 +741,6 @@ def get_dat_by_crc_size(
     if len(rows) == 1:
         return rows[0]
     if len(rows) > 1:
-        # Lazy logger import — queries.py is otherwise log-free, and pulling
-        # logging at module level would only matter for this one rare path.
         import logging
 
         logging.getLogger(__name__).debug(
@@ -893,23 +784,30 @@ _METADATA_FIELDS: tuple[str, ...] = (
 
 def upsert_metadata(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     metadata: MetadataPayload,
     source: str,
 ) -> None:
-    """Insert or replace a game's metadata row.
+    """Insert or replace a ROM's metadata row.
 
-    Unknown keys are ignored; missing keys are stored as NULL. `source` records
-    which provider (hasheous / launchbox / screenscraper) supplied the row.
+    Unknown keys are ignored; missing keys are stored as NULL. ``source``
+    records which provider (hasheous / launchbox / screenscraper / etc.)
+    supplied the row.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to attach metadata to.
+        metadata: Provider-supplied metadata payload.
+        source: Provider name string.
     """
     values = [metadata.get(field) for field in _METADATA_FIELDS]  # type: ignore[literal-required]
     conn.execute(
         """
         INSERT INTO metadata (
-            game_id, description, genre, developer, publisher,
+            rom_id, description, genre, developer, publisher,
             release_date, release_year, players, rating, source
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(game_id) DO UPDATE SET
+        ON CONFLICT(rom_id) DO UPDATE SET
             description  = excluded.description,
             genre        = excluded.genre,
             developer    = excluded.developer,
@@ -920,20 +818,25 @@ def upsert_metadata(
             rating       = excluded.rating,
             source       = excluded.source
         """,
-        (game_id, *values, source),
+        (rom_id, *values, source),
     )
 
 
-def get_metadata(conn: sqlite3.Connection, game_id: int) -> sqlite3.Row | None:
-    """Return the metadata row for a game, or None if unenriched."""
+def get_metadata(conn: sqlite3.Connection, rom_id: int) -> sqlite3.Row | None:
+    """Return the metadata row for a ROM, or None if unenriched.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to look up.
+    """
     return conn.execute(
-        "SELECT * FROM metadata WHERE game_id = ?", (game_id,)
+        "SELECT * FROM metadata WHERE rom_id = ?", (rom_id,)
     ).fetchone()
 
 
 def insert_cover(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     cover_type: str,
     source_url: str | None,
     local_path: str | None,
@@ -941,58 +844,73 @@ def insert_cover(
     height: int | None = None,
     is_preferred: int = 0,
 ) -> int:
-    """Insert a covers row and return its id."""
+    """Insert a covers row and return its id.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to attach the cover to.
+        cover_type: Cover type string (e.g. ``"Named_Boxarts"``).
+        source_url: Remote URL the cover was fetched from, or None.
+        local_path: Absolute path to the cached image on disk, or None.
+        width: Image width in pixels, or None.
+        height: Image height in pixels, or None.
+        is_preferred: 1 if this cover should be the default display cover.
+    """
     cursor = conn.execute(
         """
         INSERT INTO covers (
-            game_id, cover_type, source_url, local_path, width, height, is_preferred
+            rom_id, cover_type, source_url, local_path, width, height, is_preferred
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (game_id, cover_type, source_url, local_path, width, height, is_preferred),
+        (rom_id, cover_type, source_url, local_path, width, height, is_preferred),
     )
     new_id = cursor.lastrowid
     assert new_id is not None, "INSERT into covers did not produce a lastrowid"
     return new_id
 
 
-def get_covers(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
-    """Return all cover rows for a game.
+def get_covers(conn: sqlite3.Connection, rom_id: int) -> list[sqlite3.Row]:
+    """Return all cover rows for a ROM.
 
     Ordered ``is_preferred DESC, id ASC`` so the preferred cover is always
     first — the UI can rely on index 0 being the default display cover.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to look up covers for.
     """
     return conn.execute(
-        "SELECT * FROM covers WHERE game_id = ? ORDER BY is_preferred DESC, id ASC",
-        (game_id,),
+        "SELECT * FROM covers WHERE rom_id = ? ORDER BY is_preferred DESC, id ASC",
+        (rom_id,),
     ).fetchall()
 
 
 def get_preferred_cover(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     cover_type: str = "Named_Boxarts",
 ) -> sqlite3.Row | None:
-    """Return the preferred cover row for a game/type, or None if absent.
+    """Return the preferred cover row for a ROM/type, or None if absent.
 
     Args:
         conn: SQLite connection.
-        game_id: Game to look up.
+        rom_id: ROM to look up.
         cover_type: Cover type to filter by (default ``"Named_Boxarts"``).
     """
     return conn.execute(
         """
         SELECT * FROM covers
-        WHERE game_id = ? AND cover_type = ? AND is_preferred = 1
+        WHERE rom_id = ? AND cover_type = ? AND is_preferred = 1
         LIMIT 1
         """,
-        (game_id, cover_type),
+        (rom_id, cover_type),
     ).fetchone()
 
 
 def set_preferred_cover(conn: sqlite3.Connection, cover_id: int) -> None:
     """Mark ``cover_id`` as preferred and reset all other rows in its group.
 
-    A "group" is all covers sharing the same ``(game_id, cover_type)``.  The
+    A "group" is all covers sharing the same ``(rom_id, cover_type)``. The
     operation is atomic — both the reset and the promotion happen inside a
     single transaction so there is never a moment where zero rows are preferred.
 
@@ -1001,16 +919,16 @@ def set_preferred_cover(conn: sqlite3.Connection, cover_id: int) -> None:
         cover_id: The id of the cover row to promote.
     """
     row = conn.execute(
-        "SELECT game_id, cover_type FROM covers WHERE id = ?", (cover_id,)
+        "SELECT rom_id, cover_type FROM covers WHERE id = ?", (cover_id,)
     ).fetchone()
     if row is None:
         return
-    game_id = int(row["game_id"])
+    rom_id = int(row["rom_id"])
     cover_type = str(row["cover_type"])
     with conn:
         conn.execute(
-            "UPDATE covers SET is_preferred = 0 WHERE game_id = ? AND cover_type = ?",
-            (game_id, cover_type),
+            "UPDATE covers SET is_preferred = 0 WHERE rom_id = ? AND cover_type = ?",
+            (rom_id, cover_type),
         )
         conn.execute(
             "UPDATE covers SET is_preferred = 1 WHERE id = ?",
@@ -1020,25 +938,25 @@ def set_preferred_cover(conn: sqlite3.Connection, cover_id: int) -> None:
 
 def count_covers(
     conn: sqlite3.Connection,
-    game_id: int,
+    rom_id: int,
     cover_type: str = "Named_Boxarts",
 ) -> int:
-    """Return the number of cover rows for a game/type.
+    """Return the number of cover rows for a ROM/type.
 
     Args:
         conn: SQLite connection.
-        game_id: Game to count covers for.
+        rom_id: ROM to count covers for.
         cover_type: Cover type to filter by (default ``"Named_Boxarts"``).
     """
     row = conn.execute(
-        "SELECT COUNT(*) FROM covers WHERE game_id = ? AND cover_type = ?",
-        (game_id, cover_type),
+        "SELECT COUNT(*) FROM covers WHERE rom_id = ? AND cover_type = ?",
+        (rom_id, cover_type),
     ).fetchone()
     return int(row[0]) if row else 0
 
 
 def _ensure_preferred(
-    conn: sqlite3.Connection, game_id: int, cover_type: str
+    conn: sqlite3.Connection, rom_id: int, cover_type: str
 ) -> None:
     """Promote the first cover row per group if no preferred row exists yet.
 
@@ -1047,17 +965,17 @@ def _ensure_preferred(
 
     Args:
         conn: SQLite connection.
-        game_id: Game to check.
+        rom_id: ROM to check.
         cover_type: Cover type group to check.
     """
     existing_preferred = conn.execute(
-        "SELECT 1 FROM covers WHERE game_id = ? AND cover_type = ? AND is_preferred = 1 LIMIT 1",
-        (game_id, cover_type),
+        "SELECT 1 FROM covers WHERE rom_id = ? AND cover_type = ? AND is_preferred = 1 LIMIT 1",
+        (rom_id, cover_type),
     ).fetchone()
     if existing_preferred is None:
         first = conn.execute(
-            "SELECT id FROM covers WHERE game_id = ? AND cover_type = ? ORDER BY id ASC LIMIT 1",
-            (game_id, cover_type),
+            "SELECT id FROM covers WHERE rom_id = ? AND cover_type = ? ORDER BY id ASC LIMIT 1",
+            (rom_id, cover_type),
         ).fetchone()
         if first is not None:
             conn.execute(
@@ -1066,54 +984,63 @@ def _ensure_preferred(
             )
 
 
-def has_cover(conn: sqlite3.Connection, game_id: int, cover_type: str) -> bool:
-    """True if a cover row of the given type already exists for this game."""
+def has_cover(conn: sqlite3.Connection, rom_id: int, cover_type: str) -> bool:
+    """True if a cover row of the given type already exists for this ROM.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to check.
+        cover_type: Cover type to filter by.
+    """
     row = conn.execute(
-        "SELECT 1 FROM covers WHERE game_id = ? AND cover_type = ? LIMIT 1",
-        (game_id, cover_type),
+        "SELECT 1 FROM covers WHERE rom_id = ? AND cover_type = ? LIMIT 1",
+        (rom_id, cover_type),
     ).fetchone()
     return row is not None
 
 
-def get_games_needing_enrichment(
+def get_roms_needing_enrichment(
     conn: sqlite3.Connection,
     *,
     include_fuzzy: bool = False,
     include_already_enriched: bool = False,
 ) -> list[sqlite3.Row]:
-    """Return games that should be considered for enrichment.
+    """Return ROMs that should be considered for enrichment.
 
     Two opt-in flags loosen the default filters:
 
-    * ``include_fuzzy`` — when False (default) only games with at least
-      one ``match_confidence='dat_verified'`` rom are returned. When True
-      every confidence level (fuzzy, header, dat_verified) is eligible.
-      The risky case is fuzzy: name-based metadata lookups can attach
-      *wrong* metadata when the canonical name was guessed.
-    * ``include_already_enriched`` — when False (default) games that
-      already carry a metadata row are excluded. When True they are kept,
-      so a user-triggered re-run can top up partial enrichments after a
-      new provider (e.g. TheGamesDB) has been configured.
+    * ``include_fuzzy`` — when False (default) only ROMs with
+      ``match_confidence='dat_verified'`` are returned. When True every
+      confidence level (fuzzy, header, dat_verified) is eligible. The risky
+      case is fuzzy: name-based metadata lookups can attach *wrong* metadata
+      when the canonical name was guessed.
+    * ``include_already_enriched`` — when False (default) ROMs that already
+      carry a metadata row are excluded. When True they are kept, so a
+      user-triggered re-run can top up partial enrichments after a new
+      provider has been configured.
 
-    The two flags are independent and combine multiplicatively. Setting
-    both to True returns the broadest possible candidate set — used by
-    the "force re-enrich this one game" path in the UI.
+    The two flags are independent and combine multiplicatively. Setting both
+    to True returns the broadest possible candidate set.
+
+    Args:
+        conn: SQLite connection.
+        include_fuzzy: Include fuzzy/header-matched ROMs as enrichment candidates.
+        include_already_enriched: Include ROMs that already have a metadata row.
     """
     sql = [
-        "SELECT DISTINCT g.id, g.title, g.system_id, g.canonical_name,",
+        "SELECT r.id, r.title, r.system_id, r.canonical_name,",
         "       r.dat_match AS dat_match",
-        "FROM games g",
-        "JOIN roms r ON r.game_id = g.id",
-        "LEFT JOIN metadata m ON m.game_id = g.id",
+        "FROM roms r",
+        "LEFT JOIN metadata m ON m.rom_id = r.id",
     ]
     where: list[str] = []
     if not include_fuzzy:
         where.append("r.match_confidence = 'dat_verified'")
     if not include_already_enriched:
-        where.append("m.game_id IS NULL")
+        where.append("m.rom_id IS NULL")
     if where:
         sql.append("WHERE " + " AND ".join(where))
-    sql.append("ORDER BY g.system_id, g.title")
+    sql.append("ORDER BY r.system_id, r.title")
     return conn.execute("\n".join(sql)).fetchall()
 
 
@@ -1122,26 +1049,16 @@ def get_games_needing_enrichment(
 # ---------------------------------------------------------------------------
 
 
-def get_game_by_id(conn: sqlite3.Connection, game_id: int) -> sqlite3.Row | None:
-    """Return the games row for `game_id`, or None if it does not exist."""
-    return conn.execute(
-        "SELECT * FROM games WHERE id = ?", (game_id,)
-    ).fetchone()
-
-
 def get_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> sqlite3.Row | None:
-    """Return the roms row for `rom_id`, or None if it does not exist."""
+    """Return the roms row for ``rom_id``, or None if it does not exist.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM id to look up.
+    """
     return conn.execute(
         "SELECT * FROM roms WHERE id = ?", (rom_id,)
     ).fetchone()
-
-
-def get_roms_for_game(conn: sqlite3.Connection, game_id: int) -> list[sqlite3.Row]:
-    """Return every ROM linked to a game, ordered by filename."""
-    return conn.execute(
-        "SELECT * FROM roms WHERE game_id = ? ORDER BY filename",
-        (game_id,),
-    ).fetchall()
 
 
 # ---------------------------------------------------------------------------
@@ -1177,6 +1094,12 @@ def create_collection(
     """Insert a new collection row; return its id.
 
     Raises sqlite3.IntegrityError if a collection with the same name exists.
+
+    Args:
+        conn: SQLite connection.
+        name: Unique collection name.
+        description: Optional human-readable description.
+        is_system: True for built-in collections (e.g. Favorites).
     """
     cursor = conn.execute(
         "INSERT INTO collections (name, description, is_system) VALUES (?, ?, ?)",
@@ -1189,10 +1112,14 @@ def create_collection(
 
 
 def delete_collection(conn: sqlite3.Connection, collection_id: int) -> None:
-    """Remove a collection and every game-link pointing at it.
+    """Remove a collection and every ROM-link pointing at it.
 
     System collections (is_system=1) are protected — calling this on one raises
-    ValueError so callers must guard against it explicitly.
+    ``ValueError`` so callers must guard against it explicitly.
+
+    Args:
+        conn: SQLite connection.
+        collection_id: The collection to delete.
     """
     row = conn.execute(
         "SELECT is_system FROM collections WHERE id = ?", (collection_id,)
@@ -1202,58 +1129,75 @@ def delete_collection(conn: sqlite3.Connection, collection_id: int) -> None:
     if int(row["is_system"]):
         raise ValueError("Cannot delete system collection")
     conn.execute(
-        "DELETE FROM collection_games WHERE collection_id = ?", (collection_id,)
+        "DELETE FROM collection_roms WHERE collection_id = ?", (collection_id,)
     )
     conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
     conn.commit()
 
 
-def add_game_to_collection(
-    conn: sqlite3.Connection, collection_id: int, game_id: int
+def add_rom_to_collection(
+    conn: sqlite3.Connection, collection_id: int, rom_id: int
 ) -> None:
-    """Link a game to a collection. Idempotent — duplicate inserts are ignored."""
+    """Link a ROM to a collection. Idempotent — duplicate inserts are ignored.
+
+    Args:
+        conn: SQLite connection.
+        collection_id: Target collection.
+        rom_id: ROM to add.
+    """
     conn.execute(
-        "INSERT OR IGNORE INTO collection_games (collection_id, game_id) VALUES (?, ?)",
-        (collection_id, game_id),
+        "INSERT OR IGNORE INTO collection_roms (collection_id, rom_id) VALUES (?, ?)",
+        (collection_id, rom_id),
     )
     conn.commit()
 
 
-def remove_game_from_collection(
-    conn: sqlite3.Connection, collection_id: int, game_id: int
+def remove_rom_from_collection(
+    conn: sqlite3.Connection, collection_id: int, rom_id: int
 ) -> None:
-    """Remove a single game from a collection."""
+    """Remove a single ROM from a collection.
+
+    Args:
+        conn: SQLite connection.
+        collection_id: Target collection.
+        rom_id: ROM to remove.
+    """
     conn.execute(
-        "DELETE FROM collection_games WHERE collection_id = ? AND game_id = ?",
-        (collection_id, game_id),
+        "DELETE FROM collection_roms WHERE collection_id = ? AND rom_id = ?",
+        (collection_id, rom_id),
     )
     conn.commit()
 
 
-def get_collection_games(
+def get_collection_roms(
     conn: sqlite3.Connection, collection_id: int
 ) -> list[int]:
-    """Return every game_id linked to a collection, ordered by insertion."""
+    """Return every rom_id linked to a collection, ordered by insertion.
+
+    Args:
+        conn: SQLite connection.
+        collection_id: The collection to query.
+    """
     rows = conn.execute(
-        "SELECT game_id FROM collection_games WHERE collection_id = ?",
+        "SELECT rom_id FROM collection_roms WHERE collection_id = ?",
         (collection_id,),
     ).fetchall()
-    return [int(row["game_id"]) for row in rows]
+    return [int(row["rom_id"]) for row in rows]
 
 
 def get_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return every collection row with a game_count aggregate.
+    """Return every collection row with a rom_count aggregate.
 
-    Columns: `id, name, description, is_system, game_count`. System collections
+    Columns: ``id, name, description, is_system, rom_count``. System collections
     (is_system=1) sort to the top so the UI can render Favorites above any
     user-created entries.
     """
     return conn.execute(
         """
         SELECT c.id, c.name, c.description, c.is_system,
-               COUNT(cg.game_id) AS game_count
+               COUNT(cr.rom_id) AS rom_count
         FROM collections c
-        LEFT JOIN collection_games cg ON cg.collection_id = c.id
+        LEFT JOIN collection_roms cr ON cr.collection_id = c.id
         GROUP BY c.id, c.name, c.description, c.is_system
         ORDER BY c.is_system DESC, c.name
         """
@@ -1263,19 +1207,30 @@ def get_collections(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def get_collection_by_name(
     conn: sqlite3.Connection, name: str
 ) -> sqlite3.Row | None:
-    """Return the collection row with this name, or None."""
+    """Return the collection row with this name, or None.
+
+    Args:
+        conn: SQLite connection.
+        name: Collection name to look up.
+    """
     return conn.execute(
         "SELECT * FROM collections WHERE name = ?", (name,)
     ).fetchone()
 
 
-def is_game_in_collection(
-    conn: sqlite3.Connection, collection_id: int, game_id: int
+def is_rom_in_collection(
+    conn: sqlite3.Connection, collection_id: int, rom_id: int
 ) -> bool:
-    """True if a (collection, game) link row exists."""
+    """True if a (collection, ROM) link row exists.
+
+    Args:
+        conn: SQLite connection.
+        collection_id: Collection to check.
+        rom_id: ROM to check.
+    """
     row = conn.execute(
-        "SELECT 1 FROM collection_games WHERE collection_id = ? AND game_id = ? LIMIT 1",
-        (collection_id, game_id),
+        "SELECT 1 FROM collection_roms WHERE collection_id = ? AND rom_id = ? LIMIT 1",
+        (collection_id, rom_id),
     ).fetchone()
     return row is not None
 
@@ -1288,10 +1243,10 @@ def is_game_in_collection(
 def get_alias_folder_pairs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return ROMs grouped by (system_id, folder) for alias-folder analysis.
 
-    Each row contains `system_id`, the lowercase basename of the parent folder
-    (`folder`), and a ROM count. The organizer compares this against the system
-    registry's `folder_aliases` list to detect non-canonical folders that should
-    be merged into the canonical one.
+    Each row contains ``system_id``, the lowercase basename of the parent
+    folder (``folder``), and a ROM count. The organizer compares this against
+    the system registry's ``folder_aliases`` list to detect non-canonical
+    folders that should be merged into the canonical one.
     """
     return conn.execute(
         """
@@ -1319,19 +1274,18 @@ def get_alias_folder_pairs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def get_duplicate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return groups of ROMs that share an identical SHA-1.
 
-    Joins `roms` with `hashes` and yields one row per (sha1, rom_id) for every
-    SHA-1 that appears on two or more ROMs. Hacks (games.is_hack=1) are excluded
-    so the organizer never proposes deduping a hack against its original even
-    if the hasher (incorrectly) reported identical content.
+    Joins ``roms`` with ``hashes`` and yields one row per (sha1, rom_id) for
+    every SHA-1 that appears on two or more ROMs. Hack ROMs (is_hack=1) are
+    excluded so the organizer never proposes deduping a hack against its
+    original even if the hasher (incorrectly) reported identical content.
     """
     return conn.execute(
         """
         SELECT h.sha1, r.id AS rom_id, r.path, r.filename, r.extension,
-               r.system_id, r.game_id, r.size_bytes,
-               COALESCE(g.is_hack, 0) AS is_hack
+               r.system_id, r.size_bytes,
+               COALESCE(r.is_hack, 0) AS is_hack
         FROM hashes h
         JOIN roms r ON r.id = h.rom_id
-        LEFT JOIN games g ON g.id = r.game_id
         WHERE h.sha1 IS NOT NULL
           AND h.sha1 IN (
               SELECT sha1
@@ -1340,7 +1294,7 @@ def get_duplicate_groups(conn: sqlite3.Connection) -> list[sqlite3.Row]:
               GROUP BY sha1
               HAVING COUNT(*) > 1
           )
-          AND COALESCE(g.is_hack, 0) = 0
+          AND COALESCE(r.is_hack, 0) = 0
         ORDER BY h.sha1, r.id
         """
     ).fetchall()
@@ -1356,7 +1310,7 @@ def get_dat_matched_roms(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT r.id, r.path, r.filename, r.extension, r.system_id,
-               r.game_id, r.dat_match, r.match_confidence
+               r.dat_match, r.match_confidence
         FROM roms r
         WHERE r.match_confidence = 'dat_verified'
           AND r.dat_match IS NOT NULL
@@ -1372,6 +1326,12 @@ def update_rom_path(
     """Update a ROM's path/filename after a rename or move.
 
     Caller is responsible for committing the surrounding transaction.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to update.
+        new_path: New absolute path on disk.
+        new_filename: New filename (basename).
     """
     conn.execute(
         "UPDATE roms SET path = ?, filename = ? WHERE id = ?",
@@ -1383,29 +1343,32 @@ def delete_rom(conn: sqlite3.Connection, rom_id: int) -> None:
     """Remove a ROM row (and its hash row) after a duplicate removal.
 
     Caller is responsible for committing the surrounding transaction.
+    ``metadata``, ``covers``, and ``collection_roms`` rows are dropped
+    automatically via ``ON DELETE CASCADE``.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to delete.
     """
     conn.execute("DELETE FROM hashes WHERE rom_id = ?", (rom_id,))
     conn.execute("DELETE FROM roms WHERE id = ?", (rom_id,))
 
 
 def delete_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> bool:
-    """Permanently drop one ROM row, its FK dependents, and any orphan game.
+    """Permanently drop one ROM row, its FK dependents, and commit.
 
     Used by the user-initiated ``Delete this ROM`` right-click action.
-    Differs from :func:`delete_rom` in two ways:
-
-    * Cleans up ``hashes`` AND ``dest_inventory`` rows that reference
-      this rom — the older helper only handled ``hashes``, which was
-      fine for the organizer (no sync state yet) but would raise a
-      FK ``IntegrityError`` here for any rom that's been pushed to a
-      destination.
-    * Calls :func:`prune_orphan_games` afterwards so a single-rom game
-      row doesn't linger after its last rom is gone.
-    * Commits the surrounding transaction (single-shot user action;
-      no caller is going to bundle it with other work).
+    Cleans up ``hashes`` and ``dest_inventory`` rows first (those tables
+    do not have ``ON DELETE CASCADE`` in the v0.4.0 schema). ``metadata``,
+    ``covers``, and ``collection_roms`` are cleaned up automatically by
+    the CASCADE on ``roms.id``.
 
     Returns True when a rom row was actually deleted, False when the
     id didn't match anything in the table.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to delete.
     """
     exists = conn.execute(
         "SELECT 1 FROM roms WHERE id = ?", (rom_id,)
@@ -1414,7 +1377,6 @@ def delete_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> bool:
         return False
     _delete_rom_dependents(conn, [rom_id])
     conn.execute("DELETE FROM roms WHERE id = ?", (rom_id,))
-    prune_orphan_games(conn)
     conn.commit()
     return True
 
@@ -1422,8 +1384,11 @@ def delete_rom_by_id(conn: sqlite3.Connection, rom_id: int) -> bool:
 def get_rom_path(conn: sqlite3.Connection, rom_id: int) -> str | None:
     """Return the on-disk path stored for a rom id, or None when unknown.
 
-    Used by ``Reveal in Explorer`` (opens the OS file browser with the
-    target highlighted) and as a pre-flight for ``Delete this ROM``.
+    Used by ``Reveal in Explorer`` and as a pre-flight for ``Delete this ROM``.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM to look up.
     """
     row = conn.execute(
         "SELECT path FROM roms WHERE id = ?", (rom_id,)
@@ -1436,7 +1401,13 @@ def get_rom_path(conn: sqlite3.Connection, rom_id: int) -> str | None:
 def insert_organize_plan(
     conn: sqlite3.Connection, plan_json: str, status: str = "pending"
 ) -> int:
-    """Record an organize plan (its serialized JSON) and return its row id."""
+    """Record an organize plan (its serialized JSON) and return its row id.
+
+    Args:
+        conn: SQLite connection.
+        plan_json: JSON-serialized plan payload.
+        status: Initial status string (default ``"pending"``).
+    """
     cursor = conn.execute(
         """
         INSERT INTO organize_plans (created_at, status, plan_json)
@@ -1457,7 +1428,13 @@ def insert_organize_plan(
 def update_plan_status(
     conn: sqlite3.Connection, plan_id: int, status: str
 ) -> None:
-    """Stamp an organize plan with its terminal status (applied/cancelled/failed)."""
+    """Stamp an organize plan with its terminal status (applied/cancelled/failed).
+
+    Args:
+        conn: SQLite connection.
+        plan_id: The plan to update.
+        status: New status string.
+    """
     conn.execute(
         "UPDATE organize_plans SET status = ? WHERE id = ?", (status, plan_id)
     )
@@ -1490,6 +1467,10 @@ def insert_sync_destination(
     Caller is responsible for committing the surrounding transaction. Raises
     ``sqlite3.IntegrityError`` if a destination with the same ``name`` already
     exists (the name has a UNIQUE constraint per spec §4.1).
+
+    Args:
+        conn: SQLite connection.
+        data: Destination fields.
     """
     cursor = conn.execute(
         """
@@ -1521,6 +1502,13 @@ def update_sync_destination(
 
     Any field left as ``None`` is preserved. ``last_inventory_signature`` is
     NOT settable here — that flows through :func:`set_sync_dest_signature`.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to update.
+        name: New name, or None to leave unchanged.
+        target_path: New target path, or None to leave unchanged.
+        profile_id: New profile id, or None to leave unchanged.
     """
     fields: list[str] = []
     values: list[object] = []
@@ -1543,7 +1531,12 @@ def update_sync_destination(
 
 
 def delete_sync_destination(conn: sqlite3.Connection, dest_id: int) -> None:
-    """Remove a saved destination AND its cached inventory rows."""
+    """Remove a saved destination AND its cached inventory rows.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to delete.
+    """
     conn.execute("DELETE FROM dest_inventory WHERE dest_id = ?", (dest_id,))
     conn.execute("DELETE FROM sync_destinations WHERE id = ?", (dest_id,))
 
@@ -1558,7 +1551,12 @@ def get_sync_destinations(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def get_sync_destination(
     conn: sqlite3.Connection, dest_id: int
 ) -> sqlite3.Row | None:
-    """Return a single sync_destinations row, or None if it does not exist."""
+    """Return a single sync_destinations row, or None if it does not exist.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination id to look up.
+    """
     return conn.execute(
         "SELECT * FROM sync_destinations WHERE id = ?", (dest_id,)
     ).fetchone()
@@ -1567,7 +1565,12 @@ def get_sync_destination(
 def get_sync_destination_by_name(
     conn: sqlite3.Connection, name: str
 ) -> sqlite3.Row | None:
-    """Return a destination by name, or None."""
+    """Return a destination by name, or None.
+
+    Args:
+        conn: SQLite connection.
+        name: Destination name to look up.
+    """
     return conn.execute(
         "SELECT * FROM sync_destinations WHERE name = ?", (name,)
     ).fetchone()
@@ -1581,6 +1584,10 @@ def get_sync_destination_by_target_path(
     ``target_path`` is not UNIQUE in the schema (only ``name`` is), so this
     helper returns the lowest-id row that matches — matching the row the user
     would see in the dropdown.
+
+    Args:
+        conn: SQLite connection.
+        target_path: Filesystem path to look up.
     """
     return conn.execute(
         "SELECT * FROM sync_destinations WHERE target_path = ? "
@@ -1607,9 +1614,13 @@ def ensure_sync_destination_by_path(
       ``"Quick Sync — <basename>"`` name. If that name collides with an
       existing row's (unrelated) name, suffix with ``" (N)"`` until unique.
 
-    Caller is responsible for committing the surrounding transaction. The
-    helper does NOT commit on its own so it composes with the worker spawn
-    sequence's commit.
+    Caller is responsible for committing the surrounding transaction.
+
+    Args:
+        conn: SQLite connection.
+        target_path: Filesystem path of the sync destination.
+        profile_id: Profile id to assign to new rows.
+        name_hint: Override the auto-generated name for new rows.
     """
     existing = get_sync_destination_by_target_path(conn, target_path)
     if existing is not None:
@@ -1619,8 +1630,6 @@ def ensure_sync_destination_by_path(
     base_name = name_hint or f"Quick Sync — {basename}"
     candidate = base_name
     counter = 2
-    # Guard against pathological name collisions; cap the loop so we never
-    # spin forever on a broken DB.
     while counter < 1000:
         if get_sync_destination_by_name(conn, candidate) is None:
             break
@@ -1640,7 +1649,13 @@ def ensure_sync_destination_by_path(
 def set_sync_dest_signature(
     conn: sqlite3.Connection, dest_id: int, signature: str | None
 ) -> None:
-    """Stamp / clear the inventory signature for swap-the-SD detection (§4.5)."""
+    """Stamp / clear the inventory signature for swap-the-SD detection (§4.5).
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to update.
+        signature: New signature string, or None to clear.
+    """
     conn.execute(
         "UPDATE sync_destinations SET last_inventory_signature = ? WHERE id = ?",
         (signature, dest_id),
@@ -1650,7 +1665,13 @@ def set_sync_dest_signature(
 def set_sync_dest_last_synced(
     conn: sqlite3.Connection, dest_id: int, timestamp: str | None = None
 ) -> None:
-    """Stamp ``last_synced_at`` after a successful sync apply."""
+    """Stamp ``last_synced_at`` after a successful sync apply.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to update.
+        timestamp: ISO-8601 timestamp string, or None to use the current time.
+    """
     conn.execute(
         "UPDATE sync_destinations SET last_synced_at = ? WHERE id = ?",
         (timestamp if timestamp is not None else datetime_now_iso(), dest_id),
@@ -1671,7 +1692,6 @@ class DestInventoryUpsert(TypedDict):
     mtime: float
     sha1: NotRequired[str | None]
     rom_id: NotRequired[int | None]
-    game_id: NotRequired[int | None]
 
 
 def upsert_dest_inventory(
@@ -1679,21 +1699,24 @@ def upsert_dest_inventory(
 ) -> None:
     """Insert or update a cached destination-inventory row.
 
-    Caller commits the surrounding transaction. Existing SHA-1 / rom_id / game_id
+    Caller commits the surrounding transaction. Existing SHA-1 / rom_id
     values are preserved when the new payload supplies ``None``, so a Quick
     Sync pass doesn't clobber a previous Deep Verify's cached hash.
+
+    Args:
+        conn: SQLite connection.
+        row: Inventory row fields.
     """
     conn.execute(
         """
         INSERT INTO dest_inventory (
-            dest_id, rel_path, size_bytes, mtime, sha1, rom_id, game_id, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            dest_id, rel_path, size_bytes, mtime, sha1, rom_id, last_seen_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(dest_id, rel_path) DO UPDATE SET
             size_bytes   = excluded.size_bytes,
             mtime        = excluded.mtime,
             sha1         = COALESCE(excluded.sha1, dest_inventory.sha1),
             rom_id       = COALESCE(excluded.rom_id, dest_inventory.rom_id),
-            game_id      = COALESCE(excluded.game_id, dest_inventory.game_id),
             last_seen_at = excluded.last_seen_at
         """,
         (
@@ -1703,7 +1726,6 @@ def upsert_dest_inventory(
             row["mtime"],
             row.get("sha1"),
             row.get("rom_id"),
-            row.get("game_id"),
             datetime_now_iso(),
         ),
     )
@@ -1712,7 +1734,12 @@ def upsert_dest_inventory(
 def get_dest_inventory(
     conn: sqlite3.Connection, dest_id: int
 ) -> list[sqlite3.Row]:
-    """Return every cached inventory row for a destination."""
+    """Return every cached inventory row for a destination.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to query.
+    """
     return conn.execute(
         "SELECT * FROM dest_inventory WHERE dest_id = ? ORDER BY rel_path",
         (dest_id,),
@@ -1722,7 +1749,13 @@ def get_dest_inventory(
 def get_dest_inventory_row(
     conn: sqlite3.Connection, dest_id: int, rel_path: str
 ) -> sqlite3.Row | None:
-    """Look up a single cached inventory row by (dest_id, rel_path)."""
+    """Look up a single cached inventory row by (dest_id, rel_path).
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination id.
+        rel_path: Relative path within the destination.
+    """
     return conn.execute(
         "SELECT * FROM dest_inventory WHERE dest_id = ? AND rel_path = ?",
         (dest_id, rel_path),
@@ -1730,7 +1763,12 @@ def get_dest_inventory_row(
 
 
 def clear_dest_inventory(conn: sqlite3.Connection, dest_id: int) -> None:
-    """Forget every cached inventory row for a destination ("Forget cache")."""
+    """Forget every cached inventory row for a destination ("Forget cache").
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to clear.
+    """
     conn.execute("DELETE FROM dest_inventory WHERE dest_id = ?", (dest_id,))
     conn.execute(
         "UPDATE sync_destinations SET last_inventory_signature = NULL WHERE id = ?",
@@ -1741,7 +1779,13 @@ def clear_dest_inventory(conn: sqlite3.Connection, dest_id: int) -> None:
 def delete_dest_inventory_row(
     conn: sqlite3.Connection, dest_id: int, rel_path: str
 ) -> None:
-    """Remove a single cached inventory row (file is gone from destination)."""
+    """Remove a single cached inventory row (file is gone from destination).
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination id.
+        rel_path: Relative path of the file that was removed.
+    """
     conn.execute(
         "DELETE FROM dest_inventory WHERE dest_id = ? AND rel_path = ?",
         (dest_id, rel_path),
@@ -1756,15 +1800,17 @@ def prune_dest_inventory_missing(
     ``present_rel_paths`` is the post-scan list of every file the walker
     observed. Anything in the cache but not in this list is deleted. Returns
     the row-count of pruned entries.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to prune.
+        present_rel_paths: List of relative paths currently on disk.
     """
     if not present_rel_paths:
         cursor = conn.execute(
             "DELETE FROM dest_inventory WHERE dest_id = ?", (dest_id,)
         )
         return cursor.rowcount
-    # ``DELETE … WHERE rel_path NOT IN (…)`` with many placeholders can blow
-    # past SQLite's compile-time limit. Stage the present set in a temporary
-    # table so the DELETE stays compact regardless of inventory size.
     conn.execute("DROP TABLE IF EXISTS _sync_present_paths")
     conn.execute("CREATE TEMP TABLE _sync_present_paths (rel_path TEXT PRIMARY KEY)")
     conn.executemany(
@@ -1797,7 +1843,16 @@ def insert_sync_plan(
     plan_json: str,
     status: str = "pending",
 ) -> int:
-    """Persist a sync plan and return its id. Mirrors ``insert_organize_plan``."""
+    """Persist a sync plan and return its id. Mirrors ``insert_organize_plan``.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination this plan targets.
+        mode: Sync mode string.
+        summary_json: JSON-serialized summary payload.
+        plan_json: JSON-serialized plan payload.
+        status: Initial status (default ``"pending"``).
+    """
     cursor = conn.execute(
         """
         INSERT INTO sync_plans (dest_id, mode, created_at, status, summary, plan_json)
@@ -1821,7 +1876,13 @@ def insert_sync_plan(
 def update_sync_plan_status(
     conn: sqlite3.Connection, plan_id: int, status: str
 ) -> None:
-    """Stamp a sync plan with its terminal status (applied/cancelled/partial)."""
+    """Stamp a sync plan with its terminal status (applied/cancelled/partial).
+
+    Args:
+        conn: SQLite connection.
+        plan_id: Plan to update.
+        status: New status string.
+    """
     conn.execute(
         "UPDATE sync_plans SET status = ? WHERE id = ?", (status, plan_id)
     )
@@ -1831,7 +1892,12 @@ def update_sync_plan_status(
 def get_sync_plan(
     conn: sqlite3.Connection, plan_id: int
 ) -> sqlite3.Row | None:
-    """Return a sync plan row by id, or None."""
+    """Return a sync plan row by id, or None.
+
+    Args:
+        conn: SQLite connection.
+        plan_id: Plan id to look up.
+    """
     return conn.execute(
         "SELECT * FROM sync_plans WHERE id = ?", (plan_id,)
     ).fetchone()
@@ -1840,7 +1906,12 @@ def get_sync_plan(
 def get_sync_plans_for_dest(
     conn: sqlite3.Connection, dest_id: int
 ) -> list[sqlite3.Row]:
-    """Return every persisted sync plan for a destination, newest first."""
+    """Return every persisted sync plan for a destination, newest first.
+
+    Args:
+        conn: SQLite connection.
+        dest_id: Destination to query.
+    """
     return conn.execute(
         "SELECT * FROM sync_plans WHERE dest_id = ? ORDER BY id DESC",
         (dest_id,),
@@ -1857,9 +1928,10 @@ def get_local_roms_for_match(
 ) -> list[sqlite3.Row]:
     """Return every local ROM with the columns sync's identity matcher needs.
 
-    Joins ``roms`` against ``games`` and ``hashes`` so a single pass over the
-    DB hydrates all four tiers of identity matching (§3): path equivalence,
-    fuzzy_key + region, hash-by-name, and deep-verify by SHA-1.
+    Joins ``roms`` against ``hashes`` so a single pass over the DB hydrates
+    all four tiers of identity matching (§3): path equivalence, fuzzy_key +
+    region, hash-by-name, and deep-verify by SHA-1. Identity columns
+    (``region``) now live directly on the ``roms`` row.
     """
     return conn.execute(
         """
@@ -1869,11 +1941,9 @@ def get_local_roms_for_match(
                r.system_id   AS system_id,
                r.size_bytes  AS size_bytes,
                r.fuzzy_key   AS fuzzy_key,
-               r.game_id     AS game_id,
-               COALESCE(g.region, '') AS region,
+               COALESCE(r.region, '') AS region,
                h.sha1        AS sha1
         FROM roms r
-        LEFT JOIN games  g ON g.id = r.game_id
         LEFT JOIN hashes h ON h.rom_id = r.id
         """
     ).fetchall()
@@ -1884,11 +1954,13 @@ def get_local_roms_for_match(
 # ---------------------------------------------------------------------------
 
 
-def get_roms_with_games(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Return every ROM that is linked to a game, with identifiers for cover matching.
+def get_roms_for_cover_discovery(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return every ROM eligible for cover discovery.
 
-    Columns: rom_id, rom_path, system_id, game_id, fuzzy_key, clean_name.
-    ROMs without a game_id are excluded because covers attach to games, not ROMs.
+    Columns: ``rom_id, rom_path, system_id, fuzzy_key, clean_name``.
+    ROMs without a fuzzy_key are excluded — they have no identity signal
+    to match cover art against.
+
     Used by the local cover discovery pipeline.
     """
     return conn.execute(
@@ -1896,12 +1968,10 @@ def get_roms_with_games(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         SELECT r.id       AS rom_id,
                r.path     AS rom_path,
                r.system_id,
-               r.game_id,
                r.fuzzy_key,
                COALESCE(r.dat_match, '') AS clean_name
         FROM roms r
-        WHERE r.game_id IS NOT NULL
-          AND r.fuzzy_key IS NOT NULL
+        WHERE r.fuzzy_key IS NOT NULL
           AND r.fuzzy_key != ''
         ORDER BY r.system_id, r.id
         """
@@ -1909,21 +1979,21 @@ def get_roms_with_games(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def has_cover_for_path(
-    conn: sqlite3.Connection, game_id: int, local_path: str
+    conn: sqlite3.Connection, rom_id: int, local_path: str
 ) -> bool:
-    """Return True if a covers row with this exact local_path already exists for the game.
+    """Return True if a covers row with this exact local_path already exists for the ROM.
 
     Used by the local cover discovery pipeline for idempotent re-runs — avoids
     inserting duplicate rows when discovery is run more than once.
 
     Args:
         conn: SQLite connection.
-        game_id: The game to check.
+        rom_id: The ROM to check.
         local_path: Absolute path string of the candidate image file.
     """
     row = conn.execute(
-        "SELECT 1 FROM covers WHERE game_id = ? AND local_path = ? LIMIT 1",
-        (game_id, local_path),
+        "SELECT 1 FROM covers WHERE rom_id = ? AND local_path = ? LIMIT 1",
+        (rom_id, local_path),
     ).fetchone()
     return row is not None
 
@@ -1931,7 +2001,7 @@ def has_cover_for_path(
 def get_rom_ids_for_scope(
     conn: sqlite3.Connection,
     *,
-    game_id: int | None = None,
+    rom_id: int | None = None,
     system_id: str | None = None,
     collection_id: int | None = None,
 ) -> list[int]:
@@ -1940,21 +2010,21 @@ def get_rom_ids_for_scope(
     Exactly one of the keyword arguments should be supplied. If none are given,
     an empty list is returned (callers should treat that as "no scope, use
     default behaviour"). If multiple are supplied, the narrowest wins:
-    ``game_id`` > ``system_id`` > ``collection_id``.
+    ``rom_id`` > ``system_id`` > ``collection_id``.
 
     Args:
         conn: SQLite connection.
-        game_id: Return ROMs belonging to a single game.
+        rom_id: Return a single ROM by id.
         system_id: Return all ROMs in a system.
-        collection_id: Return ROMs belonging to games in the collection.
+        collection_id: Return ROMs belonging to the collection.
 
     Returns:
         Ordered list of rom row ids matching the scope.
     """
-    if game_id is not None:
+    if rom_id is not None:
         rows = conn.execute(
-            "SELECT id FROM roms WHERE game_id = ? ORDER BY id",
-            (game_id,),
+            "SELECT id FROM roms WHERE id = ? ORDER BY id",
+            (rom_id,),
         ).fetchall()
         return [int(row[0]) for row in rows]
 
@@ -1968,11 +2038,10 @@ def get_rom_ids_for_scope(
     if collection_id is not None:
         rows = conn.execute(
             """
-            SELECT r.id
-            FROM roms r
-            JOIN collection_games cg ON cg.game_id = r.game_id
-            WHERE cg.collection_id = ?
-            ORDER BY r.id
+            SELECT cr.rom_id
+            FROM collection_roms cr
+            WHERE cr.collection_id = ?
+            ORDER BY cr.rom_id
             """,
             (collection_id,),
         ).fetchall()
@@ -1981,60 +2050,27 @@ def get_rom_ids_for_scope(
     return []
 
 
-def get_game_ids_for_scope(
+def get_roms_with_enrichment_status(
     conn: sqlite3.Connection,
-    *,
-    game_id: int | None = None,
     system_id: str | None = None,
-    collection_id: int | None = None,
-) -> list[int] | None:
-    """Resolve a UI scope into a list of game ids for enrichment filtering.
+    rom_ids: list[int] | None = None,
+    limit: int = 5000,
+) -> list[sqlite3.Row]:
+    """Return ROM rows annotated with ``has_cover`` and ``has_metadata`` flags.
 
-    Returns ``None`` when no scope is specified (meaning "all games").
-    Returns a (possibly empty) list when a specific scope is requested.
+    This is the backing query for the game-table enrichment filter. Each
+    returned row exposes the same columns as the base ``load_rom_rows`` query
+    PLUS:
+
+    * ``has_cover``    — 1 if at least one covers row exists for this ROM
+    * ``has_metadata`` — 1 if a metadata row exists for this ROM
+    * ``rom_path``     — path of the ROM on disk
 
     Args:
         conn: SQLite connection.
-        game_id: Scope to a single game.
-        system_id: Scope to all games in a system.
-        collection_id: Scope to games in a collection.
-    """
-    if game_id is not None:
-        return [game_id]
-
-    if system_id is not None:
-        rows = conn.execute(
-            "SELECT DISTINCT id FROM games WHERE system_id = ? ORDER BY id",
-            (system_id,),
-        ).fetchall()
-        return [int(row[0]) for row in rows]
-
-    if collection_id is not None:
-        rows = conn.execute(
-            "SELECT DISTINCT game_id FROM collection_games"
-            " WHERE collection_id = ? ORDER BY game_id",
-            (collection_id,),
-        ).fetchall()
-        return [int(row[0]) for row in rows]
-
-    return None
-
-
-def get_games_with_enrichment_status(
-    conn: sqlite3.Connection,
-    system_id: str | None = None,
-    game_ids: list[int] | None = None,
-    limit: int = 5000,
-) -> list[sqlite3.Row]:
-    """Return game rows annotated with ``has_cover`` and ``has_metadata`` flags.
-
-    This is the backing query for the game-table enrichment filter added in the
-    UI/UX pass.  Each returned row exposes the same columns as the base
-    ``load_rom_rows`` query PLUS:
-
-    * ``has_cover``    — 1 if at least one covers row exists for this game
-    * ``has_metadata`` — 1 if a metadata row exists for this game
-    * ``rom_path``     — path of the first linked ROM (ORDER BY filename)
+        system_id: Filter to a single system, or None for all.
+        rom_ids: Explicit list of rom ids to include, or None for all.
+        limit: Maximum number of rows to return.
     """
     base = """
         SELECT
@@ -2043,35 +2079,248 @@ def get_games_with_enrichment_status(
             r.system_id,
             r.path          AS rom_path,
             COALESCE(s.short_name, s.display_name, r.system_id) AS system_name,
-            COALESCE(g.region, '')  AS region,
+            COALESCE(r.region, '')  AS region,
             r.size_bytes,
             r.match_confidence,
-            r.game_id,
-            CASE WHEN c.game_id IS NOT NULL THEN 1 ELSE 0 END AS has_cover,
-            CASE WHEN m.game_id IS NOT NULL THEN 1 ELSE 0 END AS has_metadata
+            CASE WHEN c.rom_id IS NOT NULL THEN 1 ELSE 0 END AS has_cover,
+            CASE WHEN m.rom_id IS NOT NULL THEN 1 ELSE 0 END AS has_metadata
         FROM roms r
         LEFT JOIN systems   s ON s.id = r.system_id
-        LEFT JOIN games     g ON g.id = r.game_id
         LEFT JOIN (
-            SELECT DISTINCT game_id FROM covers
-        ) c ON c.game_id = r.game_id
+            SELECT DISTINCT rom_id FROM covers
+        ) c ON c.rom_id = r.id
         LEFT JOIN (
-            SELECT DISTINCT game_id FROM metadata
-        ) m ON m.game_id = r.game_id
+            SELECT DISTINCT rom_id FROM metadata
+        ) m ON m.rom_id = r.id
     """
     clauses: list[str] = []
     params: list[object] = []
     if system_id is not None:
         clauses.append("r.system_id = ?")
         params.append(system_id)
-    if game_ids is not None:
-        if not game_ids:
+    if rom_ids is not None:
+        if not rom_ids:
             return []
-        placeholders = ",".join("?" for _ in game_ids)
-        clauses.append(f"r.game_id IN ({placeholders})")
-        params.extend(game_ids)
+        placeholders = ",".join("?" for _ in rom_ids)
+        clauses.append(f"r.id IN ({placeholders})")
+        params.extend(rom_ids)
     if clauses:
         base += " WHERE " + " AND ".join(clauses)
     base += " ORDER BY r.filename LIMIT ?"
     params.append(limit)
     return conn.execute(base, params).fetchall()
+
+
+# ---------------------------------------------------------------------------
+# Forward-looking sibling-metadata helpers (wired up in Session 15)
+# ---------------------------------------------------------------------------
+
+
+def find_sibling_metadata(
+    conn: sqlite3.Connection,
+    rom_id: int,
+    system_id: str,
+    canonical_name: str | None,
+    sha1: str | None,
+) -> sqlite3.Row | None:
+    """Find a metadata row attached to a *different* ROM with the same identity.
+
+    Identity resolution order:
+    1. SHA-1 match (most precise): any ROM whose hash matches ``sha1``.
+    2. ``(system_id, canonical_name)`` match (title-based fallback).
+
+    Returns the first matching metadata row, or None if no sibling exists.
+    Used by Session 15's copy-on-enrich logic to avoid re-fetching metadata
+    for byte-identical or title-equivalent duplicates.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM we are enriching (excluded from the search).
+        system_id: Platform to restrict the title-based fallback to.
+        canonical_name: Canonical title to match (may be None).
+        sha1: SHA-1 of the ROM payload (may be None).
+    """
+    # Tier 1 — SHA-1 match
+    if sha1:
+        row = conn.execute(
+            """
+            SELECT m.*
+            FROM metadata m
+            JOIN hashes h ON h.rom_id = m.rom_id
+            WHERE h.sha1 = ?
+              AND m.rom_id != ?
+            LIMIT 1
+            """,
+            (sha1, rom_id),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    # Tier 2 — (system_id, canonical_name) match
+    if canonical_name:
+        row = conn.execute(
+            """
+            SELECT m.*
+            FROM metadata m
+            JOIN roms r ON r.id = m.rom_id
+            WHERE r.system_id = ?
+              AND r.canonical_name = ?
+              AND m.rom_id != ?
+            LIMIT 1
+            """,
+            (system_id, canonical_name, rom_id),
+        ).fetchone()
+        if row is not None:
+            return row
+
+    return None
+
+
+def copy_metadata(
+    conn: sqlite3.Connection, source_rom_id: int, dest_rom_id: int
+) -> None:
+    """Copy the metadata row from ``source_rom_id`` to ``dest_rom_id``.
+
+    If ``source_rom_id`` has no metadata row this is a no-op.
+    If ``dest_rom_id`` already has a metadata row it is replaced (same
+    upsert semantics as :func:`upsert_metadata`).
+
+    Used by Session 15's copy-on-enrich logic so byte-identical ROM duplicates
+    don't require a second network round-trip.
+
+    Args:
+        conn: SQLite connection.
+        source_rom_id: ROM whose metadata row to copy from.
+        dest_rom_id: ROM to attach the copied metadata to.
+    """
+    source = conn.execute(
+        "SELECT * FROM metadata WHERE rom_id = ?", (source_rom_id,)
+    ).fetchone()
+    if source is None:
+        return
+    conn.execute(
+        """
+        INSERT INTO metadata (
+            rom_id, description, genre, developer, publisher,
+            release_date, release_year, players, rating, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(rom_id) DO UPDATE SET
+            description  = excluded.description,
+            genre        = excluded.genre,
+            developer    = excluded.developer,
+            publisher    = excluded.publisher,
+            release_date = excluded.release_date,
+            release_year = excluded.release_year,
+            players      = excluded.players,
+            rating       = excluded.rating,
+            source       = excluded.source
+        """,
+        (
+            dest_rom_id,
+            source["description"],
+            source["genre"],
+            source["developer"],
+            source["publisher"],
+            source["release_date"],
+            source["release_year"],
+            source["players"],
+            source["rating"],
+            source["source"],
+        ),
+    )
+
+
+def find_sibling_covers(
+    conn: sqlite3.Connection,
+    rom_id: int,
+    system_id: str,
+    canonical_name: str | None,
+    sha1: str | None,
+) -> list[sqlite3.Row]:
+    """Find cover rows attached to a *different* ROM with the same identity.
+
+    Identity resolution order mirrors :func:`find_sibling_metadata` —
+    SHA-1 first, then ``(system_id, canonical_name)`` fallback.
+
+    Returns all matching cover rows (may be empty). Used by Session 15's
+    copy-on-enrich logic.
+
+    Args:
+        conn: SQLite connection.
+        rom_id: The ROM we are enriching (excluded from the search).
+        system_id: Platform to restrict the title-based fallback to.
+        canonical_name: Canonical title to match (may be None).
+        sha1: SHA-1 of the ROM payload (may be None).
+    """
+    # Tier 1 — SHA-1 match
+    if sha1:
+        rows = conn.execute(
+            """
+            SELECT c.*
+            FROM covers c
+            JOIN hashes h ON h.rom_id = c.rom_id
+            WHERE h.sha1 = ?
+              AND c.rom_id != ?
+            """,
+            (sha1, rom_id),
+        ).fetchall()
+        if rows:
+            return list(rows)
+
+    # Tier 2 — (system_id, canonical_name) match
+    if canonical_name:
+        rows = conn.execute(
+            """
+            SELECT c.*
+            FROM covers c
+            JOIN roms r ON r.id = c.rom_id
+            WHERE r.system_id = ?
+              AND r.canonical_name = ?
+              AND c.rom_id != ?
+            """,
+            (system_id, canonical_name, rom_id),
+        ).fetchall()
+        if rows:
+            return list(rows)
+
+    return []
+
+
+def copy_covers(
+    conn: sqlite3.Connection, source_rom_id: int, dest_rom_id: int
+) -> None:
+    """Copy cover rows from ``source_rom_id`` to ``dest_rom_id``.
+
+    The on-disk image file (``local_path``) is shared between ROM rows;
+    no filesystem copy is performed. If ``source_rom_id`` has no cover rows
+    this is a no-op. Existing cover rows for ``dest_rom_id`` are left in
+    place — this is an additive operation, not a replace.
+
+    Used by Session 15's copy-on-enrich logic.
+
+    Args:
+        conn: SQLite connection.
+        source_rom_id: ROM whose covers to copy from.
+        dest_rom_id: ROM to attach the copied covers to.
+    """
+    source_rows = conn.execute(
+        "SELECT * FROM covers WHERE rom_id = ?", (source_rom_id,)
+    ).fetchall()
+    for src in source_rows:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO covers (
+                rom_id, cover_type, source_url, local_path,
+                width, height, is_preferred
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                dest_rom_id,
+                src["cover_type"],
+                src["source_url"],
+                src["local_path"],
+                src["width"],
+                src["height"],
+                src["is_preferred"],
+            ),
+        )

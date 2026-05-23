@@ -1,14 +1,30 @@
-"""SQLite schema definitions and migration support.
+"""SQLite schema definitions for ROMulus v0.4.0+.
 
-The full schema is described in `docs/TECHNICAL_PLAN.md` §3. All CREATE TABLE
-statements use IF NOT EXISTS so `create_tables()` is safe to call on every app
-startup. There is no migration framework yet — schema changes are additive
-for now (new tables, new columns with defaults).
+The ``games`` table has been removed. Every identity column that was on
+``games`` (title, canonical_name, region, revision, is_hack, is_homebrew,
+is_bios) now lives directly on the ``roms`` row. The model is strictly 1:1:
+one ROM file = one ``roms`` row with its own metadata, covers, and collection
+membership.
+
+``ON DELETE CASCADE`` is declared on every FK that references ``roms.id`` so
+deleting a rom row atomically cleans up its metadata, covers, and collection
+memberships — no explicit ``prune_*`` step required.
+
+No migration framework. Per CLAUDE.md rule #14, pre-v0.4.0 databases must be
+wiped and rebuilt. Detection: :func:`romulus.app.initialize_database` checks
+``PRAGMA table_info(games)`` and aborts with :data:`REQUIRES_FRESH_DB_MESSAGE`
+if the old table is found.
 """
 
 from __future__ import annotations
 
 import sqlite3
+
+#: Human-readable error surfaced when a pre-v0.4.0 database is detected.
+REQUIRES_FRESH_DB_MESSAGE: str = (
+    "Your library database predates v0.4.0 (it still has a 'games' table). "
+    "Delete data/romulus.db and rescan to upgrade to the new 1:1 ROM model."
+)
 
 SCHEMA_STATEMENTS: list[str] = [
     # App configuration (key-value)
@@ -33,20 +49,6 @@ SCHEMA_STATEMENTS: list[str] = [
         dat_name        TEXT
     )
     """,
-    # Logical games (referenced by roms via FK; create before roms)
-    """
-    CREATE TABLE IF NOT EXISTS games (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        title           TEXT NOT NULL,
-        system_id       TEXT REFERENCES systems(id),
-        canonical_name  TEXT,
-        region          TEXT,
-        revision        TEXT,
-        is_hack         INTEGER DEFAULT 0,
-        is_homebrew     INTEGER DEFAULT 0,
-        is_bios         INTEGER DEFAULT 0
-    )
-    """,
     # Scan history (referenced by roms via FK; create before roms)
     """
     CREATE TABLE IF NOT EXISTS scan_history (
@@ -61,7 +63,10 @@ SCHEMA_STATEMENTS: list[str] = [
         errors        INTEGER DEFAULT 0
     )
     """,
-    # ROM files on disk
+    # ROM files on disk — identity unit in the 1:1 model.
+    # Identity columns (title … is_bios) come from filename parse (Quick Scan)
+    # or DAT match (Heavy Scan); omitting them on upsert preserves any existing
+    # values via the COALESCE pattern in upsert_rom.
     """
     CREATE TABLE IF NOT EXISTS roms (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,22 +76,28 @@ SCHEMA_STATEMENTS: list[str] = [
         size_bytes       INTEGER NOT NULL,
         mtime            REAL NOT NULL,
         system_id        TEXT REFERENCES systems(id),
-        game_id          INTEGER REFERENCES games(id),
         scan_id          INTEGER REFERENCES scan_history(id),
         fuzzy_key        TEXT,
         header_title     TEXT,
         dat_match        TEXT,
         match_confidence TEXT DEFAULT 'unmatched',
         library_root     TEXT,
-        missing          INTEGER NOT NULL DEFAULT 0
+        missing          INTEGER NOT NULL DEFAULT 0,
+        title            TEXT,
+        canonical_name   TEXT,
+        region           TEXT,
+        revision         TEXT,
+        is_hack          INTEGER NOT NULL DEFAULT 0,
+        is_homebrew      INTEGER NOT NULL DEFAULT 0,
+        is_bios          INTEGER NOT NULL DEFAULT 0
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_roms_system ON roms(system_id)",
     "CREATE INDEX IF NOT EXISTS idx_roms_fuzzy ON roms(system_id, fuzzy_key)",
-    "CREATE INDEX IF NOT EXISTS idx_roms_game ON roms(game_id)",
+    "CREATE INDEX IF NOT EXISTS idx_roms_title ON roms(system_id, title)",
     "CREATE INDEX IF NOT EXISTS idx_roms_library_root ON roms(library_root)",
     "CREATE INDEX IF NOT EXISTS idx_roms_missing ON roms(missing) WHERE missing = 1",
-    # Hash cache (expensive to compute, reused if mtime unchanged)
+    # Hash cache (expensive to compute; reused if mtime unchanged)
     """
     CREATE TABLE IF NOT EXISTS hashes (
         rom_id    INTEGER PRIMARY KEY REFERENCES roms(id),
@@ -117,10 +128,10 @@ SCHEMA_STATEMENTS: list[str] = [
     """,
     "CREATE INDEX IF NOT EXISTS idx_dat_sha1 ON dat_entries(sha1)",
     "CREATE INDEX IF NOT EXISTS idx_dat_crc32_size ON dat_entries(crc32, size_bytes)",
-    # Game metadata (from enrichment sources)
+    # Per-ROM metadata (1:1 with roms; CASCADE so deleting a rom drops its row)
     """
     CREATE TABLE IF NOT EXISTS metadata (
-        game_id      INTEGER PRIMARY KEY REFERENCES games(id),
+        rom_id       INTEGER PRIMARY KEY REFERENCES roms(id) ON DELETE CASCADE,
         description  TEXT,
         genre        TEXT,
         developer    TEXT,
@@ -132,11 +143,11 @@ SCHEMA_STATEMENTS: list[str] = [
         source       TEXT NOT NULL
     )
     """,
-    # Cover art references
+    # Cover art references (CASCADE so deleting a rom drops its cover rows)
     """
     CREATE TABLE IF NOT EXISTS covers (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        game_id      INTEGER REFERENCES games(id),
+        rom_id       INTEGER REFERENCES roms(id) ON DELETE CASCADE,
         cover_type   TEXT NOT NULL,
         source_url   TEXT,
         local_path   TEXT,
@@ -154,11 +165,12 @@ SCHEMA_STATEMENTS: list[str] = [
         is_system   INTEGER DEFAULT 0
     )
     """,
+    # Collection membership — renamed from collection_games; CASCADE on rom delete
     """
-    CREATE TABLE IF NOT EXISTS collection_games (
+    CREATE TABLE IF NOT EXISTS collection_roms (
         collection_id INTEGER REFERENCES collections(id),
-        game_id       INTEGER REFERENCES games(id),
-        PRIMARY KEY (collection_id, game_id)
+        rom_id        INTEGER REFERENCES roms(id) ON DELETE CASCADE,
+        PRIMARY KEY (collection_id, rom_id)
     )
     """,
     # Organization plans (preview before commit)
@@ -170,7 +182,7 @@ SCHEMA_STATEMENTS: list[str] = [
         plan_json  TEXT NOT NULL
     )
     """,
-    # Destination sync — saved targets the user can re-pick (§4.1).
+    # Destination sync — saved targets (§4.1)
     """
     CREATE TABLE IF NOT EXISTS sync_destinations (
         id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,7 +194,8 @@ SCHEMA_STATEMENTS: list[str] = [
         last_inventory_signature TEXT
     )
     """,
-    # Destination sync — cached file state per destination (§4.2).
+    # Destination sync — cached file state per destination (§4.2)
+    # game_id column REMOVED; rom_id is the sole anchor.
     """
     CREATE TABLE IF NOT EXISTS dest_inventory (
         dest_id      INTEGER NOT NULL REFERENCES sync_destinations(id) ON DELETE CASCADE,
@@ -191,14 +204,13 @@ SCHEMA_STATEMENTS: list[str] = [
         mtime        REAL NOT NULL,
         sha1         TEXT,
         rom_id       INTEGER REFERENCES roms(id),
-        game_id      INTEGER REFERENCES games(id),
         last_seen_at TEXT NOT NULL,
         PRIMARY KEY (dest_id, rel_path)
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_dest_inventory_sha1 ON dest_inventory(sha1)",
     "CREATE INDEX IF NOT EXISTS idx_dest_inventory_rom ON dest_inventory(rom_id)",
-    # Destination sync — persisted plans for history + resume (§4.3).
+    # Destination sync — persisted plans for history + resume (§4.3)
     """
     CREATE TABLE IF NOT EXISTS sync_plans (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,126 +225,16 @@ SCHEMA_STATEMENTS: list[str] = [
 ]
 
 
-def _migrate_sync_destinations(conn: sqlite3.Connection) -> None:
-    """Create the sync_destinations table on legacy DBs that predate v0.2.0.
-
-    Mirrors :func:`_migrate_covers_add_is_preferred`'s ``PRAGMA table_info``
-    detection. The ``CREATE TABLE IF NOT EXISTS`` statement above already runs
-    during normal create_tables flow; this helper is the explicit migration
-    hook called from :func:`create_tables` per the sync-design spec §4.
-    """
-    rows = conn.execute("PRAGMA table_info(sync_destinations)").fetchall()
-    if rows:
-        return
-    conn.execute(
-        """
-        CREATE TABLE sync_destinations (
-            id                       INTEGER PRIMARY KEY AUTOINCREMENT,
-            name                     TEXT NOT NULL UNIQUE,
-            target_path              TEXT NOT NULL,
-            profile_id               TEXT NOT NULL,
-            last_synced_at           TEXT,
-            created_at               TEXT NOT NULL,
-            last_inventory_signature TEXT
-        )
-        """
-    )
-    conn.commit()
-
-
-def _migrate_dest_inventory(conn: sqlite3.Connection) -> None:
-    """Create the dest_inventory table on legacy DBs that predate v0.2.0."""
-    rows = conn.execute("PRAGMA table_info(dest_inventory)").fetchall()
-    if rows:
-        return
-    conn.execute(
-        """
-        CREATE TABLE dest_inventory (
-            dest_id      INTEGER NOT NULL REFERENCES sync_destinations(id) ON DELETE CASCADE,
-            rel_path     TEXT NOT NULL,
-            size_bytes   INTEGER NOT NULL,
-            mtime        REAL NOT NULL,
-            sha1         TEXT,
-            rom_id       INTEGER REFERENCES roms(id),
-            game_id      INTEGER REFERENCES games(id),
-            last_seen_at TEXT NOT NULL,
-            PRIMARY KEY (dest_id, rel_path)
-        )
-        """
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_dest_inventory_sha1 ON dest_inventory(sha1)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_dest_inventory_rom ON dest_inventory(rom_id)"
-    )
-    conn.commit()
-
-
-def _migrate_sync_plans(conn: sqlite3.Connection) -> None:
-    """Create the sync_plans table on legacy DBs that predate v0.2.0."""
-    rows = conn.execute("PRAGMA table_info(sync_plans)").fetchall()
-    if rows:
-        return
-    conn.execute(
-        """
-        CREATE TABLE sync_plans (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            dest_id    INTEGER NOT NULL REFERENCES sync_destinations(id),
-            mode       TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            status     TEXT DEFAULT 'pending',
-            summary    TEXT NOT NULL,
-            plan_json  TEXT NOT NULL
-        )
-        """
-    )
-    conn.commit()
-
-
-def _migrate_covers_add_is_preferred(conn: sqlite3.Connection) -> None:
-    """Add ``is_preferred`` to covers if the column is absent (backward-compat).
-
-    Uses ``PRAGMA table_info`` to detect missing columns so the ALTER is
-    idempotent — safe to call on every startup regardless of DB age.
-
-    After adding the column, the first cover row per ``(game_id, cover_type)``
-    is promoted to ``is_preferred=1`` so existing users see their covers
-    immediately without any manual action.
-    """
-    rows = conn.execute("PRAGMA table_info(covers)").fetchall()
-    existing_columns = {row["name"] for row in rows}
-    if "is_preferred" not in existing_columns:
-        conn.execute(
-            "ALTER TABLE covers ADD COLUMN is_preferred INTEGER NOT NULL DEFAULT 0"
-        )
-        # Promote the first (lowest id) row per (game_id, cover_type).
-        conn.execute(
-            """
-            UPDATE covers
-            SET is_preferred = 1
-            WHERE id IN (
-                SELECT MIN(id)
-                FROM covers
-                GROUP BY game_id, cover_type
-            )
-            """
-        )
-        conn.commit()
-
-
 def create_tables(conn: sqlite3.Connection) -> None:
     """Execute every CREATE TABLE / CREATE INDEX statement in order.
 
-    Idempotent via IF NOT EXISTS. Safe to call on every startup.
-    Runs :func:`_migrate_covers_add_is_preferred` after the schema statements
-    so existing databases gain ``is_preferred`` on first launch.
+    Idempotent via ``IF NOT EXISTS``. Safe to call on every startup.
+
+    Note: Does NOT check for the legacy ``games`` table — that guard lives in
+    :func:`romulus.app.initialize_database` so it fires before any UI is shown,
+    not silently inside schema init.
     """
     cursor = conn.cursor()
     for statement in SCHEMA_STATEMENTS:
         cursor.execute(statement)
     conn.commit()
-    _migrate_covers_add_is_preferred(conn)
-    _migrate_sync_destinations(conn)
-    _migrate_dest_inventory(conn)
-    _migrate_sync_plans(conn)

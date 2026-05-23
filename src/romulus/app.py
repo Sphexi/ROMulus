@@ -20,6 +20,7 @@ from romulus.db import (
     set_config,
 )
 from romulus.db import queries as q
+from romulus.db.schema import REQUIRES_FRESH_DB_MESSAGE
 from romulus.models import seed_systems
 
 _LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
@@ -405,10 +406,22 @@ def resolve_db_path() -> Path:
 
 
 def initialize_database(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Open the app DB, create tables, and seed systems + defaults + favorites."""
+    """Open the app DB, create tables, and seed systems + defaults + favorites.
+
+    Raises ``RuntimeError`` when a pre-v0.4.0 database is detected (one that
+    still contains the ``games`` table). The caller must surface
+    :data:`romulus.db.schema.REQUIRES_FRESH_DB_MESSAGE` to the user and exit —
+    the app does NOT auto-wipe the database per CLAUDE.md design rule #14.
+    """
     if db_path is None:
         db_path = resolve_db_path()
     conn = get_connection(db_path)
+    # Guard: if the old games table exists this is a pre-v0.4.0 database.
+    # Refuse to open it — the user must delete romulus.db and rescan.
+    legacy_check = conn.execute("PRAGMA table_info(games)").fetchall()
+    if legacy_check:
+        conn.close()
+        raise RuntimeError(REQUIRES_FRESH_DB_MESSAGE)
     create_tables(conn)
     seed_systems(conn)
     seed_defaults(conn)
