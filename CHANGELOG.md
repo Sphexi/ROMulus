@@ -5,6 +5,44 @@ All notable changes to ROMulus will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — v0.4.0 in development
+
+The v0.4.0 cycle completes a strict 1:1 rom ↔ game data-model refactor
+started in sessions 13–19.
+
+### Changed
+
+**Strict 1:1 rom ↔ game model:**
+- Removed the separate `games` table. Every ROM file is now its own row
+  in `roms` carrying its own `metadata`, `covers`, and `collection_roms`
+  memberships. Byte-identical copies are two distinct rows so duplicates
+  surface by sorting on SHA-1 or filename rather than being silently
+  collapsed.
+- Fixed the regional-variant display bug where USA and Europe variants of
+  the same title shared one game row's metadata in the detail panel — each
+  ROM now has its own row so the panel shows region-specific data.
+- Removed `prune_orphan_games`. `ON DELETE CASCADE` on `metadata`,
+  `covers`, and `collection_roms` replaces the old explicit cleanup step.
+
+**Export:**
+- Added `ExportOptions.distinct_content_only` toggle (default False). When
+  True, only one ROM per SHA-1 cluster is exported; keeper rank:
+  `dat_verified` > canonical extension > shorter filename > lower `rom_id`.
+  ROMs with no SHA-1 always export regardless of the toggle.
+
+**Organizer fixes:**
+- Fixed TOCTOU guard in the duplicate-delete path to compare normalized
+  hashes (was comparing raw streams; `.sfc` + `.zip` of the same content
+  now applies correctly; different-content pair still refuses).
+- Fixed collision detector to flag rename targets already occupied by an
+  existing un-renamed file on disk.
+
+### Breaking changes
+
+- Pre-v0.4.0 databases are incompatible. Wipe `data/romulus.db` and rescan.
+
+---
+
 ## [Unreleased] — v0.3.0 in development
 
 The v0.3.0 cycle reshapes the project for actual real-world use. Major

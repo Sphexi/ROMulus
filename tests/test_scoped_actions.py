@@ -4,12 +4,20 @@ Covers:
 - WBM Classic QSS content assertions (gradients, border-radius, no exceptions).
 - Other themes load cleanly (not broken by the QSS edits).
 - get_rom_ids_for_scope query helper.
-- enrich_library scope filtering (game_ids, system_id, collection_id).
+- enrich_library scope filtering (rom_ids, system_id, collection_id).
 - hash_library scope_rom_ids filtering.
 - discover_local_covers scope_rom_ids filtering.
 - GameTable context menu scoped signals.
 - SystemSidebar context menu — system rows, collection rows, and "All" row.
 - MainWindow scoped enrich handler builds EnrichWorker with correct kwargs.
+
+Updated for strict 1:1 rom model (v0.4.0):
+- get_rom_ids_for_scope uses rom_id parameter (not game_id).
+- enrich_library uses rom_ids parameter (not game_ids).
+- GameTable signals are enrich_rom_requested / heavy_scan_rom_requested /
+  find_local_covers_rom_requested.
+- _enrich_scoped uses rom_ids parameter (not game_ids).
+- Collection membership is via add_rom_to_collection (not add_game_to_collection).
 """
 
 from __future__ import annotations
@@ -31,10 +39,9 @@ def _insert_rom(
     *,
     size_bytes: int = 1024,
     match_confidence: str = "dat_verified",
-    game_id: int | None = None,
 ) -> int:
-    """Insert a ROM row and return its id. Optionally link to a game."""
-    rom_id = q.upsert_rom(
+    """Insert a ROM row and return its id."""
+    return q.upsert_rom(
         conn,
         {
             "path": f"/library/{system_id}/{filename}",
@@ -47,18 +54,6 @@ def _insert_rom(
             "match_confidence": match_confidence,
         },
     )
-    if game_id is not None:
-        q.link_rom_to_game(conn, rom_id, game_id)
-    return rom_id
-
-
-def _insert_game(
-    conn: sqlite3.Connection,
-    title: str,
-    system_id: str,
-) -> int:
-    """Insert a game row and return its id."""
-    return q.upsert_game(conn, {"title": title, "system_id": system_id})
 
 
 # ---------------------------------------------------------------------------
@@ -186,14 +181,18 @@ class TestWbmClassicTheme:
 
 class TestGetRomIdsForScope:
     def test_game_id_scope_returns_matching_roms(self, seeded_db) -> None:
-        gid = _insert_game(seeded_db, "Mario", "snes")
-        rid1 = _insert_rom(seeded_db, "Mario.sfc", "snes", game_id=gid)
-        rid2 = _insert_rom(seeded_db, "Mario (USA).sfc", "snes", game_id=gid)
-        _insert_rom(seeded_db, "Sonic.md", "megadrive")  # different game, no link
+        """get_rom_ids_for_scope(rom_id=X) returns [X] in the 1:1 model."""
+        rid1 = _insert_rom(seeded_db, "Mario.sfc", "snes")
+        rid2 = _insert_rom(seeded_db, "Mario (USA).sfc", "snes")
+        _insert_rom(seeded_db, "Sonic.md", "megadrive")
         seeded_db.commit()
 
-        result = q.get_rom_ids_for_scope(seeded_db, game_id=gid)
-        assert sorted(result) == sorted([rid1, rid2])
+        # In the 1:1 model scope by individual rom_id returns just that one rom.
+        result = q.get_rom_ids_for_scope(seeded_db, rom_id=rid1)
+        assert result == [rid1]
+        # Both roms are addressable independently.
+        result2 = q.get_rom_ids_for_scope(seeded_db, rom_id=rid2)
+        assert result2 == [rid2]
 
     def test_system_id_scope_returns_all_system_roms(self, seeded_db) -> None:
         rid1 = _insert_rom(seeded_db, "Mario.sfc", "snes")
@@ -205,16 +204,14 @@ class TestGetRomIdsForScope:
         assert sorted(result) == sorted([rid1, rid2])
 
     def test_collection_id_scope_returns_collection_roms(self, seeded_db) -> None:
-        gid1 = _insert_game(seeded_db, "Mario", "snes")
-        rid1 = _insert_rom(seeded_db, "Mario.sfc", "snes", game_id=gid1)
-        gid2 = _insert_game(seeded_db, "Zelda", "snes")
-        rid2 = _insert_rom(seeded_db, "Zelda.sfc", "snes", game_id=gid2)
-        gid3 = _insert_game(seeded_db, "Sonic", "megadrive")
-        _insert_rom(seeded_db, "Sonic.md", "megadrive", game_id=gid3)  # not in coll
+        """Collection scope returns the rom ids enrolled in that collection."""
+        rid1 = _insert_rom(seeded_db, "Mario.sfc", "snes")
+        rid2 = _insert_rom(seeded_db, "Zelda.sfc", "snes")
+        _insert_rom(seeded_db, "Sonic.md", "megadrive")  # not in coll
 
         cid = q.create_collection(seeded_db, "Platformers")
-        q.add_game_to_collection(seeded_db, cid, gid1)
-        q.add_game_to_collection(seeded_db, cid, gid2)
+        q.add_rom_to_collection(seeded_db, cid, rid1)
+        q.add_rom_to_collection(seeded_db, cid, rid2)
         seeded_db.commit()
 
         result = q.get_rom_ids_for_scope(seeded_db, collection_id=cid)
@@ -228,10 +225,10 @@ class TestGetRomIdsForScope:
         assert result == []
 
     def test_game_id_scope_with_no_roms_returns_empty(self, seeded_db) -> None:
-        gid = _insert_game(seeded_db, "Ghost", "snes")
+        """Requesting a rom_id that does not exist returns empty."""
         seeded_db.commit()
 
-        result = q.get_rom_ids_for_scope(seeded_db, game_id=gid)
+        result = q.get_rom_ids_for_scope(seeded_db, rom_id=999999)
         assert result == []
 
 
@@ -243,14 +240,13 @@ class TestGetRomIdsForScope:
 class TestEnrichLibraryScope:
     """Pure logic tests — patch the network calls so nothing is fetched."""
 
-    def _seed_dat_verified_game(
+    def _seed_dat_verified_rom(
         self,
         conn: sqlite3.Connection,
         title: str,
         system_id: str,
-    ) -> tuple[int, int]:
-        """Insert a dat-verified game + ROM pair; return (game_id, rom_id)."""
-        gid = q.upsert_game(conn, {"title": title, "system_id": system_id})
+    ) -> int:
+        """Insert a dat-verified ROM row; return rom_id."""
         rid = q.upsert_rom(
             conn,
             {
@@ -263,16 +259,15 @@ class TestEnrichLibraryScope:
                 "match_confidence": "dat_verified",
             },
         )
-        q.link_rom_to_game(conn, rid, gid)
         conn.commit()
-        return gid, rid
+        return rid
 
     def test_game_ids_scope_limits_processing(self, seeded_db, monkeypatch) -> None:
-        """enrich_library with game_ids only processes those games."""
+        """enrich_library with rom_ids only processes those ROMs."""
         from romulus.metadata import enrich_library
 
-        gid1, _ = self._seed_dat_verified_game(seeded_db, "Mario", "snes")
-        gid2, _ = self._seed_dat_verified_game(seeded_db, "Sonic", "megadrive")
+        rid1 = self._seed_dat_verified_rom(seeded_db, "Mario", "snes")
+        self._seed_dat_verified_rom(seeded_db, "Sonic", "megadrive")
 
         processed: list[int] = []
 
@@ -281,17 +276,17 @@ class TestEnrichLibraryScope:
 
         # Patch out actual network calls — we only care about the filter.
         monkeypatch.setattr(
-            "romulus.metadata._fetch_metadata_for_game",
+            "romulus.metadata._fetch_metadata_for_rom",
             lambda *_a, **_kw: False,
         )
         monkeypatch.setattr(
-            "romulus.metadata._fetch_covers_for_game",
+            "romulus.metadata._fetch_covers_for_rom",
             lambda *_a, **_kw: 0,
         )
 
         stats = enrich_library(
             seeded_db,
-            game_ids=[gid1],
+            rom_ids=[rid1],
             progress_callback=_fake_progress,
         )
         # Only Mario should have been processed.
@@ -301,18 +296,18 @@ class TestEnrichLibraryScope:
     def test_system_id_scope_limits_to_system_games(
         self, seeded_db, monkeypatch
     ) -> None:
-        """enrich_library with system_id only touches that system's games."""
+        """enrich_library with system_id only touches that system's ROMs."""
         from romulus.metadata import enrich_library
 
-        self._seed_dat_verified_game(seeded_db, "Mario", "snes")
-        self._seed_dat_verified_game(seeded_db, "Sonic", "megadrive")
+        self._seed_dat_verified_rom(seeded_db, "Mario", "snes")
+        self._seed_dat_verified_rom(seeded_db, "Sonic", "megadrive")
 
         monkeypatch.setattr(
-            "romulus.metadata._fetch_metadata_for_game",
+            "romulus.metadata._fetch_metadata_for_rom",
             lambda *_a, **_kw: False,
         )
         monkeypatch.setattr(
-            "romulus.metadata._fetch_covers_for_game",
+            "romulus.metadata._fetch_covers_for_rom",
             lambda *_a, **_kw: 0,
         )
 
@@ -322,22 +317,22 @@ class TestEnrichLibraryScope:
     def test_collection_id_scope_limits_to_collection_games(
         self, seeded_db, monkeypatch
     ) -> None:
-        """enrich_library with collection_id only touches games in that collection."""
+        """enrich_library with collection_id only touches ROMs in that collection."""
         from romulus.metadata import enrich_library
 
-        gid1, _ = self._seed_dat_verified_game(seeded_db, "Mario", "snes")
-        gid2, _ = self._seed_dat_verified_game(seeded_db, "Sonic", "megadrive")
+        rid1 = self._seed_dat_verified_rom(seeded_db, "Mario", "snes")
+        self._seed_dat_verified_rom(seeded_db, "Sonic", "megadrive")
 
         cid = q.create_collection(seeded_db, "My Pack")
-        q.add_game_to_collection(seeded_db, cid, gid1)
+        q.add_rom_to_collection(seeded_db, cid, rid1)
         seeded_db.commit()
 
         monkeypatch.setattr(
-            "romulus.metadata._fetch_metadata_for_game",
+            "romulus.metadata._fetch_metadata_for_rom",
             lambda *_a, **_kw: False,
         )
         monkeypatch.setattr(
-            "romulus.metadata._fetch_covers_for_game",
+            "romulus.metadata._fetch_covers_for_rom",
             lambda *_a, **_kw: 0,
         )
 
@@ -345,18 +340,18 @@ class TestEnrichLibraryScope:
         assert stats["games_processed"] == 1
 
     def test_no_scope_processes_all_games(self, seeded_db, monkeypatch) -> None:
-        """enrich_library with no scope processes all eligible games."""
+        """enrich_library with no scope processes all eligible ROMs."""
         from romulus.metadata import enrich_library
 
-        self._seed_dat_verified_game(seeded_db, "Mario", "snes")
-        self._seed_dat_verified_game(seeded_db, "Sonic", "megadrive")
+        self._seed_dat_verified_rom(seeded_db, "Mario", "snes")
+        self._seed_dat_verified_rom(seeded_db, "Sonic", "megadrive")
 
         monkeypatch.setattr(
-            "romulus.metadata._fetch_metadata_for_game",
+            "romulus.metadata._fetch_metadata_for_rom",
             lambda *_a, **_kw: False,
         )
         monkeypatch.setattr(
-            "romulus.metadata._fetch_covers_for_game",
+            "romulus.metadata._fetch_covers_for_rom",
             lambda *_a, **_kw: 0,
         )
 
@@ -453,10 +448,6 @@ class TestDiscoverLocalCoversScope:
         """discover_local_covers with scope_rom_ids only walks those ROMs."""
         from romulus.core.local_cover_finder import discover_local_covers
 
-        # Two games, each with a ROM.
-        gid1 = q.upsert_game(seeded_db, {"title": "Mario", "system_id": "snes"})
-        gid2 = q.upsert_game(seeded_db, {"title": "Sonic", "system_id": "megadrive"})
-
         snes_dir = tmp_path / "snes"
         snes_dir.mkdir()
         md_dir = tmp_path / "megadrive"
@@ -475,7 +466,6 @@ class TestDiscoverLocalCoversScope:
                 "match_confidence": "dat_verified",
             },
         )
-        q.link_rom_to_game(seeded_db, rid1, gid1)
 
         rid2 = q.upsert_rom(
             seeded_db,
@@ -490,7 +480,6 @@ class TestDiscoverLocalCoversScope:
                 "match_confidence": "dat_verified",
             },
         )
-        q.link_rom_to_game(seeded_db, rid2, gid2)
         seeded_db.commit()
 
         result = discover_local_covers(
@@ -498,6 +487,8 @@ class TestDiscoverLocalCoversScope:
         )
         # Only rid1 was in scope — roms_scanned must be at most 1.
         assert result.roms_scanned <= 1
+        # Silence unused-var lint.
+        assert rid2
 
     def test_scope_rom_ids_none_walks_all(self, seeded_db, tmp_path) -> None:
         """discover_local_covers with scope_rom_ids=None walks all ROMs."""
@@ -507,10 +498,7 @@ class TestDiscoverLocalCoversScope:
         snes_dir.mkdir()
 
         for i in range(3):
-            gid = q.upsert_game(
-                seeded_db, {"title": f"Game{i}", "system_id": "snes"}
-            )
-            rid = q.upsert_rom(
+            q.upsert_rom(
                 seeded_db,
                 {
                     "path": str(snes_dir / f"Game{i}.sfc"),
@@ -523,7 +511,6 @@ class TestDiscoverLocalCoversScope:
                     "match_confidence": "dat_verified",
                 },
             )
-            q.link_rom_to_game(seeded_db, rid, gid)
         seeded_db.commit()
 
         result = discover_local_covers(
@@ -538,21 +525,20 @@ class TestDiscoverLocalCoversScope:
 
 
 class TestGameTableContextMenuSignals:
-    def _make_table_with_row(self, qapp, *, game_id: int = 42) -> object:
-        from romulus.ui.game_table import GameRow, GameTable
+    def _make_table_with_row(self, qapp, *, rom_id: int = 1) -> object:
+        from romulus.ui.game_table import GameTable, RomRow
 
         widget = GameTable()
         widget.set_rows(
             [
-                GameRow(
-                    rom_id=1,
+                RomRow(
+                    rom_id=rom_id,
                     name="Mario.sfc",
                     system_id="snes",
                     system_name="SNES",
                     region="USA",
                     size_bytes=512,
                     match_confidence="dat_verified",
-                    game_id=game_id,
                 )
             ]
         )
@@ -561,48 +547,45 @@ class TestGameTableContextMenuSignals:
     def test_context_menu_has_enrich_action(self, qapp) -> None:
         """The game-table context menu must contain an 'Enrich this game' entry."""
         widget = self._make_table_with_row(qapp)
-        # Select the only row.
         widget.view.selectAll()
-        # Trigger the context menu handler directly instead of a GUI click.
         # Confirm the signal exists on the widget.
-        assert hasattr(widget, "enrich_game_requested")
+        assert hasattr(widget, "enrich_rom_requested")
 
     def test_context_menu_has_heavy_scan_action(self, qapp) -> None:
-        """The game-table must expose heavy_scan_game_requested signal."""
+        """The game-table must expose heavy_scan_rom_requested signal."""
         widget = self._make_table_with_row(qapp)
-        assert hasattr(widget, "heavy_scan_game_requested")
+        assert hasattr(widget, "heavy_scan_rom_requested")
 
     def test_context_menu_has_find_local_covers_action(self, qapp) -> None:
-        """The game-table must expose find_local_covers_game_requested signal."""
+        """The game-table must expose find_local_covers_rom_requested signal."""
         widget = self._make_table_with_row(qapp)
-        assert hasattr(widget, "find_local_covers_game_requested")
+        assert hasattr(widget, "find_local_covers_rom_requested")
 
-    def test_enrich_game_signal_carries_game_id(self, qapp) -> None:
-        """Emitting enrich_game_requested passes the correct game_id."""
-        from romulus.ui.game_table import GameRow, GameTable
+    def test_enrich_game_signal_carries_rom_id(self, qapp) -> None:
+        """Emitting enrich_rom_requested passes the correct rom_id."""
+        from romulus.ui.game_table import GameTable, RomRow
 
         widget = GameTable()
-        game_id = 99
+        target_rom_id = 99
         widget.set_rows(
             [
-                GameRow(
-                    rom_id=1,
+                RomRow(
+                    rom_id=target_rom_id,
                     name="Test.sfc",
                     system_id="snes",
                     system_name="SNES",
                     region="USA",
                     size_bytes=256,
                     match_confidence="dat_verified",
-                    game_id=game_id,
                 )
             ]
         )
         received: list[int] = []
-        widget.enrich_game_requested.connect(received.append)
+        widget.enrich_rom_requested.connect(received.append)
 
         # Manually emit the signal to verify it carries the right id.
-        widget.enrich_game_requested.emit(game_id)
-        assert received == [game_id]
+        widget.enrich_rom_requested.emit(target_rom_id)
+        assert received == [target_rom_id]
 
 
 # ---------------------------------------------------------------------------
@@ -697,7 +680,7 @@ class TestMainWindowScopedEnrich:
     def test_enrich_scoped_with_game_ids_builds_worker_with_game_ids(
         self, qapp, seeded_db, monkeypatch
     ) -> None:
-        """_enrich_scoped(game_ids=[42]) must create an EnrichWorker with game_ids=[42]."""
+        """_enrich_scoped(rom_ids=[rid]) must create an EnrichWorker with rom_ids=[rid]."""
         import time
 
         from romulus.db import queries as queries_mod
@@ -705,9 +688,6 @@ class TestMainWindowScopedEnrich:
         from romulus.ui.workers import EnrichWorker
 
         # Seed one dat_verified ROM so the pre-flight passes.
-        gid = queries_mod.upsert_game(
-            seeded_db, {"title": "Verified", "system_id": "snes"}
-        )
         rid = queries_mod.upsert_rom(
             seeded_db,
             {
@@ -720,7 +700,6 @@ class TestMainWindowScopedEnrich:
                 "match_confidence": "dat_verified",
             },
         )
-        queries_mod.link_rom_to_game(seeded_db, rid, gid)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
@@ -732,7 +711,7 @@ class TestMainWindowScopedEnrich:
         def _spy_init(self_w, *args, **kwargs) -> None:  # noqa: ANN001
             created_workers.append(
                 {
-                    "game_ids": kwargs.get("game_ids"),
+                    "rom_ids": kwargs.get("rom_ids"),
                     "system_id": kwargs.get("system_id"),
                     "collection_id": kwargs.get("collection_id"),
                 }
@@ -756,14 +735,11 @@ class TestMainWindowScopedEnrich:
         )
         monkeypatch.setattr(EnrichWorker, "start", lambda self: None)
 
-        # Use the actual seeded game id; the new pre-flight narrows the
-        # eligibility check to the requested scope so a fake id would
-        # legitimately bail "no eligible games" before constructing a
-        # worker — verifying kwarg propagation needs a real id.
-        window._enrich_scoped(game_ids=[gid])
+        # Use the actual seeded rom id.
+        window._enrich_scoped(rom_ids=[rid])
 
         assert created_workers, "EnrichWorker was never constructed"
-        assert created_workers[0]["game_ids"] == [gid]
+        assert created_workers[0]["rom_ids"] == [rid]
         assert created_workers[0]["system_id"] is None
         assert created_workers[0]["collection_id"] is None
 
@@ -777,10 +753,7 @@ class TestMainWindowScopedEnrich:
         from romulus.ui.main_window import MainWindow
         from romulus.ui.workers import EnrichWorker
 
-        gid = queries_mod.upsert_game(
-            seeded_db, {"title": "Verified", "system_id": "snes"}
-        )
-        rid = queries_mod.upsert_rom(
+        queries_mod.upsert_rom(
             seeded_db,
             {
                 "path": "/lib/snes/Verified.sfc",
@@ -792,7 +765,6 @@ class TestMainWindowScopedEnrich:
                 "match_confidence": "dat_verified",
             },
         )
-        queries_mod.link_rom_to_game(seeded_db, rid, gid)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)

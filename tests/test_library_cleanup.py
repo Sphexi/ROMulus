@@ -1,5 +1,5 @@
 """Tests for the library-cleanup feature — missing tombstones, library-root
-change detection, and the orphan-game prune.
+change detection, and cascade deletes.
 
 Covers:
 
@@ -9,9 +9,15 @@ Covers:
   path-keyed UPSERT (no duplicates).
 * ``count_roms_with_other_library_root`` correctly reports cross-library
   rows so the UI can prompt the user before wiping them.
-* ``delete_missing_roms`` + ``prune_orphan_games`` only touch the rows
-  they're meant to, and cascade FK-dependent rows in ``hashes`` and
-  ``dest_inventory`` so the delete doesn't fail on integrity.
+* ``delete_missing_roms`` only touches the rows it should; ON DELETE CASCADE
+  on ``metadata``, ``covers``, and ``collection_roms`` cleans up dependents
+  automatically in the strict 1:1 model.
+* ``delete_rom_by_id`` is the user-initiated single-ROM delete action.
+
+Note: The ``prune_orphan_games`` helper and the ``games`` table were removed
+in v0.4.0.  Tests that previously exercised those mechanics are replaced by
+cascade-delete tests that verify the same invariants via ON DELETE CASCADE.
+Tests in ``test_db.py::TestCascadeDelete`` provide additional coverage.
 """
 
 from __future__ import annotations
@@ -187,7 +193,7 @@ class TestLibraryRootChange:
 
 
 # ---------------------------------------------------------------------------
-# Clean Missing + orphan prune
+# Clean Missing + cascade deletes (v0.4.0: no orphan-games prune needed)
 # ---------------------------------------------------------------------------
 
 
@@ -210,61 +216,25 @@ class TestCleanMissing:
         ).fetchall()
         assert {r["filename"] for r in remaining} == {"Alive.sfc"}
 
-    def test_prune_orphan_games_drops_games_with_no_roms(
+    def test_cascade_clears_metadata_covers_collection_roms(
         self, seeded_db, tmp_path
     ):
-        """A game whose only ROM is deleted should be pruned."""
-        rom = _make_rom(tmp_path, "snes", "Solo.sfc")
-        scan_library(seeded_db, tmp_path)
-        games_before = seeded_db.execute(
-            "SELECT COUNT(*) AS n FROM games"
-        ).fetchone()["n"]
-        assert games_before == 1
+        """Deleting a rom row cascades to metadata, covers, and collection_roms.
 
-        rom.unlink()
-        scan_library(seeded_db, tmp_path)
-        q.delete_missing_roms(seeded_db)
-        pruned = q.prune_orphan_games(seeded_db)
-        seeded_db.commit()
-
-        assert pruned == 1
-        games_after = seeded_db.execute(
-            "SELECT COUNT(*) AS n FROM games"
-        ).fetchone()["n"]
-        assert games_after == 0
-
-    def test_prune_orphan_games_leaves_referenced_games(
-        self, seeded_db, tmp_path
-    ):
-        _make_rom(tmp_path, "snes", "Alive.sfc")
-        scan_library(seeded_db, tmp_path)
-        pruned = q.prune_orphan_games(seeded_db)
-        assert pruned == 0
-
-    def test_prune_orphan_games_clears_metadata_covers_collections(
-        self, seeded_db, tmp_path
-    ):
-        """Regression for the production failure on 2026-05-19:
-
-        ``sqlite3.IntegrityError: FOREIGN KEY constraint failed`` thrown
-        from ``prune_orphan_games`` when an orphan game still has a
-        ``metadata`` / ``covers`` / ``collection_games`` row pointing at
-        it. PRAGMA foreign_keys = ON makes the games delete fail (not
-        silently orphan), so the helper now clears every FK-dependent
-        row before the delete.
+        In the strict 1:1 model there is no separate games table. The ON
+        DELETE CASCADE constraints on metadata, covers, and collection_roms
+        replace the old prune_orphan_games helper.
         """
         rom = _make_rom(tmp_path, "snes", "Mario.sfc")
         scan_library(seeded_db, tmp_path)
-        game_id = seeded_db.execute(
-            "SELECT game_id FROM roms WHERE filename = 'Mario.sfc'"
-        ).fetchone()["game_id"]
-        assert game_id is not None
+        rom_id = seeded_db.execute(
+            "SELECT id FROM roms WHERE filename = 'Mario.sfc'"
+        ).fetchone()["id"]
 
-        # Attach metadata + cover + collection membership — the three
-        # FK references to games.id that aren't CASCADE-cleared.
+        # Attach metadata + cover + collection membership.
         q.upsert_metadata(
             seeded_db,
-            game_id,
+            rom_id,
             {
                 "description": "test desc",
                 "genre": "platformer",
@@ -279,7 +249,7 @@ class TestCleanMissing:
         )
         q.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             cover_type="Named_Boxarts",
             source_url=None,
             local_path="/lib/snes/Mario.png",
@@ -290,109 +260,36 @@ class TestCleanMissing:
         collection_id = seeded_db.execute(
             "SELECT id FROM collections WHERE name = 'Test Coll'"
         ).fetchone()["id"]
-        q.add_game_to_collection(seeded_db, collection_id, game_id)
+        q.add_rom_to_collection(seeded_db, collection_id, rom_id)
         seeded_db.commit()
 
         # Sanity: dependents exist.
-        assert q.get_metadata(seeded_db, game_id) is not None
-        assert q.get_covers(seeded_db, game_id)
+        assert q.get_metadata(seeded_db, rom_id) is not None
+        assert q.get_covers(seeded_db, rom_id)
         assert seeded_db.execute(
-            "SELECT 1 FROM collection_games WHERE game_id = ?", (game_id,)
+            "SELECT 1 FROM collection_roms WHERE rom_id = ?", (rom_id,)
         ).fetchone() is not None
 
-        # Tombstone + delete the only rom, then prune.
+        # Tombstone + delete the rom.
         rom.unlink()
         scan_library(seeded_db, tmp_path)
         q.delete_missing_roms(seeded_db)
-        # Pre-fix this line raised IntegrityError.
-        pruned = q.prune_orphan_games(seeded_db)
         seeded_db.commit()
 
-        assert pruned == 1
-        # Every dependent row gone.
-        assert q.get_metadata(seeded_db, game_id) is None
-        assert q.get_covers(seeded_db, game_id) == []
+        # Every dependent row gone via CASCADE.
+        assert q.get_metadata(seeded_db, rom_id) is None
+        assert q.get_covers(seeded_db, rom_id) == []
         assert seeded_db.execute(
-            "SELECT 1 FROM collection_games WHERE game_id = ?", (game_id,)
+            "SELECT 1 FROM collection_roms WHERE rom_id = ?", (rom_id,)
         ).fetchone() is None
-
-    def test_prune_orphan_games_nulls_dest_inventory_game_id(
-        self, seeded_db, tmp_path
-    ):
-        """dest_inventory.game_id pointing at an orphan must be NULLed, not deleted.
-
-        The dest_inventory row is anchored on rom_id (still alive in
-        this scenario); dropping it would lose destination-side
-        bookkeeping. NULLing the game_id is correct because that
-        column is denormalised — the row's identity is (dest_id,
-        rel_path) and the truth about which game it is lives via
-        rom_id.
-        """
-        # Two roms on the same game — delete one (and it has no dependents),
-        # but the other one keeps the game alive. The orphan-prune scenario
-        # only kicks in if all the game's roms go away. So instead, set up:
-        # game A has one rom; that rom is going to be deleted, leaving the
-        # game orphan. dest_inventory row points at a DIFFERENT rom (rom B,
-        # game B) but its game_id incorrectly points at game A (simulating a
-        # stale denormalisation).
-        rom_a = _make_rom(tmp_path, "snes", "GameA.sfc")
-        rom_b = _make_rom(tmp_path, "snes", "GameB.sfc")
-        scan_library(seeded_db, tmp_path)
-        rom_a_id = seeded_db.execute(
-            "SELECT id FROM roms WHERE filename = 'GameA.sfc'"
-        ).fetchone()["id"]
-        rom_b_id = seeded_db.execute(
-            "SELECT id FROM roms WHERE filename = 'GameB.sfc'"
-        ).fetchone()["id"]
-        game_a_id = seeded_db.execute(
-            "SELECT game_id FROM roms WHERE id = ?", (rom_a_id,)
-        ).fetchone()["game_id"]
-
-        # dest_inventory row anchored on rom_b but mis-pointing at game_a.
-        seeded_db.execute(
-            "INSERT INTO sync_destinations "
-            "(name, target_path, profile_id, created_at) "
-            "VALUES (?, ?, ?, ?)",
-            ("dest", "/dest", "batocera", "2026-01-01"),
-        )
-        dest_id = seeded_db.execute(
-            "SELECT id FROM sync_destinations WHERE name = 'dest'"
-        ).fetchone()["id"]
-        seeded_db.execute(
-            "INSERT INTO dest_inventory "
-            "(dest_id, rel_path, size_bytes, mtime, rom_id, game_id, last_seen_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (dest_id, "snes/GameB.sfc", 1024, 0.0, rom_b_id, game_a_id,
-             "2026-01-01"),
-        )
-        seeded_db.commit()
-
-        # Delete rom_a + scan to tombstone it + clean.
-        rom_a.unlink()
-        scan_library(seeded_db, tmp_path)
-        q.delete_missing_roms(seeded_db)
-        pruned = q.prune_orphan_games(seeded_db)
-        seeded_db.commit()
-
-        assert pruned == 1
-        # dest_inventory row still exists (anchored on rom_b which is alive).
-        row = seeded_db.execute(
-            "SELECT rom_id, game_id FROM dest_inventory WHERE rel_path = ?",
-            ("snes/GameB.sfc",),
-        ).fetchone()
-        assert row is not None
-        assert row["rom_id"] == rom_b_id
-        # game_id NULLed because game_a is gone.
-        assert row["game_id"] is None
-        # Silence unused-var lint on rom_b.
-        assert str(rom_b)
 
     def test_delete_missing_drops_dependent_hashes(
         self, seeded_db, tmp_path
     ):
-        """Regression: deleting a missing rom with a hashes row must NOT crash
-        on the FK constraint. ``hashes.rom_id REFERENCES roms(id)`` is enforced
-        connection-wide via ``PRAGMA foreign_keys = ON``.
+        """Deleting a missing rom with a hashes row must NOT crash on the FK.
+
+        ``hashes.rom_id REFERENCES roms(id)`` is enforced connection-wide via
+        ``PRAGMA foreign_keys = ON``.
         """
         rom = _make_rom(tmp_path, "snes", "Hashed.sfc")
         scan_library(seeded_db, tmp_path)
@@ -453,8 +350,6 @@ class TestCleanMissing:
 
         rom.unlink()
         scan_library(seeded_db, tmp_path)
-        # Pre-fix this would raise sqlite3.IntegrityError: FOREIGN KEY
-        # constraint failed.
         deleted = q.delete_missing_roms(seeded_db)
         seeded_db.commit()
 
@@ -684,80 +579,6 @@ class TestMarkMissingScalesPastVariableLimit:
 
 
 # ---------------------------------------------------------------------------
-# Scanner self-heal — repairs unlinked roms left by a prior partial scan
-# ---------------------------------------------------------------------------
-
-
-class TestScannerSelfHealsUnlinkedRoms:
-    """A previous Quick Scan that crashed before ``group_into_games`` ran
-    leaves roms with ``game_id IS NULL``. Re-running Quick Scan should
-    detect the orphans and create the missing game rows automatically.
-    """
-
-    def test_rescan_links_orphaned_roms(self, seeded_db, tmp_path) -> None:
-        """Simulate the partial-scan damage, then verify a re-scan repairs it."""
-        import time
-
-        # Stage two ROMs on disk so the scanner can see them.
-        _make_rom(tmp_path, "snes", "Mario.sfc")
-        _make_rom(tmp_path, "snes", "Zelda.sfc")
-
-        # Hand-insert "before" state: roms exist with fuzzy_keys but no
-        # linked games — exactly what a partial-scan crash leaves.
-        rid1 = q.upsert_rom(
-            seeded_db,
-            {
-                "path": str(tmp_path / "snes" / "Mario.sfc"),
-                "filename": "Mario.sfc",
-                "extension": ".sfc",
-                "size_bytes": 1024,
-                "mtime": time.time(),
-                "system_id": "snes",
-                "fuzzy_key": "mario",
-                "match_confidence": "fuzzy",
-            },
-        )
-        rid2 = q.upsert_rom(
-            seeded_db,
-            {
-                "path": str(tmp_path / "snes" / "Zelda.sfc"),
-                "filename": "Zelda.sfc",
-                "extension": ".sfc",
-                "size_bytes": 1024,
-                "mtime": time.time(),
-                "system_id": "snes",
-                "fuzzy_key": "zelda",
-                "match_confidence": "fuzzy",
-            },
-        )
-        seeded_db.commit()
-
-        before = seeded_db.execute(
-            "SELECT COUNT(*) FROM roms WHERE game_id IS NULL "
-            "AND system_id = 'snes'"
-        ).fetchone()[0]
-        assert before == 2, "fixture should leave both roms unlinked"
-
-        # Re-run the scanner against the same directory.
-        scan_library(seeded_db, tmp_path)
-
-        after = seeded_db.execute(
-            "SELECT COUNT(*) FROM roms WHERE game_id IS NULL "
-            "AND system_id = 'snes'"
-        ).fetchone()[0]
-        assert after == 0, (
-            "self-heal pass must group orphaned roms into games"
-        )
-        # The original rom ids should still exist (UPSERT, not insert)
-        # and now carry valid game_ids.
-        for rid in (rid1, rid2):
-            row = seeded_db.execute(
-                "SELECT game_id FROM roms WHERE id = ?", (rid,)
-            ).fetchone()
-            assert row["game_id"] is not None
-
-
-# ---------------------------------------------------------------------------
 # delete_rom_by_id — user-initiated "Delete this ROM" right-click action
 # ---------------------------------------------------------------------------
 
@@ -765,18 +586,16 @@ class TestScannerSelfHealsUnlinkedRoms:
 class TestDeleteRomById:
     """Direct single-rom delete used by the game-table right-click action.
 
-    Differs from :func:`delete_missing_roms` in that the caller hands in
-    one rom id (no missing-flag filter), and the helper handles FK
-    dependents + orphan-game prune + commit in one shot.
+    In the strict 1:1 model each ROM is its own "game" — deleting the
+    rom row via delete_rom_by_id cascades metadata/covers/collection_roms
+    automatically. hashes and dest_inventory need explicit cleanup first
+    (they predate the CASCADE migration).
     """
 
-    def test_drops_rom_and_orphan_game(self, seeded_db) -> None:
-        """A single-rom game's game row vanishes when its only rom is deleted."""
+    def test_delete_rom_removes_row(self, seeded_db) -> None:
+        """delete_rom_by_id removes the roms row."""
         import time
 
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Solo", "system_id": "snes"}
-        )
         rom_id = q.upsert_rom(
             seeded_db,
             {
@@ -788,64 +607,48 @@ class TestDeleteRomById:
                 "system_id": "snes",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         assert q.delete_rom_by_id(seeded_db, rom_id) is True
-        # Rom row gone.
         assert seeded_db.execute(
             "SELECT 1 FROM roms WHERE id = ?", (rom_id,)
         ).fetchone() is None
-        # Game row also gone (orphan prune).
-        assert seeded_db.execute(
-            "SELECT 1 FROM games WHERE id = ?", (game_id,)
-        ).fetchone() is None
 
-    def test_preserves_game_when_sibling_rom_remains(
-        self, seeded_db
-    ) -> None:
-        """A multi-disc game keeps its game row when one of its roms is removed."""
+    def test_delete_rom_cascades_metadata_and_covers(self, seeded_db) -> None:
+        """ON DELETE CASCADE must clean metadata and covers rows."""
         import time
 
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Multi-Disc", "system_id": "psx"}
-        )
-        rom_a = q.upsert_rom(
+        rom_id = q.upsert_rom(
             seeded_db,
             {
-                "path": "/lib/psx/MultiDisc (Disc 1).bin",
-                "filename": "MultiDisc (Disc 1).bin",
-                "extension": ".bin",
+                "path": "/lib/snes/WithMeta.sfc",
+                "filename": "WithMeta.sfc",
+                "extension": ".sfc",
                 "size_bytes": 1024,
                 "mtime": time.time(),
-                "system_id": "psx",
+                "system_id": "snes",
             },
         )
-        rom_b = q.upsert_rom(
+        q.upsert_metadata(
             seeded_db,
-            {
-                "path": "/lib/psx/MultiDisc (Disc 2).bin",
-                "filename": "MultiDisc (Disc 2).bin",
-                "extension": ".bin",
-                "size_bytes": 1024,
-                "mtime": time.time(),
-                "system_id": "psx",
-            },
+            rom_id,
+            {"description": "test", "genre": "action"},
+            source="test",
         )
-        q.link_rom_to_game(seeded_db, rom_a, game_id)
-        q.link_rom_to_game(seeded_db, rom_b, game_id)
+        q.insert_cover(
+            seeded_db,
+            rom_id,
+            cover_type="Named_Boxarts",
+            source_url=None,
+            local_path="/lib/snes/WithMeta.png",
+        )
         seeded_db.commit()
 
-        # Delete disc 1; disc 2 must keep the game pointer alive.
-        assert q.delete_rom_by_id(seeded_db, rom_a) is True
-        assert seeded_db.execute(
-            "SELECT 1 FROM games WHERE id = ?", (game_id,)
-        ).fetchone() is not None
-        sibling = seeded_db.execute(
-            "SELECT game_id FROM roms WHERE id = ?", (rom_b,)
-        ).fetchone()
-        assert sibling is not None
-        assert sibling["game_id"] == game_id
+        q.delete_rom_by_id(seeded_db, rom_id)
+        seeded_db.commit()
+
+        assert q.get_metadata(seeded_db, rom_id) is None
+        assert q.get_covers(seeded_db, rom_id) == []
 
     def test_drops_hash_dependent(self, seeded_db) -> None:
         """FK-dependent rows in ``hashes`` must be cleared first.
@@ -918,8 +721,8 @@ class TestGetRomPath:
 
 class TestScopedQuickScan:
     """``scan_library(scope_system_id=...)`` walks the same library but only
-    enrols / tombstones / groups within the chosen system. Other systems'
-    rows must be left strictly alone.
+    enrols / tombstones within the chosen system. Other systems' rows must
+    be left strictly alone.
     """
 
     def test_scope_only_enrols_matching_system(
@@ -1006,9 +809,11 @@ class TestScopedQuickScan:
 
 class TestScannerPostWalkProgressMessages:
     """The scanner emits progress events at phase transitions so the UI
-    dialog can show ``Marking missing entries…`` / ``Linking ROMs to
-    games…`` / ``Finalising scan history…`` instead of a frozen Cancel
-    button while the post-walk DB work runs.
+    dialog can show ``Marking missing entries...`` / ``Finalising scan
+    history...`` instead of a frozen Cancel button while the post-walk DB
+    work runs.
+
+    Note: "Linking ROMs to games" was removed in v0.4.0 (no games table).
     """
 
     def test_emits_phase_labels_after_walk(
@@ -1025,10 +830,9 @@ class TestScannerPostWalkProgressMessages:
 
         labels = [name for _, name in events]
         assert "Marking missing entries…" in labels
-        assert any(
-            label.startswith("Linking ROMs to games: ") for label in labels
-        )
         assert "Finalising scan history…" in labels
+        # v0.4.0: no "Grouping ROMs into games" / "Linking ROMs to games" phase.
+        assert not any("games" in lbl.lower() for lbl in labels)
 
 
 # ---------------------------------------------------------------------------
@@ -1040,13 +844,8 @@ class TestCleanMissingRollbackOnException:
     """Regression for ``KNOWN-ISSUES.md`` 2026-05-18: an exception raised
     during the cleanup chain must not leave an open transaction behind.
 
-    Pre-fix, ``_on_clean_missing`` ran the helpers + commit on the main
-    thread without try/except/rollback. If anything raised between
-    ``delete_missing_roms`` and ``commit()`` the implicit transaction
-    was leaked, holding the write lock against every subsequent Quick
-    Scan worker for the rest of the session, and the deletes silently
-    rolled back at app close. The worker rewrite catches and rolls back
-    before re-raising so the connection is clean for the next caller.
+    In the strict 1:1 model the worker no longer calls prune_orphan_games.
+    These tests verify the rollback contract still holds if any step raises.
     """
 
     def _seed_missing_rows(self, conn, count: int) -> None:
@@ -1071,40 +870,32 @@ class TestCleanMissingRollbackOnException:
     def test_rollback_clears_open_transaction(
         self, seeded_db, monkeypatch
     ) -> None:
-        """Failure after delete_missing_roms must leave conn.in_transaction = False.
+        """Failure inside delete_missing_roms must leave conn.in_transaction = False.
 
-        Drives the CleanMissingWorker code path directly (without the
-        QThread) so the test stays synchronous: instantiate the worker,
-        force ``prune_orphan_games`` to raise, call ``_run_work``, then
-        assert the worker's own connection — and the seeded test
-        connection — both see a clean transaction state.
+        Forces delete_missing_roms to raise after the dependent-row cleanup
+        but before commit. Verifies the worker's rollback guard fires and the
+        seeded missing rows are still present (delete rolled back).
         """
         self._seed_missing_rows(seeded_db, count=10)
 
         from romulus.ui.workers import CleanMissingWorker
 
         # Force a raise inside the worker's transaction window.
-        def _boom(_conn):  # noqa: ANN001
-            raise RuntimeError("simulated post-delete failure")
+        def _boom(*_a, **_kw):  # noqa: ANN001
+            raise RuntimeError("simulated delete failure")
 
         monkeypatch.setattr(
-            "romulus.ui.workers.q.prune_orphan_games", _boom
+            "romulus.ui.workers.q.delete_missing_roms", _boom
         )
 
         worker = CleanMissingWorker(":memory:")
-        # Drive _run_work with the test's own connection so we can probe
-        # state afterwards. Real workers open their own connection inside
-        # ``run()``; here we sidestep that to keep the test in one thread.
         with pytest.raises(RuntimeError, match="simulated"):
             worker._run_work(seeded_db)
 
-        # Connection must NOT still be in a transaction — that was the
-        # silent-rollback / database-locked bug from the known-issues entry.
         assert seeded_db.in_transaction is False, (
             "rollback should have closed the implicit transaction"
         )
-        # And the deletes must have actually rolled back — every seeded
-        # missing row should still be present.
+        # Deletes must have been rolled back — every seeded missing row still present.
         remaining = seeded_db.execute(
             "SELECT COUNT(*) AS n FROM roms WHERE missing = 1"
         ).fetchone()["n"]
@@ -1132,7 +923,10 @@ class TestCleanMissingWorkerSmoke:
         self, qapp, tmp_path
     ) -> None:
         """A real CleanMissingWorker thread should emit finished_ok with
-        the deleted-rom and pruned-game counts, then terminate cleanly.
+        the deleted-rom count, then terminate cleanly.
+
+        In the strict 1:1 model finished_ok(deleted_roms, 0) — there is no
+        separate games table to prune.
         """
         import time
 
@@ -1147,11 +941,7 @@ class TestCleanMissingWorkerSmoke:
         create_tables(conn)
         seed_systems(conn)
 
-        # Seed a missing rom that's the sole rom on its game so we can
-        # also assert the orphan-prune fired.
-        game_id = q.upsert_game(
-            conn, {"title": "GhostGame", "system_id": "snes"}
-        )
+        # Seed a missing rom.
         rom_id = q.upsert_rom(
             conn,
             {
@@ -1163,7 +953,6 @@ class TestCleanMissingWorkerSmoke:
                 "system_id": "snes",
             },
         )
-        q.link_rom_to_game(conn, rom_id, game_id)
         conn.execute("UPDATE roms SET missing = 1 WHERE id = ?", (rom_id,))
         conn.commit()
         conn.close()
@@ -1181,8 +970,9 @@ class TestCleanMissingWorkerSmoke:
         assert worker.wait(5000), "CleanMissingWorker did not finish in 5s"
 
         assert not failed, f"unexpected failure: {failed}"
-        assert finished == [(1, 1)], (
-            f"expected one deleted rom + one pruned game, got {finished}"
+        # In the 1:1 model pruned_games is always 0.
+        assert finished == [(1, 0)], (
+            f"expected one deleted rom + zero pruned games, got {finished}"
         )
 
         # Verify the deletes actually committed on disk.
@@ -1191,13 +981,9 @@ class TestCleanMissingWorkerSmoke:
             roms_left = verify.execute(
                 "SELECT COUNT(*) AS n FROM roms WHERE missing = 1"
             ).fetchone()["n"]
-            games_left = verify.execute(
-                "SELECT COUNT(*) AS n FROM games"
-            ).fetchone()["n"]
         finally:
             verify.close()
         assert roms_left == 0
-        assert games_left == 0
 
     def test_worker_zero_missing_emits_zero_counts(
         self, qapp, tmp_path

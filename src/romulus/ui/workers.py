@@ -964,20 +964,23 @@ class CleanMissingWorker(_DbWorker):
     on exception or cancel.
 
     The work runs as a single transaction on the worker's own connection:
-    ``delete_missing_roms`` -> ``prune_orphan_games`` -> ``commit()``. Any
-    exception triggers ``conn.rollback()`` BEFORE the exception unwinds out
-    of :meth:`_run_work`, so :meth:`_DbWorker.run` sees a clean connection
+    ``delete_missing_roms`` -> ``commit()``. Any exception triggers
+    ``conn.rollback()`` BEFORE the exception unwinds out of
+    :meth:`_run_work`, so :meth:`_DbWorker.run` sees a clean connection
     when it logs the failure. The rollback also unblocks subsequent
     Quick-Scan workers (separate connection, file-level lock) — the original
     bug was a leaked open transaction holding the write lock for the rest
     of the session.
 
+    In the strict 1:1 model there is no ``prune_orphan_games`` step:
+    ON DELETE CASCADE on ``metadata``, ``covers``, and ``collection_roms``
+    handles dependent cleanup automatically when the ``roms`` row is deleted.
+
     Cancellation is supported per dependent-row chunk via the progress
-    callback's :meth:`_check_cancel`. The final ``DELETE FROM roms`` and
-    ``prune_orphan_games`` statements are not interruptible — they run to
-    completion once dependent cleanup is done. That's intentional: an
-    abort between those steps would leave the DB in a state the user
-    can't easily reason about.
+    callback's :meth:`_check_cancel`. The final ``DELETE FROM roms``
+    statement is not interruptible — it runs to completion once dependent
+    cleanup is done. That's intentional: an abort mid-delete would leave
+    the DB in a state the user can't easily reason about.
     """
 
     progress = Signal(int, int, str)
@@ -1003,8 +1006,10 @@ class CleanMissingWorker(_DbWorker):
             deleted = q.delete_missing_roms(
                 conn, progress_callback=_progress
             )
-            self.progress.emit(total, total, "Pruning orphan games…")
-            pruned = q.prune_orphan_games(conn)
+            # In the strict 1:1 model there is no separate games table to
+            # prune.  ON DELETE CASCADE on metadata/covers/collection_roms
+            # cleans up dependents automatically when the roms row is deleted.
+            pruned = 0
             conn.commit()
             logger.info(
                 "CleanMissing complete: deleted_roms=%d pruned_games=%d",

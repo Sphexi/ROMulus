@@ -637,7 +637,8 @@ class MainWindow(QMainWindow):
             if choice != QMessageBox.StandardButton.Yes:
                 return
             q.delete_roms_with_other_library_root(self._conn, chosen_canonical)
-            q.prune_orphan_games(self._conn)
+            # No prune_orphan_games needed: ON DELETE CASCADE on metadata/covers/
+            # collection_roms cleans dependents automatically (strict 1:1 model).
             self._conn.commit()
 
         set_config(self._conn, "library_path", chosen)

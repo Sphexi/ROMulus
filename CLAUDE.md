@@ -8,10 +8,10 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
 
 **Standard** — unit tests + ruff, code reviews every 2–3 build sessions.
 
-## Current State (as of v0.3.0 in development)
+## Current State (as of v0.4.0 in development)
 
-- **1,003 tests passing, 1 skipped** (POSIX-only chmod test on Windows
-  CI; 1,004 collected total). Ruff clean. CI runs on `windows-latest`.
+- **1,015 tests passing, 8 skipped** (1 POSIX-only chmod test; 7 cover-UI
+  platform skips added in sessions 13–19). Ruff clean. CI runs on `windows-latest`.
 - Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich
   Metadata → Find Covers → Organize → Export / Sync, plus inbound
   Import ROMs from a staging folder and a reverse-direction Verify
@@ -58,9 +58,9 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   Sync, and Verify Library preview dialogs via shared
   `GroupedCheckboxTreeMixin`.
 - **Clean Missing Entries** runs on `CleanMissingWorker` with
-  try/except/rollback. `prune_orphan_games` now clears FK-dependent
-  metadata / covers / collection_games rows and NULLs
-  `dest_inventory.game_id` before deleting from `games`.
+  try/except/rollback. ON DELETE CASCADE on `metadata` / `covers` /
+  `collection_roms` handles dependent cleanup automatically in the
+  strict 1:1 model (no separate `games` table, no `prune_orphan_games`).
 - 11 build sessions complete (v0.1.0); v0.2.0 added portable packaging
   + Heavy Scan UI + real DATs; early v0.3.0 added destination sync,
   library cleanup, single-binary build, DEBUG breadcrumbs; later v0.3.0
@@ -71,8 +71,13 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   progress + per-game Reveal/Delete + the CI Windows switch + Import
   ROMs + Verify Library + per-system summary dialogs + the sync diff
   perf rewrite + artwork-only export mode.
-- Pre-v0.3.0 schema migrations were removed — wipe `data/romulus.db`
-  and rescan if you have a pre-v0.3.0 DB lying around.
+- **v0.4.0 (sessions 13–19):** Strict 1:1 rom ↔ game refactor. The
+  separate `games` table is removed; every ROM file is its own row
+  with its own metadata, covers, and collection membership. Byte-identical
+  copies surface as duplicates. Export has a `distinct_content_only`
+  toggle. Organizer TOCTOU + collision detector bugs fixed. Detail panel
+  disambiguation fixed (regional variants now show their own data).
+- Pre-v0.4.0 databases must be wiped — wipe `data/romulus.db` and rescan.
 
 See `CHANGELOG.md` for the full per-release breakdown.
 
@@ -173,7 +178,7 @@ Do not load reference documents into context every turn — read them when neede
 - Quick scan (L1+L2, seconds-to-minutes) vs Heavy scan (L3, minutes-to-hours).
 - Config stored in SQLite, not files — user edits everything via Settings dialog.
 - **Single library at a time.** Switching `library_path` prompts to wipe prior rows; the scan sweep flags any row not visited this scan as `missing=1` regardless of its `library_root`.
-- Pre-v0.3.0 schema migrations were removed; users with a pre-v0.3.0 database wipe `data/romulus.db` and rescan.
+- Pre-v0.4.0 schema migrations are not supported; users wipe `data/romulus.db` and rescan.
 
 ## Tech Stack
 
@@ -330,7 +335,7 @@ ROMulous/
     ├── test_scrub.py              # Verify Library: bucket classification,
     │                              # per-bucket SAVEPOINT, unreadable guard
     ├── test_per_system_summary_dialog.py  # Per-system summary dialog smoke
-    └── ...                        # 1003 tests total, 1 skipped
+    └── ...                        # 1015 tests total, 8 skipped
 ```
 
 ## Git Policy
@@ -366,7 +371,7 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 4. **Never modify files without preview.** The Organizer shows a before/after diff. The Exporter shows what will be copied. The Sync engine shows a per-action preview with totals + a double-confirm prompt before destructive runs. User must explicitly confirm before any filesystem changes.
 5. **Atomic writes only.** Every file write goes through `core/atomic.py` (`tempfile.mkstemp` + `os.replace`). Per-action SAVEPOINT rollback in organizer + sync keeps the DB consistent with disk.
 6. **Single library at a time.** ROMulus treats one `library_path` as the source of truth. Switching libraries prompts to wipe prior rows. The scanner sweep marks any row not visited as `missing=1` regardless of its `library_root` — see `core/scanner.py::scan_library` and `core/queries.py::mark_missing_under_root`.
-7. **Tombstone, don't delete.** A vanished file becomes `missing=1`; the row stays in the DB so its metadata / hashes / enrichment survive a temporarily-unmounted share. Re-scanning un-tombstones via the path-keyed UPSERT. **Tools → Clean Missing Entries** is the only path that actually removes rows, and it cascades to `hashes` + `dest_inventory` + orphan `games`.
+7. **Tombstone, don't delete.** A vanished file becomes `missing=1`; the row stays in the DB so its metadata / hashes / enrichment survive a temporarily-unmounted share. Re-scanning un-tombstones via the path-keyed UPSERT. **Tools → Clean Missing Entries** is the only path that actually removes rows; ON DELETE CASCADE cleans `metadata` / `covers` / `collection_roms`, and explicit pre-delete cleans `hashes` + `dest_inventory`.
 8. **Hacks are first-class artifacts.** Never silently deduplicate a hack against its original. Treat them as distinct titles.
 9. **Hash cache is sacred.** Hashes are expensive. Cache in SQLite keyed by (path, mtime, size). Reuse on rescan if file hasn't changed.
 10. **DATs are bundled.** 106 No-Intro DATs covering ~80 systems ship in `data/dats/` (dev) / `dats/` (portable). Users can add more to a configurable folder. Both are merged on startup.
@@ -382,11 +387,14 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 20. **TheGamesDB has a monthly quota.** ~1000 requests/month for public keys, 6000 lifetime for private keys. The client logs `remaining_monthly_allowance` per response, persists it to `thegamesdb_remaining_allowance` in config, and short-circuits future calls when it hits zero. Slot it last in the chain so we only spend on games every cheaper source missed.
 21. **Import is symmetric to sync.** The Import engine (`core/importer.py`) mirrors the Sync engine in shape — analyse → preview → apply, per-action SAVEPOINT, atomic copy via `core/atomic.py`, cooperative cancel between actions. Heavy identification (SHA-1 + DAT match) runs unconditionally on every analyse pass so the three duplicate levels (path / filename / hash) all surface; the dialog warns about duration up front when the staging folder is large. Staging folder must be outside `library_root` — refused with `ValueError` to prevent self-recursion footguns. New ROMs are enrolled via the same path-keyed `upsert_rom` the scanner uses, so importing a file whose target path matches a `missing=1` row un-tombstones the row rather than duplicating it.
 22. **Long-running DB writes go through a worker + rollback wrap.** `CleanMissingWorker` and `ScrubApplyWorker` (and any future analogue) run on their own QThread, open their own connection, and wrap the work in `try/except: conn.rollback(); raise`. Closes the "DB locked / silent rollback" footgun where an exception inside a UI-thread DML chain left the implicit transaction open and held the write lock for the rest of the session.
-23. **`prune_orphan_games` clears FK-dependent rows first.** `metadata` / `covers` / `collection_games` are deleted; `dest_inventory.game_id` is NULLed (the dest_inventory row is anchored on `rom_id`). Required because none of those tables declare `ON DELETE CASCADE` — the games delete fails with `IntegrityError` if dependents remain. Latent bug pre-v0.3.0 because tests never attached metadata to the games they pruned.
+23. **ON DELETE CASCADE replaces `prune_orphan_games`.** In the strict 1:1 model there is no `games` table. `metadata`, `covers`, and `collection_roms` declare `ON DELETE CASCADE` on `roms.id` — deleting a roms row automatically clears all three. `hashes` and `dest_inventory` predate the CASCADE migration and still require an explicit `_delete_rom_dependents` call before the roms delete.
 24. **Sync diff is O(N+M), not O(N·M).** `_build_inventory_fuzzy_index` pre-computes `(fuzzy_key, region, system_id) → InventoryEntry` once at the top of `_build_push_actions` / `_build_twoway_actions`; tier-2 lookup is a single `dict.get`. `build_plan` runs on `BuildSyncPlanWorker` with a "Computing diff…" progress dialog — slots fired across a queued connection from a worker still execute on the receiving (UI) thread, so the inventory worker alone doesn't move `build_plan` off the UI thread. See `docs/sync-design.md` §12.6.
 25. **Export has an artwork-only mode.** `ExportOptions.include_roms` defaults True; uncheck to skip the ROM copy loop and run only the sidecar refresh. `copy_artwork` size+mtime-compares per file (2s tolerance for FAT32/SMB rounding). The dialog disables Scan destination when Include ROMs is off — a sync-path plan would be pure `ACTION_IDENTICAL` rows and the apply step doesn't touch sidecars.
 26. **Post-Export / post-Sync show a per-system summary dialog.** `ExportSummary` and `SyncSummary` carry a `per_system` field populated alongside the existing aggregates; the dialog (`PerSystemSummaryDialog`) renders one row per system with the per-bucket counts. Used to diagnose why a system was skipped (unsupported / refuse-overwrite / already-present) without grepping `logs/romulus.log`.
 27. **Preview dialogs have tri-state group headers + right-click bulk toggle.** Shared `GroupedCheckboxTreeMixin` powers `OrganizePreviewDialog`, `SyncPreviewDialog`, and `ScrubPreviewDialog`. Multi-thousand-row plans become workable. Buckets whose every child is non-checkable (e.g. Organize Collisions) keep a plain non-checkable header.
+28. **One rom = one game.** The identity unit is the ROM file. Each `roms` row carries its own `metadata`, `covers`, and `collection_roms` memberships — there is no separate `games` table. Byte-identical copies become distinct rows so duplicates are visible by sorting on SHA-1 or filename. Regional variants (USA / Europe) each have their own detail-panel data.
+29. **Sibling-copy preserves API quotas.** `enrich_library` short-circuits network calls when an identical-identity ROM already has a metadata row from a previous run. The cover finder follows the same rule. This avoids burning TheGamesDB allowance or ScreenScraper credits on files the user owns in multiple formats.
+30. **Distinct-content export is opt-in.** `ExportOptions.distinct_content_only` defaults False (export every ROM). When True, only one ROM per SHA-1 cluster is exported — keeper rank: `dat_verified` > canonical extension > shorter filename > lower `rom_id`. ROMs with no SHA-1 always export regardless of the toggle.
 
 ## Scan Types
 

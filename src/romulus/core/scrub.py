@@ -353,17 +353,16 @@ def _apply_outside_root_bucket(
     """Bulk-delete every outside_root row using the existing helpers.
 
     Delegates to ``delete_roms_by_ids`` so FK-dependent ``hashes`` and
-    ``dest_inventory`` rows go first — the same plumbing Clean Missing
-    Entries uses. ``prune_orphan_games`` runs once at the end so games
-    left with no remaining roms get cleaned up too.
+    ``dest_inventory`` rows go first.  In the strict 1:1 model there is no
+    separate ``games`` table to prune — ON DELETE CASCADE on ``metadata``,
+    ``covers``, and ``collection_roms`` cleans up dependents automatically
+    when the ``roms`` row is deleted.
     """
     rom_ids = [action.rom_id for action in actions]
     if not rom_ids:
         return
     deleted = q.delete_roms_by_ids(conn, rom_ids)
     summary.deleted_outside_root += deleted
-    pruned = q.prune_orphan_games(conn)
-    summary.pruned_games += pruned
     for action in actions:
         action.executed = True
 
