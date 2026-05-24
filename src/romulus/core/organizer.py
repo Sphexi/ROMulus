@@ -55,6 +55,19 @@ ACTION_MERGE_FOLDER = "merge_folder"
 ACTION_RENAME = "rename"
 ACTION_DELETE_DUPLICATE = "delete_duplicate"
 ACTION_COLLISION = "collision"
+# ACTION_DELETE_FILE is produced when the user resolves a collision via
+# ``resolve_collision``. Unlike ACTION_DELETE_DUPLICATE, it does NOT verify
+# SHA-1 equality before deleting — the user has explicitly opted to delete a
+# file knowing it differs from the rename source's content. The TOCTOU guard
+# on ACTION_DELETE_DUPLICATE would refuse this delete (different content) so
+# a separate action kind is required to express "user-approved unconditional
+# delete".
+ACTION_DELETE_FILE = "delete_file"
+
+# Resolution constants — what the user picked in the collision row's combo.
+RESOLUTION_DO_NOTHING = "do_nothing"
+RESOLUTION_DELETE_SOURCE = "delete_source"
+RESOLUTION_REPLACE_TARGET = "replace_target"
 
 # Canonical extension preference order. Lower index = more canonical. Used by
 # duplicate-resolution to pick the keeper out of a group of byte-identical
@@ -100,12 +113,19 @@ class OrganizeAction:
       paths).
     * ``delete_duplicate`` — ``rom_id`` (the row being removed),
       ``source_path`` (file path being deleted), ``target_path`` (the keeper).
+    * ``delete_file`` — ``rom_id`` (the row being removed), ``source_path``
+      (file to unlink). No keeper, no TOCTOU check. Only produced by
+      :func:`resolve_collision` when the user explicitly opts in.
     * ``collision`` — ``source_path``, ``target_path``, both populated;
-      ``rom_id`` left as None.
+      ``rom_id`` carries the *source* rom (rename source), ``target_rom_id``
+      carries the *target* rom (existing file at the target path) when case 3
+      fires. Both rom IDs are needed so the per-row resolution dropdown in
+      ``OrganizePreviewDialog`` can construct concrete actions.
     """
 
     kind: str
     rom_id: int | None = None
+    target_rom_id: int | None = None
     source_path: str = ""
     target_path: str = ""
     reason: str = ""
@@ -539,18 +559,33 @@ def detect_collisions(
 
         if collision_reason is not None:
             replaced_targets.add(target)
+            # For case-3 collisions, capture both rom IDs so the UI
+            # resolution dropdown can construct concrete actions. For
+            # cases 1 and 2 (rename/rename conflicts), target_rom_id is
+            # None — the dropdown will only offer "Do nothing".
+            collision_source_rom_id = group[0].rom_id
+            collision_target_rom_id: int | None = None
+            if len(group) == 1 and target not in rename_sources:
+                # Case 3 path: existing target row was looked up above.
+                existing_row = q.find_rom_by_path(conn, target)
+                if existing_row is not None and int(existing_row["id"]) not in renamed_rom_ids:
+                    collision_target_rom_id = int(existing_row["id"])
             collisions.append(
                 OrganizeAction(
                     kind=ACTION_COLLISION,
+                    rom_id=collision_source_rom_id,
+                    target_rom_id=collision_target_rom_id,
                     source_path=group[0].source_path,
                     target_path=target,
                     reason=collision_reason,
                 )
             )
             logger.debug(
-                "organize.collision: target=%s reason=%r",
+                "organize.collision: target=%s reason=%r src_rom=%s tgt_rom=%s",
                 target,
                 collision_reason,
+                collision_source_rom_id,
+                collision_target_rom_id,
             )
         elif upgrade_to_delete is not None:
             replaced_targets.add(target)
@@ -571,6 +606,89 @@ def detect_collisions(
         if not (a.kind == ACTION_RENAME and a.target_path in replaced_targets)
     ]
     return safe + upgraded_dupes + collisions
+
+
+def available_resolutions(action: OrganizeAction) -> list[tuple[str, str]]:
+    """Return the resolution options applicable to a collision action.
+
+    Returns a list of ``(value, label)`` tuples in display order. The first
+    entry is always ``RESOLUTION_DO_NOTHING`` (the default). The other
+    entries only appear when the underlying action has the rom IDs needed
+    to construct concrete actions — e.g. ``Delete source`` requires
+    ``action.rom_id``; ``Delete target and rename source`` requires both
+    ``action.rom_id`` and ``action.target_rom_id``.
+
+    Case 1 and case 2 collisions (rename-vs-rename and rename-chain) have
+    no target rom row, so only ``Do nothing`` is offered.
+    """
+    options: list[tuple[str, str]] = [(RESOLUTION_DO_NOTHING, "Do nothing")]
+    if action.rom_id is not None:
+        options.append((RESOLUTION_DELETE_SOURCE, "Delete source"))
+        if action.target_rom_id is not None:
+            options.append(
+                (RESOLUTION_REPLACE_TARGET, "Delete target and rename source")
+            )
+    return options
+
+
+def resolve_collision(
+    action: OrganizeAction, resolution: str
+) -> list[OrganizeAction]:
+    """Translate a user-chosen resolution into concrete actions.
+
+    ``do_nothing`` returns an empty list; the collision is dropped from the
+    approved plan and the on-disk state is untouched.
+
+    ``delete_source`` returns one ``ACTION_DELETE_FILE`` for the rename
+    source. Useful when the user has identified the canonical-named target
+    as authoritative and wants to drop the numbered/non-canonical source.
+
+    ``replace_target`` returns two actions in order: an
+    ``ACTION_DELETE_FILE`` for the existing target, then an
+    ``ACTION_RENAME`` for the source. The execute loop runs actions
+    sequentially under per-action SAVEPOINTs, so the delete completes
+    before the rename is attempted — `_execute_rename`'s `dest.exists()`
+    check will see the path is free.
+
+    Unrecognised resolution strings return an empty list (treated as
+    ``do_nothing``). The caller should validate before passing.
+    """
+    if action.kind != ACTION_COLLISION:
+        return [action]  # Pass-through for non-collision inputs.
+
+    if resolution == RESOLUTION_DELETE_SOURCE:
+        if action.rom_id is None:
+            return []
+        return [
+            OrganizeAction(
+                kind=ACTION_DELETE_FILE,
+                rom_id=action.rom_id,
+                source_path=action.source_path,
+                reason="user resolution: delete source",
+            )
+        ]
+
+    if resolution == RESOLUTION_REPLACE_TARGET:
+        if action.rom_id is None or action.target_rom_id is None:
+            return []
+        return [
+            OrganizeAction(
+                kind=ACTION_DELETE_FILE,
+                rom_id=action.target_rom_id,
+                source_path=action.target_path,
+                reason="user resolution: delete target before rename",
+            ),
+            OrganizeAction(
+                kind=ACTION_RENAME,
+                rom_id=action.rom_id,
+                source_path=action.source_path,
+                target_path=action.target_path,
+                reason="user resolution: rename source over deleted target",
+            ),
+        ]
+
+    # do_nothing (or anything unrecognised)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -722,6 +840,27 @@ def _execute_delete_duplicate(
         q.delete_rom(conn, action.rom_id)
 
 
+def _execute_delete_file(
+    conn: sqlite3.Connection, action: OrganizeAction
+) -> None:
+    """User-approved unconditional delete: unlink file + delete DB row.
+
+    Produced only by :func:`resolve_collision` when the user explicitly
+    selected ``Delete source`` or ``Delete target and rename source`` in
+    the collision row's resolution dropdown. NO TOCTOU hash comparison
+    runs — the user has chosen to delete a file the organizer knows is
+    different from any keeper candidate (collisions only exist for
+    non-matching content). The path is still verified to live in
+    ``action.source_path`` and unlink errors are surfaced via the per-action
+    SAVEPOINT rollback in :func:`execute_plan`.
+    """
+    source = Path(action.source_path)
+    if source.exists():
+        os.remove(source)
+    if action.rom_id is not None:
+        q.delete_rom(conn, action.rom_id)
+
+
 def _execute_merge_folder(
     conn: sqlite3.Connection, action: OrganizeAction
 ) -> None:
@@ -786,6 +925,8 @@ def execute_plan(
                     _execute_rename(conn, action)
                 case "delete_duplicate":
                     _execute_delete_duplicate(conn, action)
+                case "delete_file":
+                    _execute_delete_file(conn, action)
                 case "merge_folder":
                     _execute_merge_folder(conn, action)
                 case _:

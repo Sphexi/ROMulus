@@ -17,16 +17,22 @@ from romulus.core import atomic
 from romulus.core.organizer import (
     ACTION_COLLISION,
     ACTION_DELETE_DUPLICATE,
+    ACTION_DELETE_FILE,
     ACTION_MERGE_FOLDER,
     ACTION_RENAME,
+    RESOLUTION_DELETE_SOURCE,
+    RESOLUTION_DO_NOTHING,
+    RESOLUTION_REPLACE_TARGET,
     OrganizeAction,
     OrganizePlan,
     analyze_library,
+    available_resolutions,
     detect_collisions,
     execute_plan,
     find_alias_merges,
     find_duplicates,
     find_renameable_roms,
+    resolve_collision,
 )
 from romulus.db import queries as q
 
@@ -500,6 +506,172 @@ class TestAnalyzeLibraryTieredOrdering:
         assert all(a.rom_id != dup_id for a in rename_actions), (
             f"rom scheduled for deletion got a competing rename: {rename_actions}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Collision resolution (user-chosen actions per collision row)
+# ---------------------------------------------------------------------------
+
+
+class TestAvailableResolutions:
+    """``available_resolutions`` decides which dropdown options apply to a
+    given collision based on what rom IDs the detector was able to capture."""
+
+    def test_case_3_full_options(self) -> None:
+        """Case 3 collisions populate both rom_id and target_rom_id, so all
+        three resolutions are offered."""
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=1,
+            target_rom_id=2,
+            source_path="/lib/nes/108 X.nes",
+            target_path="/lib/nes/X (Japan).nes",
+        )
+        opts = available_resolutions(action)
+        values = [v for v, _ in opts]
+        assert values == [
+            RESOLUTION_DO_NOTHING,
+            RESOLUTION_DELETE_SOURCE,
+            RESOLUTION_REPLACE_TARGET,
+        ]
+
+    def test_case_1_or_2_only_do_nothing(self) -> None:
+        """Cases 1 and 2 (rename-vs-rename, rename chain) don't have a
+        target rom row, so only Do nothing is offered."""
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=1,
+            target_rom_id=None,  # case 1 / 2 path
+            source_path="/lib/nes/a.nes",
+            target_path="/lib/nes/X.nes",
+        )
+        opts = available_resolutions(action)
+        values = [v for v, _ in opts]
+        # rom_id present but no target -> delete source IS offered,
+        # but replace_target is NOT.
+        assert RESOLUTION_DO_NOTHING in values
+        assert RESOLUTION_DELETE_SOURCE in values
+        assert RESOLUTION_REPLACE_TARGET not in values
+
+    def test_no_source_rom_id_only_do_nothing(self) -> None:
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=None,
+            target_rom_id=None,
+            source_path="/lib/nes/a.nes",
+            target_path="/lib/nes/b.nes",
+        )
+        opts = available_resolutions(action)
+        assert [v for v, _ in opts] == [RESOLUTION_DO_NOTHING]
+
+
+class TestResolveCollision:
+    """``resolve_collision`` maps a user-chosen resolution to concrete
+    actions ready for the execute pipeline."""
+
+    def test_do_nothing_returns_empty(self) -> None:
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=1,
+            target_rom_id=2,
+            source_path="/lib/nes/a.nes",
+            target_path="/lib/nes/b.nes",
+        )
+        assert resolve_collision(action, RESOLUTION_DO_NOTHING) == []
+
+    def test_delete_source_returns_delete_file(self) -> None:
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=42,
+            target_rom_id=99,
+            source_path="/lib/nes/108 X.nes",
+            target_path="/lib/nes/X (Japan).nes",
+        )
+        result = resolve_collision(action, RESOLUTION_DELETE_SOURCE)
+        assert len(result) == 1
+        assert result[0].kind == ACTION_DELETE_FILE
+        assert result[0].rom_id == 42
+        assert result[0].source_path == "/lib/nes/108 X.nes"
+
+    def test_replace_target_returns_delete_then_rename(self) -> None:
+        """Delete-target-and-rename-source yields two actions in order:
+        the target delete first, then the source rename. The execute loop
+        runs sequentially under per-action SAVEPOINTs so the rename's
+        dest.exists() check will see the path is free."""
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=42,
+            target_rom_id=99,
+            source_path="/lib/nes/108 X.nes",
+            target_path="/lib/nes/X (Japan).nes",
+        )
+        result = resolve_collision(action, RESOLUTION_REPLACE_TARGET)
+        assert len(result) == 2
+        assert result[0].kind == ACTION_DELETE_FILE
+        assert result[0].rom_id == 99
+        assert result[0].source_path == "/lib/nes/X (Japan).nes"
+        assert result[1].kind == ACTION_RENAME
+        assert result[1].rom_id == 42
+        assert result[1].source_path == "/lib/nes/108 X.nes"
+        assert result[1].target_path == "/lib/nes/X (Japan).nes"
+
+    def test_replace_target_without_target_rom_returns_empty(self) -> None:
+        """If the collision lacks target_rom_id we can't safely produce a
+        delete action; the resolver returns empty so the user is required
+        to choose a different option."""
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=42,
+            target_rom_id=None,
+            source_path="/lib/nes/108 X.nes",
+            target_path="/lib/nes/X (Japan).nes",
+        )
+        assert resolve_collision(action, RESOLUTION_REPLACE_TARGET) == []
+
+    def test_unknown_resolution_treated_as_do_nothing(self) -> None:
+        action = OrganizeAction(
+            kind=ACTION_COLLISION,
+            rom_id=42,
+            target_rom_id=99,
+            source_path="/lib/nes/108 X.nes",
+            target_path="/lib/nes/X (Japan).nes",
+        )
+        assert resolve_collision(action, "garbage_value") == []
+
+
+class TestExecuteDeleteFile:
+    """``ACTION_DELETE_FILE`` runs an unconditional delete — no TOCTOU."""
+
+    def test_unlinks_file_and_drops_row(self, seeded_db, tmp_path) -> None:
+        target_dir = tmp_path / "nes"
+        target_dir.mkdir()
+        path = target_dir / "Doomed.nes"
+        path.write_bytes(b"doomed bytes")
+        rom_id = _insert_rom(
+            seeded_db,
+            path=str(path),
+            system_id="nes",
+            match_confidence="fuzzy",
+        )
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_DELETE_FILE,
+                    rom_id=rom_id,
+                    source_path=str(path),
+                    reason="user resolution: delete source",
+                )
+            ]
+        )
+        summary = execute_plan(seeded_db, plan.actions)
+        assert summary.applied == 1
+        assert summary.failed == 0
+        assert not path.exists()
+        # DB row gone.
+        row = seeded_db.execute(
+            "SELECT 1 FROM roms WHERE id = ?", (rom_id,)
+        ).fetchone()
+        assert row is None
 
 
 # ---------------------------------------------------------------------------
@@ -1035,6 +1207,103 @@ class TestOrganizePreviewDialog:
         dialog = OrganizePreviewDialog(OrganizePlan())
         assert dialog._apply_btn.isEnabled() is False
         dialog.close()
+
+    def test_collision_combo_default_emits_nothing(self, qapp) -> None:
+        """Default selection ('Do nothing') means the collision contributes
+        no actions to approved_actions(). The user has to pick a real
+        resolution explicitly."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    rom_id=10,
+                    target_rom_id=20,
+                    source_path="/lib/nes/108 X.nes",
+                    target_path="/lib/nes/X (Japan).nes",
+                    reason="target path already occupied by a different file",
+                )
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            # One combo was installed for the one collision row.
+            combos = dialog._iter_collision_combos()
+            assert len(combos) == 1
+            _, combo = combos[0]
+            assert combo.count() == 3  # Do nothing / Delete source / Replace target
+            assert combo.currentData() == RESOLUTION_DO_NOTHING
+            assert dialog.approved_actions() == []
+        finally:
+            dialog.close()
+
+    def test_collision_combo_replace_target_emits_two_actions(self, qapp) -> None:
+        """When the user picks 'Delete target and rename source',
+        approved_actions() yields a DELETE_FILE for the target followed
+        by a RENAME for the source — in that order."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    rom_id=10,
+                    target_rom_id=20,
+                    source_path="/lib/nes/108 X.nes",
+                    target_path="/lib/nes/X (Japan).nes",
+                    reason="target path already occupied",
+                )
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            _, combo = dialog._iter_collision_combos()[0]
+            # Find and select the replace_target option.
+            for i in range(combo.count()):
+                if combo.itemData(i) == RESOLUTION_REPLACE_TARGET:
+                    combo.setCurrentIndex(i)
+                    break
+            else:
+                raise AssertionError("RESOLUTION_REPLACE_TARGET not in combo")
+            approved = dialog.approved_actions()
+            assert len(approved) == 2
+            assert approved[0].kind == ACTION_DELETE_FILE
+            assert approved[0].rom_id == 20
+            assert approved[0].source_path == "/lib/nes/X (Japan).nes"
+            assert approved[1].kind == ACTION_RENAME
+            assert approved[1].rom_id == 10
+            assert approved[1].source_path == "/lib/nes/108 X.nes"
+            assert approved[1].target_path == "/lib/nes/X (Japan).nes"
+        finally:
+            dialog.close()
+
+    def test_collision_combo_options_for_case_1_collision(self, qapp) -> None:
+        """A case-1 collision (no target_rom_id captured) should still get
+        a combo, but with fewer options — only Do nothing and Delete source."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    rom_id=5,
+                    target_rom_id=None,
+                    source_path="/lib/nes/a.nes",
+                    target_path="/lib/nes/X.nes",
+                    reason="2 rename(s) target this path",
+                )
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            _, combo = dialog._iter_collision_combos()[0]
+            values = {combo.itemData(i) for i in range(combo.count())}
+            assert RESOLUTION_DO_NOTHING in values
+            assert RESOLUTION_DELETE_SOURCE in values
+            assert RESOLUTION_REPLACE_TARGET not in values
+        finally:
+            dialog.close()
 
     def test_group_header_toggle_cascades_to_children(self, qapp) -> None:
         """Tri-state header toggle from GroupedCheckboxTreeMixin must
