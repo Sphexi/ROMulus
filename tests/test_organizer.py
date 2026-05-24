@@ -25,7 +25,6 @@ from romulus.core.organizer import (
     detect_collisions,
     execute_plan,
     find_alias_merges,
-    find_cross_extension_dupes,
     find_duplicates,
     find_renameable_roms,
 )
@@ -45,9 +44,14 @@ def _insert_rom(
     size_bytes: int = 1024,
     match_confidence: str = "fuzzy",
     dat_match: str | None = None,
-    game_id: int | None = None,
+    is_hack: bool = False,
 ) -> int:
-    """Insert a ROM row and return its id."""
+    """Insert a ROM row and return its id.
+
+    Identity fields (``is_hack``) are stored directly on the ``roms`` row in
+    the strict 1:1 schema (Session 13). There is no ``games`` table or
+    ``game_id`` foreign key.
+    """
     filename = path.rsplit("/", 1)[-1]
     ext = extension or ("." + filename.rsplit(".", 1)[-1])
     rom_id = q.upsert_rom(
@@ -62,10 +66,9 @@ def _insert_rom(
             "fuzzy_key": filename.lower(),
             "match_confidence": match_confidence,
             "dat_match": dat_match,
+            "is_hack": is_hack,
         },
     )
-    if game_id is not None:
-        q.link_rom_to_game(conn, rom_id, game_id)
     conn.commit()
     return rom_id
 
@@ -186,81 +189,27 @@ class TestFindDuplicates:
         assert find_duplicates(seeded_db) == []
 
     def test_hack_never_deduped_against_original(self, seeded_db) -> None:
-        # Insert the original and a hack game, both with the same SHA-1.
-        original_id = q.upsert_game(
-            seeded_db,
-            {"title": "Mario", "system_id": "snes", "is_hack": False},
-        )
-        hack_id = q.upsert_game(
-            seeded_db,
-            {"title": "Mario Hack", "system_id": "snes", "is_hack": True},
-        )
+        # Insert the original and a hack ROM with the same SHA-1.
+        # Session 13: is_hack lives directly on roms; there is no games table.
         rom_orig = _insert_rom(
             seeded_db,
             path="/lib/snes/Mario.sfc",
             system_id="snes",
-            game_id=original_id,
+            is_hack=False,
         )
         rom_hack = _insert_rom(
             seeded_db,
             path="/lib/snes/Mario (Hack).sfc",
             system_id="snes",
-            game_id=hack_id,
+            is_hack=True,
         )
         _insert_hash(seeded_db, rom_orig, sha1="c" * 40)
         _insert_hash(seeded_db, rom_hack, sha1="c" * 40)
-        # The hack is filtered out, leaving only the original — no dupe group.
+        # The hack is filtered out by get_duplicate_groups (is_hack=1 WHERE
+        # clause), leaving only the original in the SHA-1 group — no dupe
+        # pair, so no delete action is produced.
         assert find_duplicates(seeded_db) == []
 
-
-# ---------------------------------------------------------------------------
-# Detection: cross-extension dupes
-# ---------------------------------------------------------------------------
-
-
-class TestFindCrossExtensionDupes:
-    def test_sfc_and_smc_in_same_folder(self, seeded_db) -> None:
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Mario", "system_id": "snes"}
-        )
-        _insert_rom(
-            seeded_db,
-            path="/lib/snes/Mario.sfc",
-            system_id="snes",
-            extension=".sfc",
-            game_id=game_id,
-        )
-        _insert_rom(
-            seeded_db,
-            path="/lib/snes/Mario.smc",
-            system_id="snes",
-            extension=".smc",
-            game_id=game_id,
-        )
-        actions = find_cross_extension_dupes(seeded_db)
-        assert len(actions) == 1
-        assert actions[0].source_path.endswith("Mario.smc")
-        assert actions[0].target_path.endswith("Mario.sfc")
-
-    def test_different_folders_not_cross_ext_dupe(self, seeded_db) -> None:
-        game_id = q.upsert_game(
-            seeded_db, {"title": "Mario", "system_id": "snes"}
-        )
-        _insert_rom(
-            seeded_db,
-            path="/lib/snes/Mario.sfc",
-            system_id="snes",
-            extension=".sfc",
-            game_id=game_id,
-        )
-        _insert_rom(
-            seeded_db,
-            path="/lib/snes-hacks/Mario.smc",
-            system_id="snes",
-            extension=".smc",
-            game_id=game_id,
-        )
-        assert find_cross_extension_dupes(seeded_db) == []
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +218,7 @@ class TestFindCrossExtensionDupes:
 
 
 class TestDetectCollisions:
-    def test_two_renames_to_same_target_become_collision(self) -> None:
+    def test_two_renames_to_same_target_become_collision(self, seeded_db) -> None:
         a = OrganizeAction(
             kind=ACTION_RENAME,
             rom_id=1,
@@ -282,13 +231,13 @@ class TestDetectCollisions:
             source_path="/lib/snes/b.sfc",
             target_path="/lib/snes/Mario.sfc",
         )
-        result = detect_collisions([a, b])
+        result = detect_collisions(seeded_db, [a, b])
         kinds = [r.kind for r in result]
         assert ACTION_COLLISION in kinds
         # The two renames were filtered out.
         assert all(r.kind != ACTION_RENAME for r in result)
 
-    def test_no_collision_when_targets_unique(self) -> None:
+    def test_no_collision_when_targets_unique(self, seeded_db) -> None:
         a = OrganizeAction(
             kind=ACTION_RENAME,
             rom_id=1,
@@ -301,7 +250,75 @@ class TestDetectCollisions:
             source_path="/lib/snes/b.sfc",
             target_path="/lib/snes/Zelda.sfc",
         )
-        result = detect_collisions([a, b])
+        result = detect_collisions(seeded_db, [a, b])
+        assert all(r.kind == ACTION_RENAME for r in result)
+
+    def test_rename_target_occupied_by_existing_rom_becomes_collision(
+        self, seeded_db
+    ) -> None:
+        """Case 3 — rename target matches an un-renamed DB row.
+
+        ROM A at path ``/lib/snes/657 Igo.nes`` is DAT-verified and wants to
+        rename to ``/lib/snes/Igo - Kyuu Roban Taikyoku (Japan).nes``.
+        ROM B already exists at that exact path with a different SHA-1 and is
+        NOT itself being renamed in this plan.
+
+        ``detect_collisions`` must surface an ``ACTION_COLLISION`` for A's
+        rename and filter the conflicting rename out of the result.
+        """
+        # Insert ROM B at the target path of A's rename. Different SHA-1.
+        _insert_rom(
+            seeded_db,
+            path="/lib/snes/Igo - Kyuu Roban Taikyoku (Japan).nes",
+            system_id="snes",
+            match_confidence="fuzzy",
+        )
+        # Insert ROM A (the one wanting to rename).
+        rom_a_id = _insert_rom(
+            seeded_db,
+            path="/lib/snes/657 Igo.nes",
+            system_id="snes",
+            match_confidence="dat_verified",
+            dat_match="Igo - Kyuu Roban Taikyoku (Japan)",
+        )
+        rename_a = OrganizeAction(
+            kind=ACTION_RENAME,
+            rom_id=rom_a_id,
+            source_path="/lib/snes/657 Igo.nes",
+            target_path="/lib/snes/Igo - Kyuu Roban Taikyoku (Japan).nes",
+            reason="DAT-verified name: Igo - Kyuu Roban Taikyoku (Japan)",
+        )
+        result = detect_collisions(seeded_db, [rename_a])
+        # The rename is replaced by a collision.
+        assert len(result) == 1
+        assert result[0].kind == ACTION_COLLISION
+        assert result[0].target_path == "/lib/snes/Igo - Kyuu Roban Taikyoku (Japan).nes"
+        assert "occupied" in result[0].reason
+
+    def test_rename_to_own_existing_path_not_a_collision(self, seeded_db) -> None:
+        """A ROM renaming to its own current path is already filtered by
+        ``find_renameable_roms`` (target_path == source_path guard), but
+        even if such an action somehow reaches ``detect_collisions``, it
+        should not be flagged — the existing DB row IS the same rom being
+        renamed.
+        """
+        rom_id = _insert_rom(
+            seeded_db,
+            path="/lib/snes/Mario.sfc",
+            system_id="snes",
+            match_confidence="dat_verified",
+            dat_match="Mario",
+        )
+        action = OrganizeAction(
+            kind=ACTION_RENAME,
+            rom_id=rom_id,
+            source_path="/lib/snes/Mario.sfc",
+            target_path="/lib/snes/Mario.sfc",
+        )
+        result = detect_collisions(seeded_db, [action])
+        # target == source: case 2 guard passes (target IN rename_sources and
+        # target == group[0].source_path), case 3 guard skips because the
+        # existing row's id IS in renamed_rom_ids. No collision.
         assert all(r.kind == ACTION_RENAME for r in result)
 
 
@@ -419,6 +436,115 @@ class TestExecuteDeleteDuplicate:
         assert not dup_path.exists()
         assert keeper_path.exists()
         assert q.get_rom_by_id(seeded_db, dup_id) is None
+
+
+# ---------------------------------------------------------------------------
+# Execution: delete_duplicate — normalized-hash TOCTOU guard (Bug 2)
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteDeleteDuplicateNormalizedHash:
+    """Bug 2 fix: the TOCTOU guard must use ``hash_rom`` (normalized) not
+    ``_digest_stream`` (raw).
+
+    Before the fix, a ``.sfc`` plain file and a ``.zip`` containing the same
+    bytes would always fail the guard because raw digests differ. After the
+    fix, ``hash_rom`` extracts the zip and compares normalized SHA-1s, so the
+    action succeeds when content is genuinely identical.
+    """
+
+    def _write_zip(self, zip_path: Path, inner_name: str, content: bytes) -> None:
+        """Write a single-file zip archive at ``zip_path``."""
+        import zipfile
+
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr(inner_name, content)
+
+    def test_sfc_and_zip_same_content_succeeds(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """A .sfc file and a .zip of the same bytes should apply cleanly.
+
+        Both files hash to the same SHA-1 under ``hash_rom`` (zip is extracted
+        before hashing; snes has no header_rule so no stripping is applied).
+        The TOCTOU guard must pass and the duplicate must be removed.
+        """
+        rom_bytes = b"fake-snes-rom-payload-" + b"\xab\xcd" * 128
+        sfc_path = tmp_path / "snes" / "Mario.sfc"
+        zip_path = tmp_path / "snes" / "Mario.zip"
+        sfc_path.parent.mkdir(parents=True, exist_ok=True)
+        sfc_path.write_bytes(rom_bytes)
+        self._write_zip(zip_path, "Mario.sfc", rom_bytes)
+
+        # Both roms enrolled in DB for the snes system (no header_rule).
+        keeper_id = _insert_rom(
+            seeded_db,
+            path=str(sfc_path).replace("\\", "/"),
+            system_id="snes",
+        )
+        dup_id = _insert_rom(
+            seeded_db,
+            path=str(zip_path).replace("\\", "/"),
+            system_id="snes",
+        )
+        action = OrganizeAction(
+            kind=ACTION_DELETE_DUPLICATE,
+            rom_id=dup_id,
+            source_path=str(zip_path).replace("\\", "/"),
+            target_path=str(sfc_path).replace("\\", "/"),
+        )
+        summary = execute_plan(seeded_db, [action])
+        assert summary.applied == 1, summary.errors
+        assert not zip_path.exists()
+        assert sfc_path.exists()
+        assert q.get_rom_by_id(seeded_db, dup_id) is None
+        # Keeper row still intact.
+        assert q.get_rom_by_id(seeded_db, keeper_id) is not None
+
+    def test_sfc_and_zip_different_content_refuses(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """A .sfc and a .zip with DIFFERENT inner content must be refused.
+
+        The guard detects the SHA-1 mismatch after normalization and raises
+        ``ValueError``, leaving both files intact on disk.
+        """
+        sfc_bytes = b"original-rom-" + b"\x11" * 64
+        zip_inner_bytes = b"completely-different-payload-" + b"\x22" * 64
+        sfc_path = tmp_path / "snes" / "Mario.sfc"
+        zip_path = tmp_path / "snes" / "Mario_dup.zip"
+        sfc_path.parent.mkdir(parents=True, exist_ok=True)
+        sfc_path.write_bytes(sfc_bytes)
+        self._write_zip(zip_path, "Mario.sfc", zip_inner_bytes)
+
+        keeper_id = _insert_rom(
+            seeded_db,
+            path=str(sfc_path).replace("\\", "/"),
+            system_id="snes",
+        )
+        dup_id = _insert_rom(
+            seeded_db,
+            path=str(zip_path).replace("\\", "/"),
+            system_id="snes",
+        )
+        action = OrganizeAction(
+            kind=ACTION_DELETE_DUPLICATE,
+            rom_id=dup_id,
+            source_path=str(zip_path).replace("\\", "/"),
+            target_path=str(sfc_path).replace("\\", "/"),
+        )
+        summary = execute_plan(seeded_db, [action])
+        assert summary.failed == 1
+        assert summary.applied == 0
+        # Both files survive untouched.
+        assert zip_path.exists()
+        assert sfc_path.exists()
+        # Error message must mention "post-normalization".
+        assert any("post-normalization" in e for e in summary.errors), summary.errors
+        # Both DB rows survive.
+        assert q.get_rom_by_id(seeded_db, dup_id) is not None
+        assert q.get_rom_by_id(seeded_db, keeper_id) is not None
 
 
 # ---------------------------------------------------------------------------

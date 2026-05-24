@@ -40,7 +40,6 @@ from romulus.core.organizer import (
     detect_collisions,
     execute_plan,
     find_alias_merges,
-    find_cross_extension_dupes,
     find_duplicates,
     find_renameable_roms,
 )
@@ -84,7 +83,6 @@ __all__ = [
     "export_collection",
     "extract_header_title",
     "find_alias_merges",
-    "find_cross_extension_dupes",
     "find_duplicates",
     "find_renameable_roms",
     "generate_fuzzy_key",

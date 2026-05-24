@@ -20,8 +20,15 @@ and exporter share a single implementation of the staging-via-tempfile then
 ``romulus.metadata.libretro.fetch_cover``. A crash mid-copy can therefore only
 leave a ``.part`` tempfile — never a corrupted final artifact.
 
-Hacks are first-class: rows whose owning game has ``is_hack=1`` are excluded
-from duplicate detection and never merged with an original.
+Hacks are first-class: rows with ``is_hack=1`` are excluded from duplicate
+detection and never merged with an original. Session 13 moved ``is_hack``
+directly onto the ``roms`` table; there is no ``games`` join.
+
+Cross-extension duplicate detection was removed in Session 17. Its concept
+("two ROMs share ``game_id``") no longer exists in the strict 1:1 schema.
+Legitimate same-content cross-extension pairs (e.g. ``Mario.sfc`` +
+``Mario.zip``) are caught by ``find_duplicates`` once the TOCTOU guard
+correctly uses ``hash_rom`` for normalization.
 """
 
 from __future__ import annotations
@@ -381,120 +388,81 @@ def find_duplicates(conn: sqlite3.Connection) -> list[OrganizeAction]:
     return actions
 
 
-def find_cross_extension_dupes(conn: sqlite3.Connection) -> list[OrganizeAction]:
-    """Same game/system/folder, multiple extensions (.smc + .sfc).
-
-    Detects ROMs that share a ``game_id`` and live in the same parent folder
-    but use different on-disk extensions. The less-canonical extension is
-    proposed for deletion. Only emitted for games whose extensions are ranked
-    in ``_EXTENSION_PREFERENCE`` — otherwise we have no basis to pick a
-    keeper. Hacks are excluded.
-    """
-    rows = conn.execute(
-        """
-        SELECT r.id AS rom_id, r.path, r.filename, r.extension,
-               r.system_id, r.game_id,
-               COALESCE(g.is_hack, 0) AS is_hack
-        FROM roms r
-        LEFT JOIN games g ON g.id = r.game_id
-        WHERE r.game_id IS NOT NULL
-          AND COALESCE(g.is_hack, 0) = 0
-        ORDER BY r.game_id, r.id
-        """
-    ).fetchall()
-    groups: defaultdict[tuple[int, str], list[sqlite3.Row]] = defaultdict(list)
-    for row in rows:
-        folder = _normalize_folder(str(row["path"]))
-        groups[(int(row["game_id"]), folder)].append(row)
-
-    actions: list[OrganizeAction] = []
-    for group_rows in groups.values():
-        if len(group_rows) < 2:
-            continue
-        exts = {str(r["extension"] or "").lower() for r in group_rows}
-        if len(exts) < 2:
-            continue
-        ranked = [
-            (
-                _EXTENSION_PREFERENCE.get(
-                    str(r["extension"] or "").lower(), _UNRANKED_SORT_KEY
-                ),
-                r,
-            )
-            for r in group_rows
-        ]
-        ranked.sort(key=lambda pair: (pair[0], int(pair[1]["rom_id"])))
-        keeper_rank, keeper = ranked[0]
-        if keeper_rank >= _UNRANKED_SORT_KEY:
-            logger.debug(
-                "organize.cross_ext: skip group (no ranked extensions) "
-                "game_id=%s exts=%s",
-                keeper["game_id"],
-                sorted(exts),
-            )
-            continue
-        for rank, dup in ranked[1:]:
-            if rank >= _UNRANKED_SORT_KEY:
-                continue
-            logger.debug(
-                "organize.cross_ext: planned delete game_id=%s "
-                "dup_filename=%s dup_ext=%s keeper_filename=%s keeper_ext=%s",
-                dup["game_id"],
-                dup["filename"],
-                dup["extension"],
-                keeper["filename"],
-                keeper["extension"],
-            )
-            actions.append(
-                OrganizeAction(
-                    kind=ACTION_DELETE_DUPLICATE,
-                    rom_id=int(dup["rom_id"]),
-                    source_path=str(dup["path"]).replace("\\", "/"),
-                    target_path=str(keeper["path"]).replace("\\", "/"),
-                    reason=(f"cross-extension dupe of {keeper['filename']!r}"),
-                )
-            )
-    return actions
-
 
 def detect_collisions(
+    conn: sqlite3.Connection,
     actions: Iterable[OrganizeAction],
 ) -> list[OrganizeAction]:
     """Augment a plan with ``collision`` actions for unsafe destinations.
 
-    A collision is recorded whenever two distinct ``rename`` actions would
-    land on the same target path, or a ``rename`` target path already exists
-    as the source of another rename (i.e. would overwrite another ROM's
-    current file). The original conflicting rename actions are filtered out —
-    the user must resolve the collision manually.
+    Three collision cases are detected:
+
+    1. Two distinct ``rename`` actions would land on the same target path.
+    2. A ``rename`` target path is already the *source* of another rename in
+       this plan (i.e. would overwrite a ROM that is itself being renamed).
+    3. A ``rename`` target path matches an existing ``roms`` row that is NOT
+       itself being renamed in this plan (i.e. an un-renamed file already
+       occupies the destination).
+
+    The original conflicting rename actions are filtered out of the result and
+    replaced with ``ACTION_COLLISION`` entries — the user must resolve them
+    manually before re-running the organizer.
+
+    Args:
+        conn: Database connection used for case-3 existence checks.
+        actions: Iterable of proposed :class:`OrganizeAction` objects.
     """
     actions_list = list(actions)
     rename_actions = [a for a in actions_list if a.kind == ACTION_RENAME]
     if not rename_actions:
         return actions_list
 
+    # Build a fast lookup: target_path → list of rename actions that want it.
     target_to_sources: defaultdict[str, list[OrganizeAction]] = defaultdict(list)
     for action in rename_actions:
         target_to_sources[action.target_path].append(action)
 
+    # Set of paths that are themselves being moved in this plan.
     rename_sources = {a.source_path for a in rename_actions}
+    # Set of rom_ids that ARE being renamed — used to exclude them from case 3.
+    renamed_rom_ids: set[int] = {a.rom_id for a in rename_actions if a.rom_id is not None}
+
     colliding_targets: set[str] = set()
     collisions: list[OrganizeAction] = []
+
     for target, group in target_to_sources.items():
-        if len(group) > 1 or (target in rename_sources and target != group[0].source_path):
+        reason: str | None = None
+
+        # Case 1 — multiple renames competing for the same target.
+        if len(group) > 1:
+            reason = f"{len(group)} rename(s) target this path"
+
+        # Case 2 — rename target equals the source of a different rename.
+        elif target in rename_sources and target != group[0].source_path:
+            reason = "target path already exists in library"
+
+        # Case 3 — an un-renamed DB row already occupies the target path.
+        else:
+            existing = q.find_rom_by_path(conn, target)
+            if existing is not None and int(existing["id"]) not in renamed_rom_ids:
+                reason = "target path already occupied by a different file in the library"
+
+        if reason is not None:
             colliding_targets.add(target)
             collisions.append(
                 OrganizeAction(
                     kind=ACTION_COLLISION,
                     source_path=group[0].source_path,
                     target_path=target,
-                    reason=(
-                        f"{len(group)} rename(s) target this path"
-                        if len(group) > 1
-                        else "target path already exists in library"
-                    ),
+                    reason=reason,
                 )
             )
+            logger.debug(
+                "organize.collision: target=%s reason=%r",
+                target,
+                reason,
+            )
+
     if not colliding_targets:
         return actions_list
     safe = [
@@ -513,6 +481,14 @@ def detect_collisions(
 def analyze_library(conn: sqlite3.Connection) -> OrganizePlan:
     """Run every detector against the current library state and assemble a plan.
 
+    Detectors run in this order:
+
+    1. :func:`find_alias_merges` — non-canonical folder merges.
+    2. :func:`find_renameable_roms` — DAT-verified filename renames.
+    3. :func:`find_duplicates` — same-SHA-1 pairs; keeper by extension rank.
+    4. :func:`detect_collisions` — post-processing pass that replaces any
+       unsafe rename with an ``ACTION_COLLISION`` marker.
+
     The returned plan is fully serializable (``to_json``). Callers typically
     pass the resulting list to ``OrganizePreviewDialog`` so the user can
     approve/reject individual actions before ``execute_plan`` is invoked.
@@ -521,19 +497,16 @@ def analyze_library(conn: sqlite3.Connection) -> OrganizePlan:
     merges = find_alias_merges(conn)
     renames = find_renameable_roms(conn)
     dupes = find_duplicates(conn)
-    cross_ext = find_cross_extension_dupes(conn)
     actions.extend(merges)
     actions.extend(renames)
     actions.extend(dupes)
-    actions.extend(cross_ext)
-    actions = detect_collisions(actions)
+    actions = detect_collisions(conn, actions)
     plan = OrganizePlan(actions=actions)
     logger.debug(
-        "analyze_library: merges=%d renames=%d dupes=%d cross_ext=%d final=%d",
+        "analyze_library: merges=%d renames=%d dupes=%d final=%d",
         len(merges),
         len(renames),
         len(dupes),
-        len(cross_ext),
         len(plan.actions),
     )
     return plan
@@ -567,31 +540,69 @@ def _execute_delete_duplicate(
     TOCTOU guard (security audit v0.1.0 finding #11): the plan was built
     against the ``hashes`` table at analysis time. Between then and now the
     user may have manually edited ``source`` or ``target`` — re-hash both
-    just before the unlink and abort if the SHA-1s no longer match. Adds two
-    file reads to each delete, but the action set is small (typically a
-    handful of dupes per library) and the cost is dwarfed by the safety
-    win: a manually-modified file is never silently destroyed.
+    just before the unlink and abort if the post-normalization SHA-1s no longer
+    match. Adds two file reads to each delete, but the action set is small
+    (typically a handful of dupes per library) and the cost is dwarfed by the
+    safety win: a manually-modified file is never silently destroyed.
+
+    The guard uses :func:`romulus.core.hasher.hash_rom` so that ZIP extraction
+    and per-system header stripping are applied before comparison. A raw stream
+    digest of ``.smc`` vs ``.sfc`` — or ``.sfc`` vs ``.zip`` — produces
+    different bytes even when the normalized payloads are identical. ``hash_rom``
+    resolves this by applying the same normalization path that ``hash_library``
+    used when the ``hashes`` row was first written.
     """
+    # Late import — ``romulus.core.hasher`` already imports
+    # ``romulus.db.queries``; keep the dependency arrow one-way by deferring
+    # until execute time. Only the public ``hash_rom`` entry point is imported;
+    # the private raw-stream helper in hasher.py is intentionally unused here.
+    from romulus.core.hasher import hash_rom
+
     source = Path(action.source_path)
     target = Path(action.target_path) if action.target_path else None
+
     if source.exists() and target is not None and target.exists():
-        # Late import: ``romulus.core.hasher`` already imports
-        # ``romulus.db.queries``, and ``organizer`` imports both — keep the
-        # dependency arrow one-way by deferring this until execute time.
-        from romulus.core.hasher import _digest_stream
+        # Build a system_id → SystemDef lookup from the global registry so we
+        # can resolve the header_rule for both the source and target ROMs.
+        system_map = {sys_def.id: sys_def for sys_def in SYSTEM_REGISTRY}
+
+        def _header_rule_for(path: Path) -> str | None:
+            """Return the header_rule for the rom at *path* by querying the DB."""
+            row = q.find_rom_by_path(conn, str(path).replace("\\", "/"))
+            if row is None:
+                return None
+            sid = str(row["system_id"]) if row["system_id"] is not None else ""
+            sys_def = system_map.get(sid)
+            return sys_def.header_rule if sys_def is not None else None
+
+        source_rule = _header_rule_for(source)
+        target_rule = _header_rule_for(target)
 
         try:
-            source_sha = _digest_stream(source).sha1
-            target_sha = _digest_stream(target).sha1
+            source_result = hash_rom(source, source_rule)
+            target_result = hash_rom(target, target_rule)
         except OSError as exc:
             raise OSError(
                 f"failed to verify duplicate before delete: {exc}"
             ) from exc
+
+        if source_result is None or target_result is None:
+            # If hash_rom returns None the file is unreadable or an empty zip;
+            # abort rather than silently deleting an unverifiable file.
+            raise ValueError(
+                f"refusing to delete {source!s}: could not compute "
+                "post-normalization SHA-1 for one or both files"
+            )
+
+        source_sha = source_result.sha1
+        target_sha = target_result.sha1
         if source_sha != target_sha:
             raise ValueError(
-                f"refusing to delete {source!s}: SHA-1 no longer matches "
-                f"keeper {target!s} (source={source_sha} target={target_sha})"
+                f"refusing to delete {source!s}: post-normalization SHA-1 no "
+                f"longer matches keeper {target!s} "
+                f"(source={source_sha} target={target_sha})"
             )
+
     if source.exists():
         os.remove(source)
     if action.rom_id is not None:
