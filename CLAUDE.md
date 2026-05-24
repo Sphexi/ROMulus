@@ -10,7 +10,7 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
 
 ## Current State (as of v0.4.0 in development)
 
-- **1,015 tests passing, 8 skipped** (1 POSIX-only chmod test; 7 cover-UI
+- **1,039 tests passing, 8 skipped** (1 POSIX-only chmod test; 7 cover-UI
   platform skips added in sessions 13–19). Ruff clean. CI runs on `windows-latest`.
 - Full pipeline works end-to-end: Quick Scan → Heavy Scan → Enrich
   Metadata → Find Covers → Organize → Export / Sync, plus inbound
@@ -77,6 +77,18 @@ ROMulus is a local-first desktop ROM collection manager for retro game consoles.
   copies surface as duplicates. Export has a `distinct_content_only`
   toggle. Organizer TOCTOU + collision detector bugs fixed. Detail panel
   disambiguation fixed (regional variants now show their own data).
+- **Post-v0.4.0 (4 commits, unreleased):** Organize workflow hardening.
+  `find_rom_by_path` now tolerates slash-direction mismatch (was causing
+  594 organize failures against UNC libraries). `analyze_library` runs
+  detectors in explicit tier order with `exclude_rom_ids` passed to the
+  rename detector so hash-dupe roms don't also get rename proposals.
+  `detect_collisions` case 3 has four content-aware sub-cases (3a auto-
+  upgrades matching SHA-1 pairs to delete-duplicate; 3b/3c/3d surface
+  as collisions with specific reasons). Per-row resolution QComboBox in
+  `OrganizePreviewDialog` lets users resolve each collision individually
+  ("Do nothing" / "Delete source" / "Delete target and rename source").
+  New `ACTION_DELETE_FILE` action kind for user-authorized unconditional
+  deletes. Apply locks the dialog and cleans submitted rows on success.
 - Pre-v0.4.0 databases must be wiped — wipe `data/romulus.db` and rescan.
 
 See `CHANGELOG.md` for the full per-release breakdown.
@@ -335,7 +347,7 @@ ROMulous/
     ├── test_scrub.py              # Verify Library: bucket classification,
     │                              # per-bucket SAVEPOINT, unreadable guard
     ├── test_per_system_summary_dialog.py  # Per-system summary dialog smoke
-    └── ...                        # 1015 tests total, 8 skipped
+    └── ...                        # 1039 tests total, 8 skipped
 ```
 
 ## Git Policy
@@ -395,6 +407,10 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 28. **One rom = one game.** The identity unit is the ROM file. Each `roms` row carries its own `metadata`, `covers`, and `collection_roms` memberships — there is no separate `games` table. Byte-identical copies become distinct rows so duplicates are visible by sorting on SHA-1 or filename. Regional variants (USA / Europe) each have their own detail-panel data.
 29. **Sibling-copy preserves API quotas.** `enrich_library` short-circuits network calls when an identical-identity ROM already has a metadata row from a previous run. The cover finder follows the same rule. This avoids burning TheGamesDB allowance or ScreenScraper credits on files the user owns in multiple formats.
 30. **Distinct-content export is opt-in.** `ExportOptions.distinct_content_only` defaults False (export every ROM). When True, only one ROM per SHA-1 cluster is exported — keeper rank: `dat_verified` > canonical extension > shorter filename > lower `rom_id`. ROMs with no SHA-1 always export regardless of the toggle.
+31. **Organizer detectors run in tiered order.** `analyze_library` runs: (1) `find_alias_merges`, (2) `find_duplicates`, (3) `find_renameable_roms(exclude_rom_ids=…)` — roms marked for deletion in step 2 are excluded so they don't generate competing rename proposals, (4) `detect_collisions` as a post-processing pass.
+32. **Collision case 3 uses content-aware sub-cases.** When a rename target is occupied by an existing DB row, SHA-1 and `is_hack` decide: matching SHA-1 + no hack → auto-upgrade to `ACTION_DELETE_DUPLICATE`; differing SHA-1 → `ACTION_COLLISION`; missing SHA-1 on either side → `ACTION_COLLISION`; either side is a hack → `ACTION_COLLISION`. Cases 1 and 2 (rename-vs-rename conflicts) remain plain collisions.
+33. **`ACTION_DELETE_FILE` has no TOCTOU guard.** Produced only by `resolve_collision` when the user explicitly picks "Delete source" or "Delete target and rename source" in the collision combo. The TOCTOU check would always refuse (files in a collision differ by definition); the user's choice is the authorization. Distinct from `ACTION_DELETE_DUPLICATE`, which re-hashes both files before deleting.
+34. **`find_rom_by_path` is the chokepoint for path lookups.** On Windows, scanner writes backslash-form paths; some callers normalize to forward-slash before querying. To avoid silent misses, `find_rom_by_path` retries with flipped slashes on miss. Any new `WHERE path = ?` query must either go through this helper or normalize its input to match the stored form.
 
 ## Scan Types
 

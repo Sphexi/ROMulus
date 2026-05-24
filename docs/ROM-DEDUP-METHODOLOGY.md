@@ -276,6 +276,40 @@ The three-layer pipeline is embedded in the ROMulus scanner and Heavy Scan pipel
 
 - **Cross-extension dedup.** The old `find_cross_extension_dupes` detector (which relied on shared `game_id` to link `.sfc` and `.smc` rows for the same logical game) was deleted in v0.4.0. Its role is fully covered by `find_duplicates`, which groups by SHA-1 — a byte-identical `.sfc` and `.zip` of the same ROM share a normalized SHA-1 after header stripping, so `find_duplicates` catches them. The TOCTOU re-hash guard in `_execute_delete_duplicate` was fixed simultaneously to call `hash_rom(path, header_rule)` (normalized) rather than `_digest_stream(path)` (raw bytes), so legitimate same-content pairs now apply cleanly.
 
+### Tiered detector ordering in `analyze_library`
+
+`analyze_library` assembles the Organize plan in four phases, each narrowing the candidate set for the next:
+
+1. `find_alias_merges` — non-canonical folder names only; no per-rom logic.
+2. `find_duplicates` — SHA-1 equality groups. Content equality is the strongest claim and wins first. The rom IDs scheduled for deletion here are collected into `deleted_rom_ids`.
+3. `find_renameable_roms(conn, exclude_rom_ids=deleted_rom_ids)` — DAT-verified filename renames, skipping any rom already marked for deletion. Without the exclusion set, a rom about to be deleted as a hash duplicate would also receive a rename proposal; when `detect_collisions` later found the rename target occupied by the keeper, it would emit a false collision instead of the correct delete-duplicate.
+4. `detect_collisions` — post-processing pass over the combined action list. Rename-vs-rename conflicts and rename-vs-existing-file conflicts are resolved here.
+
+### Collision sub-cases (case 3)
+
+When a rename target path matches an existing `roms` row that is not itself being renamed, `detect_collisions` inspects SHA-1 and `is_hack` to decide the outcome:
+
+| Sub-case | Condition | Result |
+|---|---|---|
+| **3a** | Both sides have a stored SHA-1, they match, neither is a hack | Upgrade to `ACTION_DELETE_DUPLICATE`. The canonical-named existing file becomes the keeper; the rename source is the file to delete. Catches pairs `find_duplicates` missed (e.g. one side not yet Heavy-Scanned when `find_duplicates` ran). |
+| **3b** | Both sides have a stored SHA-1 and they differ, neither is a hack | `ACTION_COLLISION` — "target path already occupied by a different file in the library". Two distinct ROMs with the same canonical name. |
+| **3c** | One or both sides lack a stored SHA-1 | `ACTION_COLLISION` — "target path already occupied; Heavy Scan both files to determine if duplicate". Equality cannot be proven without hashes. |
+| **3d** | Either side has `is_hack = 1` | `ACTION_COLLISION` — "target path already occupied by a hack/non-hack pair; manual review required". Hacks are first-class; they are never auto-merged with an original. |
+
+Cases 1 and 2 (rename-vs-rename and rename-chain conflicts) produce `ACTION_COLLISION` with `target_rom_id = None` — only the "Do nothing" resolution is offered in the UI because there is no existing DB row to work with.
+
+### Per-row collision resolution
+
+`OrganizePreviewDialog` renders a "Resolution" column (4th column) with a `QComboBox` per collision row. The options depend on which rom IDs the collision captured:
+
+| Resolution | `available_resolutions` condition | Concrete actions via `resolve_collision` |
+|---|---|---|
+| **Do nothing** (default) | Always offered | Zero actions — the collision is dropped from the approved plan. |
+| **Delete source** | `action.rom_id is not None` | One `ACTION_DELETE_FILE` for the rename source. Use when the canonical-named existing file is the authoritative copy. |
+| **Delete target and rename source** | Both `action.rom_id` and `action.target_rom_id` are set (case 3 only) | Two actions in order: `ACTION_DELETE_FILE` for the existing target, then `ACTION_RENAME` for the source. The execute loop applies them sequentially under per-action SAVEPOINTs so the rename sees a clear path. |
+
+`ACTION_DELETE_FILE` is distinct from `ACTION_DELETE_DUPLICATE`: it does not run the TOCTOU SHA-1 re-hash before unlinking. That guard exists to catch post-plan file edits, but a collision file is known to differ from the other party's content — re-hashing would always refuse. The user's explicit dropdown selection is the authorization for the unconditional delete.
+
 ---
 
 ## 9. Recommended order of operations

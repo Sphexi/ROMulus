@@ -84,13 +84,13 @@ ROMulus replaces that with a single desktop app that:
 │  Organizer  Export Engine    Sync Engine                 │
 │  (preview/  (dest profiles,  (5 modes: push merge/       │
 │   commit;   gamelist.xml,     mirror/wipe, pull merge,   │
-│   TOCTOU    .m3u, artwork,    two-way; 4-tier identity   │
-│   guard via include_roms      match; region from         │
-│   hash_rom) toggle;           roms.region directly;      │
-│             distinct_content  dest_inventory cache;      │
-│             _only toggle;     O(N+M) tier-2 via          │
-│             one <game> per    pre-indexed dest_by_fuzzy; │
-│             rom in gamelist)  SAVEPOINT rollback)        │
+│   tiered    .m3u, artwork,    two-way; 4-tier identity   │
+│   detectors include_roms      match; region from         │
+│   + per-row toggle;           roms.region directly;      │
+│   collision distinct_content  dest_inventory cache;      │
+│   combos;   _only toggle;     O(N+M) tier-2 via          │
+│   TOCTOU    one <game> per    pre-indexed dest_by_fuzzy; │
+│   guard)    rom in gamelist)  SAVEPOINT rollback)        │
 │                                                          │
 │  Importer  (staging → identify → analyse → preview →     │
 │   commit)  per-action SAVEPOINT, three-level dupe        │
@@ -298,6 +298,43 @@ so the behavior doesn't surprise users or future contributors.
     no SHA-1 always export regardless of the toggle. Useful for keeping
     device-side gamelists compact when the library intentionally holds
     multiple copies of the same content.
+31. **Organizer detectors run in tiered order.** `analyze_library` runs
+    in four phases: (1) `find_alias_merges`, (2) `find_duplicates`
+    (SHA-1 equality — strongest claim), (3) `find_renameable_roms`
+    with `exclude_rom_ids` set to the roms already marked for deletion
+    in phase 2 (prevents a redundant rename proposal for a file about
+    to be deleted), (4) `detect_collisions` as a post-processing pass.
+    The ordering ensures a rom that wins the hash-dedup step never also
+    gets a rename action that would generate a false collision.
+32. **Collision detector sub-cases gate auto-upgrade.** When a rename
+    target path is already occupied by an un-renamed DB row (case 3),
+    `detect_collisions` compares SHA-1s and `is_hack` to decide the
+    outcome: (3a) matching SHA-1, neither a hack → upgrade to
+    `ACTION_DELETE_DUPLICATE`; (3b) differing SHA-1, neither a hack →
+    `ACTION_COLLISION`; (3c) one or both missing SHA-1 → `ACTION_COLLISION`
+    (Heavy Scan required to prove equality); (3d) either side is a hack →
+    `ACTION_COLLISION` (manual review, hacks are first-class artifacts).
+    Cases 1 (two renames compete for the same target) and 2 (rename
+    target is itself being renamed) remain plain collisions with no
+    target-rom context.
+33. **`ACTION_DELETE_FILE` bypasses the TOCTOU guard by design.**
+    `ACTION_DELETE_DUPLICATE` re-hashes both files just before
+    executing the delete to guard against post-plan file edits. When
+    the user explicitly resolves a collision by choosing "Delete source"
+    or "Delete target and rename source", the resulting
+    `ACTION_DELETE_FILE` does NOT run the TOCTOU check — the organizer
+    already knows the two files differ (that's what makes it a
+    collision, not a duplicate), so a SHA-1 inequality would always
+    refuse. The user's explicit choice is the authorization.
+34. **Organize Apply locks the dialog until completion.** While
+    `OrganizeWorker` is running, Apply, Cancel, Select All / Deselect
+    All, checkboxes, and collision combos are all disabled. On
+    completion `_enter_done_state` hides Apply and renames Cancel →
+    Close. On success with zero failures `_remove_submitted_rows`
+    removes every submitted row from the model (resolved collisions +
+    checked actions) and sweeps empty group headers. On partial failure
+    the rows stay visible for review. This matches the post-apply
+    contract of `SyncPreviewDialog`.
 
 ---
 
@@ -634,7 +671,7 @@ Per the **CI/CD Local Validation Rule** in `CLAUDE.md`, the workflow's
 exact commands are run locally on Windows before any release tag is
 pushed.
 
-Current state: **1,015 tests passing, 8 skipped** (7 platform-specific
+Current state: **1,039 tests passing, 8 skipped** (7 platform-specific
 cover-UI skips + 1 POSIX chmod skip on Windows).
 
 ---
@@ -752,7 +789,7 @@ ROMulous/
 │   │   ├── identifier.py         # L2 header extraction
 │   │   ├── hasher.py             # SHA-1/CRC32 + header stripping
 │   │   ├── dat_parser.py         # Logiqx XML DAT parser + _update_identity_from_dat
-│   │   ├── organizer.py          # Library reorganization (no cross-ext detector; TOCTOU fix)
+│   │   ├── organizer.py          # Tiered detectors + per-row collision resolution + TOCTOU guard
 │   │   ├── exporter.py           # Export engine (one <game> per rom; distinct_content_only toggle)
 │   │   ├── sync.py               # 5-mode sync + 4-tier identity + O(N+M) tier-2 index
 │   │   ├── dest_inventory.py     # Destination FS scanner + cache
@@ -796,7 +833,7 @@ ROMulous/
 │       ├── artwork/              # Bundled per-platform logos
 │       ├── icons/                # CD-ROM disc app icon
 │       └── themes/               # light / dark / wbm_classic .qss
-└── tests/                        # pytest, 1023 collected (1015 passing + 8 skipped)
+└── tests/                        # pytest, 1047 collected (1039 passing + 8 skipped)
 ```
 
 ---

@@ -204,7 +204,23 @@ memory. It is not a profile-level default.
 
 ---
 
-## 7. Future work
+## 7. Organizer action kinds
+
+The organizer uses five action kinds. All are surfaced in `OrganizePreviewDialog`.
+
+| Action kind | Produced by | Execution | TOCTOU guard |
+|---|---|---|---|
+| `ACTION_MERGE_FOLDER` | `find_alias_merges` | Moves files from alias folder into canonical folder. Per-file atomic replace. | No — content irrelevant. |
+| `ACTION_RENAME` | `find_renameable_roms`, and by `resolve_collision` for "Delete target and rename source" | Atomic rename via `core/atomic.py`. DB path updated in place. | `dest.exists()` check only. |
+| `ACTION_DELETE_DUPLICATE` | `find_duplicates`, and `detect_collisions` case 3a | Unlinks source file + deletes DB row. | Yes — re-hashes both files via `hash_rom(path, header_rule)` before unlinking; refuses if post-normalization SHA-1s no longer match. |
+| `ACTION_COLLISION` | `detect_collisions` cases 1, 2, 3b, 3c, 3d | Skipped by the execute loop. User resolves via the per-row combo in `OrganizePreviewDialog`. | N/A. |
+| `ACTION_DELETE_FILE` | `resolve_collision` ("Delete source" or "Delete target…") | Unlinks file + deletes DB row. | No — the user explicitly chose to delete a file the organizer knows has different content from the rename source. The TOCTOU guard would always refuse (SHA-1s differ by design), so a separate action kind without the guard is required. |
+
+The distinction between `ACTION_DELETE_DUPLICATE` and `ACTION_DELETE_FILE` is intentional: the TOCTOU guard is a safety net for files that were content-equal at plan time but edited in the interim. Collision files are content-different by definition; the guard would be a footgun there.
+
+---
+
+## 8. Future work
 
 - **Per-rom region-specific cover fetching.** The sibling-copy gate uses the
   first matching metadata row regardless of region. A future enhancement
@@ -222,7 +238,7 @@ memory. It is not a profile-level default.
 
 ---
 
-## 8. Cross-references
+## 9. Cross-references
 
 For the implementation detail of each phase of the refactor:
 

@@ -5,6 +5,90 @@ All notable changes to ROMulus will be documented in this file.
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] — post-v0.4.0 organize improvements
+
+Four improvements to the Organize workflow landed after the v0.4.0
+strict 1:1 refactor. These will ship as part of the next release.
+
+### Fixed
+
+- **`find_rom_by_path` now tolerates slash-direction mismatch.** On
+  Windows + UNC libraries the scanner writes backslash-form paths while
+  the organizer's rename detector and `_header_rule_for` normalize to
+  forward-slash. This caused 594 organize failures (212 renames, 382
+  delete-duplicates) against UNC-mounted libraries: the DB row was
+  present but the `WHERE path = ?` lookup silently MISSED, (a) skipping
+  collision case 3 so rename actions passed preview and failed at apply
+  time with `FileExistsError`, and (b) forcing `hash_rom(path, None)`
+  raw-stream hashing — fatal for `.zip` files. Fix: `find_rom_by_path`
+  retries with flipped slashes on miss. Cheap (one extra indexed lookup,
+  only fires on miss) and centralised, so every caller benefits.
+  (`5a4763e`)
+
+### Changed
+
+- **Tiered detector ordering + content-aware collision sub-cases.** The
+  `analyze_library` pipeline now runs in explicit order: (1)
+  `find_alias_merges`, (2) `find_duplicates`, (3)
+  `find_renameable_roms(exclude_rom_ids=…)` with the hash-dupe set
+  excluded, (4) `detect_collisions`. This prevents a rom scheduled for
+  deletion as a hash duplicate from also receiving a rename proposal
+  that would generate a spurious collision.
+
+  `detect_collisions` case 3 (rename target already occupied by an
+  un-renamed DB row) now inspects SHA-1 and `is_hack` to partition into
+  four sub-cases:
+  - **3a** — matching SHA-1, neither a hack → upgraded to
+    `ACTION_DELETE_DUPLICATE` (logged as "upgraded to delete_duplicate").
+    Keeper: the canonical-named existing file.
+  - **3b** — differing SHA-1, neither a hack → `ACTION_COLLISION` "target
+    path already occupied by a different file in the library".
+  - **3c** — one or both sides missing SHA-1 → `ACTION_COLLISION` "target
+    path already occupied; Heavy Scan both files to determine if duplicate".
+  - **3d** — either side is a hack → `ACTION_COLLISION` "target path
+    already occupied by a hack/non-hack pair; manual review required".
+
+  New helper `get_sha1_for_rom(conn, rom_id) -> str | None` in
+  `db/queries.py`.
+
+  UI label changes in `OrganizePreviewDialog`:
+  - "Renames" → "DAT-verified renames"
+  - "Duplicate removals" → "Hash duplicate removals"
+  - "Merge folders" → "Folder merges"
+  (`bfb4e1b`)
+
+- **Per-row collision resolution dropdown.** Each collision row in
+  `OrganizePreviewDialog` gains a 4th-column `QComboBox` with options
+  depending on which rom IDs the detector captured:
+  - **Do nothing** (always available; default) — drops the collision from
+    the approved plan.
+  - **Delete source** (when `action.rom_id` is set) — produces one
+    `ACTION_DELETE_FILE` for the rename source.
+  - **Delete target and rename source** (case 3 collisions only, when
+    both `action.rom_id` and `action.target_rom_id` are set) — produces
+    `ACTION_DELETE_FILE` for the existing target then `ACTION_RENAME` for
+    the source (order matters; execute loop runs them sequentially under
+    per-action SAVEPOINTs).
+
+  New constant `ACTION_DELETE_FILE`: unconditional unlink + DB row delete.
+  Unlike `ACTION_DELETE_DUPLICATE`, it bypasses the TOCTOU SHA-1 re-hash
+  guard — collision files are known-different so the guard would always
+  refuse; the user's explicit choice is the authorization. (`f3013d2`)
+
+- **Organize preview dialog locks during apply; cleans up on success.**
+  While `OrganizeWorker` is running, Apply, Cancel, Select All / Deselect
+  All, checkboxes, and resolution combos are all disabled. On completion:
+  `_enter_done_state` hides Apply and renames Cancel → Close (same pattern
+  as `SyncPreviewDialog`). On success with zero failures:
+  `_remove_submitted_rows` removes every submitted row from the model
+  (all checked actions + all non-Do-nothing collision resolutions) and
+  sweeps empty group headers so only unaddressed items remain. On partial
+  failure the rows stay visible for review. On worker exception:
+  `_enter_done_state` still fires so the user is never left with a
+  disabled Cancel. (`1c1aa51`)
+
+---
+
 ## [Unreleased] — v0.4.0 in development
 
 The v0.4.0 cycle completes a strict 1:1 rom ↔ game data-model refactor
