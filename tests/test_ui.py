@@ -271,7 +271,7 @@ class TestLoaders:
         assert len(collections) == 1
         # sqlite3.Row column access — no more positional tuples.
         assert collections[0]["name"] == "Favorites"
-        assert collections[0]["game_count"] == 0
+        assert collections[0]["rom_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -761,12 +761,12 @@ class TestMainWindow:
     def test_refresh_all_preserves_system_and_game_selection(
         self, qapp, seeded_db
     ) -> None:
-        """Selecting a system and a game then triggering a refresh must keep both.
+        """Selecting a system and a ROM then triggering a refresh must keep both.
 
         Regression guard: every worker-finished signal funnels through
         ``refresh_all``, and the model resets that ``populate`` and
         ``set_rows`` emit used to clear the user's selection. Enrich a
-        game, settle the dialog, and the user would be back at "All"
+        ROM, settle the dialog, and the user would be back at "All"
         with the detail panel blank.
         """
         import time
@@ -774,11 +774,7 @@ class TestMainWindow:
         from romulus.db import queries as queries_mod
         from romulus.ui.main_window import MainWindow
 
-        # Seed a DAT-verified game + linked ROM so the table has a row
-        # we can address by game_id.
-        game_id = queries_mod.upsert_game(
-            seeded_db, {"title": "Mario", "system_id": "snes"}
-        )
+        # Seed a DAT-verified ROM so the table has a row we can address by rom_id.
         rom_id = queries_mod.upsert_rom(
             seeded_db,
             {
@@ -791,25 +787,24 @@ class TestMainWindow:
                 "match_confidence": "dat_verified",
             },
         )
-        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
         window.refresh_all()
-        # Simulate the user picking a system and clicking the game row.
+        # Simulate the user picking a system and clicking the ROM row.
         window._on_system_selected("snes")
-        window._on_game_selected(game_id)
+        window._on_rom_selected(rom_id)
 
         assert window._selected_system == "snes"
-        assert window.detail_panel.current_game_id == game_id
+        assert window.detail_panel.current_rom_id == rom_id
 
         # A worker-completion handler calls refresh_all under us — the
         # invariant is that nothing visible changes for the user.
         window.refresh_all()
 
         assert window._selected_system == "snes"
-        assert window.detail_panel.current_game_id == game_id
-        assert window.game_table.selected_game_id() == game_id
+        assert window.detail_panel.current_rom_id == rom_id
+        assert window.game_table.selected_rom_id() == rom_id
 
     def test_refresh_all_preserves_collection_selection(
         self, qapp, seeded_db
@@ -917,7 +912,6 @@ def _row_full(
     name: str,
     region: str = "USA",
     match: str = "fuzzy",
-    game_id: int | None = 1,
 ) -> GameRow:
     return GameRow(
         rom_id=hash(name) & 0xFFFFFFFF,
@@ -927,7 +921,6 @@ def _row_full(
         region=region,
         size_bytes=1024,
         match_confidence=match,
-        game_id=game_id,
     )
 
 
@@ -1023,31 +1016,31 @@ class TestRegionAndMatchFilters:
 
 
 class TestGameTableSelection:
-    def test_selecting_row_emits_game_selected(self, qapp) -> None:
+    def test_selecting_row_emits_rom_selected(self, qapp) -> None:
         from romulus.ui.game_table import GameTable
 
         widget = GameTable()
         widget.set_rows(
             [
-                _row_full("A", game_id=7),
-                _row_full("B", game_id=8),
+                _row_full("A"),
+                _row_full("B"),
             ]
         )
-        # Look up each proxy row's game_id directly so we are not coupled to
+        # Look up each proxy row's rom_id directly so we are not coupled to
         # any default sort order; assert one of them fires the signal.
         received: list[object] = []
-        widget.game_selected.connect(received.append)
+        widget.rom_selected.connect(received.append)
 
         target_index = widget.proxy.index(0, 0)
         target_source = widget.proxy.mapToSource(target_index)
-        expected_game_id = widget.model.row_at(target_source.row()).game_id
+        expected_rom_id = widget.model.row_at(target_source.row()).rom_id
 
         widget.view.selectionModel().setCurrentIndex(
             target_index,
             widget.view.selectionModel().SelectionFlag.ClearAndSelect
             | widget.view.selectionModel().SelectionFlag.Rows,
         )
-        assert received and received[-1] == expected_game_id
+        assert received and received[-1] == expected_rom_id
 
     def test_set_available_collections_round_trips(self, qapp) -> None:
         from romulus.ui.game_table import GameTable
@@ -1074,24 +1067,36 @@ class TestGameTableSelection:
 
 
 class TestDetailPanel:
-    def _seed_game_with_metadata(
+    def _seed_rom_with_metadata(
         self,
         conn: sqlite3.Connection,
         *,
         title: str = "Chrono Trigger",
         with_metadata: bool = True,
     ) -> int:
+        """Insert a ROM with canonical_name set (and optional metadata); return rom_id."""
+        import time as _time
+
         from romulus.db import queries as queries_mod
 
-        game_id = queries_mod.upsert_game(
-            conn, {"title": title, "system_id": "snes", "region": "USA"}
+        rom_id = queries_mod.upsert_rom(
+            conn,
+            {
+                "path": f"/library/snes/{title}.sfc",
+                "filename": f"{title}.sfc",
+                "extension": ".sfc",
+                "size_bytes": 1024,
+                "mtime": _time.time(),
+                "system_id": "snes",
+                "fuzzy_key": title.lower().replace(" ", ""),
+                "match_confidence": "dat_verified",
+                "canonical_name": title,
+            },
         )
-        rom_id = _insert_rom(conn, f"{title}.sfc", "snes", match_confidence="dat_verified")
-        queries_mod.link_rom_to_game(conn, rom_id, game_id)
         if with_metadata:
             queries_mod.upsert_metadata(
                 conn,
-                game_id,
+                rom_id,
                 {
                     "description": "Time-traveling JRPG.",
                     "genre": "RPG",
@@ -1101,26 +1106,29 @@ class TestDetailPanel:
                 source="launchbox",
             )
         conn.commit()
-        return game_id
+        return rom_id
 
-    def test_blank_when_no_game_selected(self, qapp, seeded_db) -> None:
+    # Backwards-compatible alias used by tests that still pass game_id.
+    _seed_game_with_metadata = _seed_rom_with_metadata
+
+    def test_blank_when_no_rom_selected(self, qapp, seeded_db) -> None:
         from romulus.ui.detail_panel import DetailPanel
 
         panel = DetailPanel(seeded_db)
-        panel.update_game(None)
-        assert panel.current_game_id is None
-        assert "Select a game" in panel.title_label.text()
+        panel.update_rom(None)
+        assert panel.current_rom_id is None
+        assert "Select a ROM" in panel.title_label.text()
         assert not panel.favorite_button.isEnabled()
         assert not panel.collection_button.isEnabled()
 
-    def test_renders_game_with_metadata(self, qapp, seeded_db) -> None:
+    def test_renders_rom_with_metadata(self, qapp, seeded_db) -> None:
         from romulus.ui.detail_panel import DetailPanel
 
-        game_id = self._seed_game_with_metadata(seeded_db)
+        rom_id = self._seed_rom_with_metadata(seeded_db)
         panel = DetailPanel(seeded_db)
-        panel.update_game(game_id)
+        panel.update_rom(rom_id)
 
-        assert panel.current_game_id == game_id
+        assert panel.current_rom_id == rom_id
         assert panel.title_label.text() == "Chrono Trigger"
         # Metadata fields are now individual rows in a key/value grid;
         # each value lives in panel._meta_value_labels keyed by field id.
@@ -1136,14 +1144,14 @@ class TestDetailPanel:
         assert panel.favorite_button.isEnabled()
         assert panel.collection_button.isEnabled()
 
-    def test_renders_game_without_metadata(self, qapp, seeded_db) -> None:
+    def test_renders_rom_without_metadata(self, qapp, seeded_db) -> None:
         from romulus.ui.detail_panel import DetailPanel
 
-        game_id = self._seed_game_with_metadata(
+        rom_id = self._seed_rom_with_metadata(
             seeded_db, title="Obscure Title", with_metadata=False
         )
         panel = DetailPanel(seeded_db)
-        panel.update_game(game_id)
+        panel.update_rom(rom_id)
         assert panel.title_label.text() == "Obscure Title"
         # Metadata-bearing rows should be empty and the description label
         # hidden entirely (the new "no box for empty text" behaviour).
@@ -1157,18 +1165,18 @@ class TestDetailPanel:
         from romulus.db import queries as queries_mod
         from romulus.ui.detail_panel import PLACEHOLDER_TEXT, DetailPanel
 
-        game_id = self._seed_game_with_metadata(seeded_db)
+        rom_id = self._seed_rom_with_metadata(seeded_db)
         # Insert a cover row pointing at a path that does not exist on disk.
         queries_mod.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             "Named_Boxarts",
             "https://example.com/missing.png",
             local_path=str(seeded_db.execute("SELECT 'no-such-file'").fetchone()[0]),
         )
         seeded_db.commit()
         panel = DetailPanel(seeded_db)
-        panel.update_game(game_id)
+        panel.update_rom(rom_id)
         # No pixmap loaded; placeholder text shown.
         assert panel.cover_label.text() == PLACEHOLDER_TEXT
         assert panel.cover_label.pixmap().isNull()
@@ -1181,20 +1189,20 @@ class TestDetailPanel:
         from romulus.db import queries as queries_mod
         from romulus.ui.detail_panel import DetailPanel
 
-        game_id = self._seed_game_with_metadata(seeded_db)
+        rom_id = self._seed_rom_with_metadata(seeded_db)
         cover_path = tmp_path / "cover.png"
         # 4x4 transparent PNG so QPixmap definitely loads it.
         QImage(4, 4, QImage.Format.Format_RGBA8888).save(str(cover_path), "PNG")
         queries_mod.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             "Named_Boxarts",
             "https://example.com/cover.png",
             local_path=str(cover_path),
         )
         seeded_db.commit()
         panel = DetailPanel(seeded_db)
-        panel.update_game(game_id)
+        panel.update_rom(rom_id)
         # Pixmap is now set, no placeholder text.
         assert not panel.cover_label.pixmap().isNull()
         assert panel.cover_label.text() == ""
@@ -1203,23 +1211,23 @@ class TestDetailPanel:
         from romulus.db import queries as queries_mod
         from romulus.ui.detail_panel import DetailPanel
 
-        game_id = self._seed_game_with_metadata(seeded_db)
+        rom_id = self._seed_rom_with_metadata(seeded_db)
         panel = DetailPanel(seeded_db)
-        panel.update_game(game_id)
+        panel.update_rom(rom_id)
         favorites_id = queries_mod.ensure_favorites_collection(seeded_db)
 
         # Click → adds to favorites.
         panel.favorite_button.setChecked(True)
         panel._on_favorite_clicked()
-        assert queries_mod.is_game_in_collection(
-            seeded_db, favorites_id, game_id
+        assert queries_mod.is_rom_in_collection(
+            seeded_db, favorites_id, rom_id
         )
 
         # Click again → removes from favorites.
         panel.favorite_button.setChecked(False)
         panel._on_favorite_clicked()
-        assert not queries_mod.is_game_in_collection(
-            seeded_db, favorites_id, game_id
+        assert not queries_mod.is_rom_in_collection(
+            seeded_db, favorites_id, rom_id
         )
 
 
@@ -1229,23 +1237,18 @@ class TestDetailPanel:
 
 
 class TestMainWindowCollections:
-    def test_detail_panel_updates_on_game_selection(
+    def test_detail_panel_updates_on_rom_selection(
         self, qapp, seeded_db
     ) -> None:
-        from romulus.db import queries as queries_mod
         from romulus.ui.main_window import MainWindow
 
-        game_id = queries_mod.upsert_game(
-            seeded_db, {"title": "Mario", "system_id": "snes"}
-        )
         rom_id = _insert_rom(seeded_db, "Mario.sfc", "snes")
-        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
         window.refresh_all()
-        window._on_game_selected(game_id)
-        assert window.detail_panel.current_game_id == game_id
+        window._on_rom_selected(rom_id)
+        assert window.detail_panel.current_rom_id == rom_id
 
     def test_collection_selection_filters_game_table(
         self, qapp, seeded_db
@@ -1253,28 +1256,19 @@ class TestMainWindowCollections:
         from romulus.db import queries as queries_mod
         from romulus.ui.main_window import MainWindow
 
-        # Two games on the same system; only one belongs to the collection.
-        gid_in = queries_mod.upsert_game(
-            seeded_db, {"title": "Mario", "system_id": "snes"}
-        )
+        # Two ROMs on the same system; only one belongs to the collection.
         rom_in = _insert_rom(seeded_db, "Mario.sfc", "snes")
-        queries_mod.link_rom_to_game(seeded_db, rom_in, gid_in)
-
-        gid_out = queries_mod.upsert_game(
-            seeded_db, {"title": "Zelda", "system_id": "snes"}
-        )
-        rom_out = _insert_rom(seeded_db, "Zelda.sfc", "snes")
-        queries_mod.link_rom_to_game(seeded_db, rom_out, gid_out)
+        _insert_rom(seeded_db, "Zelda.sfc", "snes")
 
         cid = queries_mod.create_collection(seeded_db, "Mario Pack")
-        queries_mod.add_game_to_collection(seeded_db, cid, gid_in)
+        queries_mod.add_rom_to_collection(seeded_db, cid, rom_in)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
         window.refresh_all()
         window._on_collection_selected(cid)
         assert window.game_table.proxy.rowCount() == 1
-        assert window.game_table.model.row_at(0).game_id == gid_in
+        assert window.game_table.model.row_at(0).rom_id == rom_in
 
     def test_add_to_favorites_request_through_main_window(
         self, qapp, seeded_db
@@ -1282,20 +1276,16 @@ class TestMainWindowCollections:
         from romulus.db import queries as queries_mod
         from romulus.ui.main_window import MainWindow
 
-        game_id = queries_mod.upsert_game(
-            seeded_db, {"title": "Metroid", "system_id": "snes"}
-        )
         rom_id = _insert_rom(seeded_db, "Metroid.sfc", "snes")
-        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
         window.refresh_all()
-        window._on_add_to_favorites(game_id)
+        window._on_add_to_favorites(rom_id)
 
         favorites_id = queries_mod.ensure_favorites_collection(seeded_db)
-        assert queries_mod.is_game_in_collection(
-            seeded_db, favorites_id, game_id
+        assert queries_mod.is_rom_in_collection(
+            seeded_db, favorites_id, rom_id
         )
 
     def test_remove_from_collection_through_main_window(
@@ -1304,21 +1294,17 @@ class TestMainWindowCollections:
         from romulus.db import queries as queries_mod
         from romulus.ui.main_window import MainWindow
 
-        game_id = queries_mod.upsert_game(
-            seeded_db, {"title": "Kirby", "system_id": "snes"}
-        )
         rom_id = _insert_rom(seeded_db, "Kirby.sfc", "snes")
-        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
         cid = queries_mod.create_collection(seeded_db, "Easy Mode")
-        queries_mod.add_game_to_collection(seeded_db, cid, game_id)
+        queries_mod.add_rom_to_collection(seeded_db, cid, rom_id)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
         window.refresh_all()
         window._on_collection_selected(cid)
-        window._on_remove_from_collection(game_id)
+        window._on_remove_from_collection(rom_id)
 
-        assert not queries_mod.is_game_in_collection(seeded_db, cid, game_id)
+        assert not queries_mod.is_rom_in_collection(seeded_db, cid, rom_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1766,17 +1752,14 @@ class TestEnrichProgressDialog:
     def test_enrich_preflight_allows_dat_verified_games(
         self, qapp, seeded_db, monkeypatch, tmp_path
     ) -> None:
-        """_on_enrich proceeds past the pre-flight when eligible games exist."""
+        """_on_enrich proceeds past the pre-flight when eligible ROMs exist."""
         import time
 
         from romulus.db import queries as queries_mod
         from romulus.ui.main_window import MainWindow
 
-        # Insert a DAT-verified game so the pre-flight passes.
-        game_id = queries_mod.upsert_game(
-            seeded_db, {"title": "Verified Game", "system_id": "snes"}
-        )
-        rom_id = queries_mod.upsert_rom(
+        # Insert a DAT-verified ROM so the pre-flight passes.
+        queries_mod.upsert_rom(
             seeded_db,
             {
                 "path": str(tmp_path / "Verified Game.sfc"),
@@ -1788,7 +1771,6 @@ class TestEnrichProgressDialog:
                 "match_confidence": "dat_verified",
             },
         )
-        queries_mod.link_rom_to_game(seeded_db, rom_id, game_id)
         seeded_db.commit()
 
         window = MainWindow(seeded_db)
@@ -2092,15 +2074,11 @@ class TestProgressDialogSpinners:
         if not profiles:
             return
 
-        # Seed one snes game so the preview has something to report.
-        game_id = q.upsert_game(
-            seeded_db,
-            {"title": "Mario", "system_id": "snes"},
-        )
+        # Seed one snes ROM so the preview has something to report.
         rom_path = tmp_path / "snes" / "Mario.sfc"
         rom_path.parent.mkdir(parents=True, exist_ok=True)
         rom_path.write_bytes(b"x" * 1024)
-        rom_id = q.upsert_rom(
+        q.upsert_rom(
             seeded_db,
             {
                 "path": str(rom_path),
@@ -2111,7 +2089,6 @@ class TestProgressDialogSpinners:
                 "system_id": "snes",
             },
         )
-        q.link_rom_to_game(seeded_db, rom_id, game_id)
         # Ensure a sync destination exists so selected_target_path
         # returns something — preview requires both profile + target.
         q.insert_sync_destination(
@@ -2163,7 +2140,6 @@ def _row_enriched(
         region="USA",
         size_bytes=1024,
         match_confidence="fuzzy",
-        game_id=1,
         has_cover=has_cover,
         has_metadata=has_metadata,
     )
@@ -2327,6 +2303,132 @@ class TestPathColumn:
         seeded_db.commit()
         rows = load_rom_rows(seeded_db)
         assert rows[0].rom_path == "/roms/snes/Mario.sfc"
+
+
+# ---------------------------------------------------------------------------
+# Bug #4 — DetailPanel disambiguation: two regional variants of the same
+# fuzzy_key must each show their own unambiguous SHA-1 / region / dat_match.
+# This is the exact root cause the session was opened to fix.
+# ---------------------------------------------------------------------------
+
+
+class TestDetailPanelDisambiguation:
+    """Regression gate: selecting each ROM shows that ROM's own metadata.
+
+    Before the rom-keyed refactor, the detail panel queried by game_id with
+    LIMIT 1, so selecting the European variant of a game that had a USA
+    variant with the same fuzzy_key would display the USA SHA-1 / region.
+    """
+
+    def _seed_regional_pair(
+        self, conn: sqlite3.Connection
+    ) -> tuple[int, int]:
+        """Insert USA + Europe ROMs sharing a fuzzy_key; return (usa_id, eur_id)."""
+        import time
+
+        from romulus.db import queries as queries_mod
+
+        base = {
+            "filename": "Chrono Trigger.sfc",
+            "extension": ".sfc",
+            "size_bytes": 4 * 1024 * 1024,
+            "mtime": time.time(),
+            "system_id": "snes",
+            "fuzzy_key": "chronotrigger",  # same for both
+            "match_confidence": "dat_verified",
+        }
+
+        usa_id = queries_mod.upsert_rom(
+            conn,
+            {
+                **base,
+                "path": "/library/snes/Chrono Trigger (USA).sfc",
+                "filename": "Chrono Trigger (USA).sfc",
+                "region": "USA",
+                "canonical_name": "Chrono Trigger (USA)",
+            },
+        )
+        eur_id = queries_mod.upsert_rom(
+            conn,
+            {
+                **base,
+                "path": "/library/snes/Chrono Trigger (Europe).sfc",
+                "filename": "Chrono Trigger (Europe).sfc",
+                "region": "Europe",
+                "canonical_name": "Chrono Trigger (Europe)",
+            },
+        )
+
+        # Store distinct SHA-1 hashes so we can assert they are not swapped.
+        now = time.time()
+        conn.execute(
+            "INSERT INTO hashes (rom_id, sha1, hashed_at) VALUES (?, ?, ?)",
+            (usa_id, "aaa0000000000000000000000000000000000001", now),
+        )
+        conn.execute(
+            "INSERT INTO hashes (rom_id, sha1, hashed_at) VALUES (?, ?, ?)",
+            (eur_id, "bbb0000000000000000000000000000000000002", now),
+        )
+        conn.commit()
+        return usa_id, eur_id
+
+    def test_usa_variant_shows_usa_sha1(self, qapp, seeded_db) -> None:
+        from romulus.ui.detail_panel import DetailPanel
+
+        usa_id, _eur_id = self._seed_regional_pair(seeded_db)
+        panel = DetailPanel(seeded_db)
+        panel.update_rom(usa_id)
+
+        assert panel.current_rom_id == usa_id
+        sha1_text = panel._meta_value_labels["sha1"].text()
+        assert sha1_text.startswith("aaa"), (
+            f"USA ROM should show USA SHA-1 (aaa…) but got: {sha1_text!r}"
+        )
+        assert panel._meta_value_labels["region"].text() == "USA"
+
+    def test_europe_variant_shows_europe_sha1(self, qapp, seeded_db) -> None:
+        from romulus.ui.detail_panel import DetailPanel
+
+        _usa_id, eur_id = self._seed_regional_pair(seeded_db)
+        panel = DetailPanel(seeded_db)
+        panel.update_rom(eur_id)
+
+        assert panel.current_rom_id == eur_id
+        sha1_text = panel._meta_value_labels["sha1"].text()
+        assert sha1_text.startswith("bbb"), (
+            f"Europe ROM should show Europe SHA-1 (bbb…) but got: {sha1_text!r}"
+        )
+        assert panel._meta_value_labels["region"].text() == "Europe"
+
+    def test_switching_selection_updates_sha1(self, qapp, seeded_db) -> None:
+        """Selecting USA then switching to Europe changes every disambiguating field."""
+        from romulus.ui.detail_panel import DetailPanel
+
+        usa_id, eur_id = self._seed_regional_pair(seeded_db)
+        panel = DetailPanel(seeded_db)
+
+        panel.update_rom(usa_id)
+        assert panel._meta_value_labels["sha1"].text().startswith("aaa")
+
+        panel.update_rom(eur_id)
+        sha1_text = panel._meta_value_labels["sha1"].text()
+        assert sha1_text.startswith("bbb"), (
+            f"After switching to Europe ROM, SHA-1 should be bbb… but got: {sha1_text!r}"
+        )
+        assert panel._meta_value_labels["region"].text() == "Europe"
+
+    def test_canonical_names_are_distinct(self, qapp, seeded_db) -> None:
+        """Each variant must display its own canonical_name as the panel title."""
+        from romulus.ui.detail_panel import DetailPanel
+
+        usa_id, eur_id = self._seed_regional_pair(seeded_db)
+        panel = DetailPanel(seeded_db)
+
+        panel.update_rom(usa_id)
+        assert "USA" in panel.title_label.text()
+
+        panel.update_rom(eur_id)
+        assert "Europe" in panel.title_label.text()
 
 
 # ---------------------------------------------------------------------------

@@ -73,8 +73,8 @@ _VERIFIED_CONFIDENCES: frozenset[str] = frozenset({"dat_verified", "header"})
 
 
 @dataclass(frozen=True)
-class GameRow:
-    """A single row rendered in the GameTable."""
+class RomRow:
+    """A single row rendered in the ROM table — one row per ROM file."""
 
     rom_id: int
     name: str
@@ -83,10 +83,14 @@ class GameRow:
     region: str
     size_bytes: int
     match_confidence: str
-    game_id: int | None = None
     rom_path: str = ""
     has_cover: bool = False
     has_metadata: bool = False
+
+
+# Backwards-compatible alias — existing test imports of ``GameRow`` continue
+# to work without change while the codebase migrates to ``RomRow``.
+GameRow = RomRow
 
 
 def _format_size(size_bytes: int) -> str:
@@ -105,19 +109,21 @@ def load_rom_rows(
     conn: sqlite3.Connection,
     system_id: str | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
+    rom_ids: list[int] | None = None,
     game_ids: list[int] | None = None,
-) -> list[GameRow]:
+) -> list[RomRow]:
     """Pull ROM rows for the table, including enrichment status and path.
 
-    `system_id` filters to a single platform. `game_ids` restricts the result
-    to a specific set of game ids (used by collection views). Both can be
-    combined.
+    `system_id` filters to a single platform. `rom_ids` restricts the result
+    to a specific set of rom ids (used by collection views). `game_ids` is a
+    deprecated alias for `rom_ids` kept for call-site compatibility.
     """
-    rows = q.get_games_with_enrichment_status(
-        conn, system_id=system_id, game_ids=game_ids, limit=limit
+    effective_ids = rom_ids if rom_ids is not None else game_ids
+    rows = q.get_roms_with_enrichment_status(
+        conn, system_id=system_id, rom_ids=effective_ids, limit=limit
     )
     return [
-        GameRow(
+        RomRow(
             rom_id=int(row["rom_id"]),
             name=str(row["name"] or ""),
             system_id=str(row["system_id"] or ""),
@@ -125,7 +131,6 @@ def load_rom_rows(
             region=str(row["region"] or ""),
             size_bytes=int(row["size_bytes"] or 0),
             match_confidence=str(row["match_confidence"] or "unmatched"),
-            game_id=int(row["game_id"]) if row["game_id"] is not None else None,
             rom_path=str(row["rom_path"] or ""),
             has_cover=bool(int(row["has_cover"] or 0)),
             has_metadata=bool(int(row["has_metadata"] or 0)),
@@ -135,20 +140,20 @@ def load_rom_rows(
 
 
 class GameTableModel(QAbstractTableModel):
-    """Plain QAbstractTableModel backed by a list of GameRow objects."""
+    """Plain QAbstractTableModel backed by a list of RomRow objects."""
 
-    def __init__(self, rows: list[GameRow] | None = None) -> None:
+    def __init__(self, rows: list[RomRow] | None = None) -> None:
         super().__init__()
-        self._rows: list[GameRow] = list(rows or [])
+        self._rows: list[RomRow] = list(rows or [])
 
-    def set_rows(self, rows: list[GameRow]) -> None:
+    def set_rows(self, rows: list[RomRow]) -> None:
         """Replace the entire row set; emits modelReset to the view."""
         self.beginResetModel()
         self._rows = list(rows)
         self.endResetModel()
 
-    def row_at(self, row: int) -> GameRow:
-        """Return the GameRow at a given row index."""
+    def row_at(self, row: int) -> RomRow:
+        """Return the RomRow at a given row index."""
         return self._rows[row]
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:  # noqa: B008
@@ -291,22 +296,24 @@ class GameTableProxy(QSortFilterProxyModel):
 
 
 class GameTable(QWidget):
-    """Search bar + region/match/enrichment filters + sortable game table widget."""
+    """Search bar + region/match/enrichment filters + sortable ROM table widget."""
 
-    game_selected = Signal(object)
+    rom_selected = Signal(object)
     add_to_favorites_requested = Signal(int)
     add_to_collection_requested = Signal(int)
     new_collection_requested = Signal(str)
     remove_from_collection_requested = Signal(int)
-    # Scoped action signals — carry the game_id of the selected row.
-    enrich_game_requested = Signal(int)
-    heavy_scan_game_requested = Signal(int)
-    find_local_covers_game_requested = Signal(int)
-    # File-system actions — carry the rom_id (the literal table row), not
-    # the game_id. A multi-disc game's game_id might span multiple roms;
-    # reveal / delete must operate on the specific row the user clicked.
+    # Scoped action signals — carry the rom_id of the selected row.
+    enrich_rom_requested = Signal(int)
+    heavy_scan_rom_requested = Signal(int)
+    find_local_covers_rom_requested = Signal(int)
+    # File-system actions — carry the rom_id (the literal table row).
+    # Reveal / delete must operate on the specific row the user clicked.
     reveal_rom_requested = Signal(int)
     delete_rom_requested = Signal(int)
+
+    # Deprecated signal aliases kept for call-site compatibility.
+    game_selected = rom_selected
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -401,7 +408,7 @@ class GameTable(QWidget):
             self._on_current_row_changed
         )
 
-    def set_rows(self, rows: list[GameRow]) -> None:
+    def set_rows(self, rows: list[RomRow]) -> None:
         """Hand the underlying model a fresh list of rows.
 
         Auto-fits the Path column to its widest entry so full Windows paths
@@ -473,13 +480,8 @@ class GameTable(QWidget):
         """Provide (id, name) pairs of user collections for the context menu."""
         self._available_collections = list(collections)
 
-    def selected_game_id(self) -> int | None:
-        """Return the game_id for the currently-selected row, or None.
-
-        Promoted from the previously-private ``_selected_game_id`` because
-        MainWindow needs to read the selection from outside the widget; see
-        ``_on_add_to_collection`` / ``_on_new_collection`` callers.
-        """
+    def selected_rom_id(self) -> int | None:
+        """Return the rom_id for the currently-selected row, or None."""
         index = self.view.selectionModel().currentIndex()
         if not index.isValid():
             return None
@@ -487,14 +489,17 @@ class GameTable(QWidget):
         if not source_index.isValid():
             return None
         row = self.model.row_at(source_index.row())
-        return row.game_id
+        return row.rom_id
 
-    def select_game(self, game_id: int) -> bool:
-        """Select the row whose ``GameRow.game_id`` matches *game_id*.
+    def selected_game_id(self) -> int | None:
+        """Deprecated alias for :meth:`selected_rom_id` kept for compatibility."""
+        return self.selected_rom_id()
 
-        Returns True on hit, False when the game is no longer in the
-        current view (e.g. the user changed the system filter so the
-        previously-shown game isn't in scope any more).
+    def select_rom(self, rom_id: int) -> bool:
+        """Select the row whose ``RomRow.rom_id`` matches *rom_id*.
+
+        Returns True on hit, False when the ROM is no longer in the
+        current view (e.g. the user changed the system filter).
 
         Used by :meth:`MainWindow.refresh_all` to keep the user's
         selection stable across worker-triggered refreshes — without
@@ -503,7 +508,7 @@ class GameTable(QWidget):
         """
         for source_row in range(self.model.rowCount()):
             row = self.model.row_at(source_row)
-            if row.game_id != game_id:
+            if row.rom_id != rom_id:
                 continue
             source_index = self.model.index(source_row, 0)
             proxy_index = self.proxy.mapFromSource(source_index)
@@ -522,21 +527,25 @@ class GameTable(QWidget):
             return False
         return False
 
+    def select_game(self, rom_id: int) -> bool:
+        """Deprecated alias for :meth:`select_rom` kept for compatibility."""
+        return self.select_rom(rom_id)
+
     def _on_current_row_changed(
         self, current: QModelIndex, _previous: QModelIndex
     ) -> None:
         if not current.isValid():
-            self.game_selected.emit(None)
+            self.rom_selected.emit(None)
             return
         source_index = self.proxy.mapToSource(current)
         if not source_index.isValid():
-            self.game_selected.emit(None)
+            self.rom_selected.emit(None)
             return
         row = self.model.row_at(source_index.row())
-        self.game_selected.emit(row.game_id)
+        self.rom_selected.emit(row.rom_id)
 
-    def _selected_row(self) -> GameRow | None:
-        """Return the full GameRow for the currently-selected row, or None."""
+    def _selected_row(self) -> RomRow | None:
+        """Return the full RomRow for the currently-selected row, or None."""
         index = self.view.selectionModel().currentIndex()
         if not index.isValid():
             return None
@@ -548,10 +557,9 @@ class GameTable(QWidget):
     def _on_context_menu(self, point: object) -> None:
         # Resolve the row under the cursor rather than the previously-
         # selected row. Right-clicking in Qt does NOT auto-select the
-        # underlying row (only left-click does), so the old
-        # ``selected_game_id`` path returned None whenever the user
-        # right-clicked without left-clicking first — the menu silently
-        # didn't appear and looked like a regression.
+        # underlying row (only left-click does), so the old path returned
+        # None whenever the user right-clicked without left-clicking first
+        # — the menu silently didn't appear and looked like a regression.
         proxy_index = self.view.indexAt(point)  # type: ignore[arg-type]
         logger.debug(
             "context-menu: point=%s proxy_index_valid=%s proxy_row=%s",
@@ -570,12 +578,11 @@ class GameTable(QWidget):
             )
             return
         row = self.model.row_at(source_index.row())
-        game_id = row.game_id
+        rom_id = row.rom_id
         logger.debug(
-            "context-menu: source_row=%d rom_id=%s game_id=%s name=%r",
+            "context-menu: source_row=%d rom_id=%s name=%r",
             source_index.row(),
-            row.rom_id,
-            game_id,
+            rom_id,
             row.name,
         )
 
@@ -586,32 +593,9 @@ class GameTable(QWidget):
         self.view.setCurrentIndex(proxy_index)
         menu = QMenu(self.view)
 
-        # Rows with no linked game (the scanner's ``group_into_games``
-        # step didn't fire for that system, or fired before the rom
-        # row existed) can't participate in any of the per-game
-        # actions below. Show a disabled placeholder so the user sees
-        # SOMETHING happen on right-click rather than wondering if the
-        # input was lost; the wording points them at a fix.
-        if game_id is None:
-            placeholder = QAction(
-                "This ROM isn't linked to a game yet — re-run Quick Scan",
-                menu,
-            )
-            placeholder.setEnabled(False)
-            menu.addAction(placeholder)
-            logger.info(
-                "context-menu: showing unlinked-rom placeholder "
-                "(rom_id=%s system=%s)",
-                row.rom_id,
-                row.system_id,
-            )
-            menu.exec(self.view.viewport().mapToGlobal(point))  # type: ignore[arg-type]
-            return
-
-
         fav_action = QAction("Add to Favorites", menu)
         fav_action.triggered.connect(
-            lambda: self.add_to_favorites_requested.emit(game_id)
+            lambda: self.add_to_favorites_requested.emit(rom_id)
         )
         menu.addAction(fav_action)
 
@@ -634,43 +618,40 @@ class GameTable(QWidget):
             menu.addSeparator()
             remove_action = QAction("Remove from Collection", menu)
             remove_action.triggered.connect(
-                lambda: self.remove_from_collection_requested.emit(game_id)
+                lambda: self.remove_from_collection_requested.emit(rom_id)
             )
             menu.addAction(remove_action)
 
-        # Scoped actions — operate on this game only.
+        # Scoped actions — operate on this ROM only.
         menu.addSeparator()
 
         # Always enabled — clicking this opens the same options dialog
         # as the batch paths (Tools > Enrich Metadata, system right-click,
-        # collection right-click), scoped to this one game. The user
+        # collection right-click), scoped to this one ROM. The user
         # picks fuzzy / re-enrich-existing / online via the dialog's
         # checkboxes; we don't hard-code the flags from this entry point.
-        enrich_action = QAction("Enrich this game", menu)
+        enrich_action = QAction("Enrich this ROM", menu)
         enrich_action.triggered.connect(
-            lambda: self.enrich_game_requested.emit(game_id)
+            lambda: self.enrich_rom_requested.emit(rom_id)
         )
         menu.addAction(enrich_action)
 
-        heavy_scan_action = QAction("Heavy Scan this game's ROMs", menu)
+        heavy_scan_action = QAction("Heavy Scan this ROM", menu)
         heavy_scan_action.triggered.connect(
-            lambda: self.heavy_scan_game_requested.emit(game_id)
+            lambda: self.heavy_scan_rom_requested.emit(rom_id)
         )
         menu.addAction(heavy_scan_action)
 
-        covers_action = QAction("Find covers for this game", menu)
+        covers_action = QAction("Find covers for this ROM", menu)
         covers_action.triggered.connect(
-            lambda: self.find_local_covers_game_requested.emit(game_id)
+            lambda: self.find_local_covers_rom_requested.emit(rom_id)
         )
         menu.addAction(covers_action)
 
-        # File-system actions — bind to rom_id, not game_id. The
-        # "Reveal in Explorer" target is the specific row the user
-        # right-clicked, and "Delete" should remove that exact file
-        # without dragging multi-disc siblings along.
+        # File-system actions — "Reveal in Explorer" and "Delete" both
+        # operate on the specific ROM row the user right-clicked.
         menu.addSeparator()
 
-        rom_id = row.rom_id
         reveal_action = QAction("Reveal in Explorer", menu)
         reveal_action.setToolTip(
             "Open the file manager with this ROM highlighted."

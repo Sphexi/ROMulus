@@ -149,7 +149,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar.system_selected.connect(self._on_system_selected)
         self.sidebar.collection_selected.connect(self._on_collection_selected)
-        self.game_table.game_selected.connect(self._on_game_selected)
+        self.game_table.rom_selected.connect(self._on_rom_selected)
         self.game_table.add_to_favorites_requested.connect(
             self._on_add_to_favorites
         )
@@ -164,19 +164,19 @@ class MainWindow(QMainWindow):
         )
         self.detail_panel.favorite_toggled.connect(self._on_favorite_toggled)
 
-        # Scoped game-table actions. Single-game enrich opens the same
+        # Scoped ROM-table actions. Single-ROM enrich opens the same
         # ``EnrichOptionsDialog`` as the batch paths — scoped to one
-        # game id but with the user explicitly choosing fuzzy / re-
+        # rom_id but with the user explicitly choosing fuzzy / re-
         # enrich / online flags via the dialog checkboxes (matching the
         # Find Covers flow the user wanted parity with).
-        self.game_table.enrich_game_requested.connect(
-            lambda gid: self._enrich_scoped(game_ids=[gid])
+        self.game_table.enrich_rom_requested.connect(
+            lambda rid: self._enrich_scoped(rom_ids=[rid])
         )
-        self.game_table.heavy_scan_game_requested.connect(
-            lambda gid: self._heavy_scan_scoped(game_id=gid)
+        self.game_table.heavy_scan_rom_requested.connect(
+            lambda rid: self._heavy_scan_scoped(rom_id=rid)
         )
-        self.game_table.find_local_covers_game_requested.connect(
-            lambda gid: self._find_local_covers_scoped(game_id=gid)
+        self.game_table.find_local_covers_rom_requested.connect(
+            lambda rid: self._find_local_covers_scoped(rom_id=rid)
         )
         self.game_table.reveal_rom_requested.connect(self._on_reveal_rom)
         self.game_table.delete_rom_requested.connect(self._on_delete_rom)
@@ -346,14 +346,14 @@ class MainWindow(QMainWindow):
         self.sidebar.populate(self._conn)
 
     def refresh_game_table(self) -> None:
-        """Reload visible games for the active system/collection filter."""
-        game_ids: list[int] | None = None
+        """Reload visible ROMs for the active system/collection filter."""
+        rom_ids: list[int] | None = None
         if self._selected_collection is not None:
-            game_ids = q.get_collection_games(
+            rom_ids = q.get_collection_roms(
                 self._conn, self._selected_collection
             )
         rows = load_rom_rows(
-            self._conn, self._selected_system, game_ids=game_ids
+            self._conn, self._selected_system, rom_ids=rom_ids
         )
         self.game_table.set_rows(rows)
         self.game_table.set_collection_context(
@@ -375,7 +375,7 @@ class MainWindow(QMainWindow):
         else:
             self.status_label.setText(f"{total} ROMs")
         # Reset the detail panel whenever the row set changes.
-        self.detail_panel.update_game(None)
+        self.detail_panel.update_rom(None)
 
     def refresh_all(self) -> None:
         """Repaint both the sidebar and the game table, preserving selection.
@@ -396,7 +396,7 @@ class MainWindow(QMainWindow):
         """
         prev_system = self._selected_system
         prev_collection = self._selected_collection
-        prev_game = self.detail_panel.current_game_id
+        prev_rom = self.detail_panel.current_rom_id
 
         self.refresh_sidebar()
         self.refresh_game_table()
@@ -405,14 +405,14 @@ class MainWindow(QMainWindow):
         # ``_on_system_selected`` which itself calls ``refresh_game_table``
         # under the new scope. That's fine: the rebuild is cheap, and
         # the second refresh leaves the table populated for the same
-        # scope we want before we restore the game row below.
+        # scope we want before we restore the ROM row below.
         if prev_system is not None:
             self.sidebar.select_system(prev_system)
         elif prev_collection is not None:
             self.sidebar.select_collection(prev_collection)
 
-        if prev_game is not None:
-            self.game_table.select_game(prev_game)
+        if prev_rom is not None:
+            self.game_table.select_rom(prev_rom)
 
     # ------------------------------------------------------------------
     # Slots
@@ -429,34 +429,38 @@ class MainWindow(QMainWindow):
         self._selected_system = None
         self.refresh_game_table()
 
-    def _on_game_selected(self, game_id: object) -> None:
-        """Forward a game-table row selection to the detail panel."""
-        if isinstance(game_id, int):
-            self.detail_panel.update_game(game_id)
+    def _on_rom_selected(self, rom_id: object) -> None:
+        """Forward a ROM-table row selection to the detail panel."""
+        if isinstance(rom_id, int):
+            self.detail_panel.update_rom(rom_id)
         else:
-            self.detail_panel.update_game(None)
+            self.detail_panel.update_rom(None)
 
-    def _on_add_to_favorites(self, game_id: int) -> None:
+    def _on_game_selected(self, rom_id: object) -> None:
+        """Deprecated alias for :meth:`_on_rom_selected` kept for compatibility."""
+        self._on_rom_selected(rom_id)
+
+    def _on_add_to_favorites(self, rom_id: int) -> None:
         favorites_id = q.ensure_favorites_collection(self._conn)
-        q.add_game_to_collection(self._conn, favorites_id, game_id)
-        # If the detail panel is showing this game, refresh its toggle state.
-        if self.detail_panel.current_game_id == game_id:
-            self.detail_panel.update_game(game_id)
+        q.add_rom_to_collection(self._conn, favorites_id, rom_id)
+        # If the detail panel is showing this ROM, refresh its toggle state.
+        if self.detail_panel.current_rom_id == rom_id:
+            self.detail_panel.update_rom(rom_id)
 
     def _on_add_to_collection(self, collection_id: int) -> None:
-        game_id = self.detail_panel.current_game_id
-        if game_id is None:
-            # Fall back to the game-table selection if the panel is blank.
-            game_id = self.game_table.selected_game_id()
-        if game_id is None:
+        rom_id = self.detail_panel.current_rom_id
+        if rom_id is None:
+            # Fall back to the ROM-table selection if the panel is blank.
+            rom_id = self.game_table.selected_rom_id()
+        if rom_id is None:
             return
-        q.add_game_to_collection(self._conn, collection_id, game_id)
+        q.add_rom_to_collection(self._conn, collection_id, rom_id)
         self.refresh_sidebar()
 
     def _on_new_collection(self, name: str) -> None:
-        game_id = self.detail_panel.current_game_id
-        if game_id is None:
-            game_id = self.game_table.selected_game_id()
+        rom_id = self.detail_panel.current_rom_id
+        if rom_id is None:
+            rom_id = self.game_table.selected_rom_id()
         try:
             collection_id = q.create_collection(self._conn, name)
         except sqlite3.IntegrityError:
@@ -464,15 +468,15 @@ class MainWindow(QMainWindow):
             if existing is None:
                 return
             collection_id = int(existing["id"])
-        if game_id is not None:
-            q.add_game_to_collection(self._conn, collection_id, game_id)
+        if rom_id is not None:
+            q.add_rom_to_collection(self._conn, collection_id, rom_id)
         self.refresh_sidebar()
 
-    def _on_remove_from_collection(self, game_id: int) -> None:
+    def _on_remove_from_collection(self, rom_id: int) -> None:
         if self._selected_collection is None:
             return
-        q.remove_game_from_collection(
-            self._conn, self._selected_collection, game_id
+        q.remove_rom_from_collection(
+            self._conn, self._selected_collection, rom_id
         )
         self.refresh_game_table()
 
@@ -596,7 +600,7 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         self.status_label.setText(f"Deleted: {target.name}")
 
-    def _on_favorite_toggled(self, _game_id: int, _is_favorite: bool) -> None:
+    def _on_favorite_toggled(self, _rom_id: int, _is_favorite: bool) -> None:
         """Refresh the sidebar so the Favorites count stays accurate."""
         self.refresh_sidebar()
 
@@ -896,9 +900,9 @@ class MainWindow(QMainWindow):
 
         ``scope_system_id=None`` walks the entire library (toolbar /
         menu entry). When set the scan only enrols files resolving to
-        that system, the missing-sweep is scoped to that system's rows,
-        and ``group_into_games`` only runs for that system — wired to
-        the sidebar's right-click "Quick Scan <system>" action.
+        that system and the missing-sweep is scoped to that system's
+        rows — wired to the sidebar's right-click "Quick Scan <system>"
+        action.
         """
         if self._scan_worker is not None and self._scan_worker.isRunning():
             QMessageBox.information(
@@ -1027,11 +1031,11 @@ class MainWindow(QMainWindow):
 
     def _heavy_scan_scoped(
         self,
-        game_id: int | None = None,
+        rom_id: int | None = None,
         system_id: str | None = None,
         collection_id: int | None = None,
     ) -> None:
-        """Start a heavy scan scoped to a game / system / collection."""
+        """Start a heavy scan scoped to a ROM / system / collection."""
         if (
             self._heavy_scan_worker is not None
             and self._heavy_scan_worker.isRunning()
@@ -1055,8 +1059,8 @@ class MainWindow(QMainWindow):
 
         # Resolve scope to ROM ids.
         scope_rom_ids: list[int] | None = None
-        if game_id is not None:
-            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, game_id=game_id)
+        if rom_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, rom_id=rom_id)
         elif system_id is not None:
             scope_rom_ids = q.get_rom_ids_for_scope(self._conn, system_id=system_id)
         elif collection_id is not None:
@@ -1064,8 +1068,8 @@ class MainWindow(QMainWindow):
                 self._conn, collection_id=collection_id
             )
 
-        if game_id is not None:
-            scope_label = f"Heavy Scan: game {game_id}"
+        if rom_id is not None:
+            scope_label = f"Heavy Scan: ROM {rom_id}"
         elif system_id is not None:
             scope_label = f"Heavy Scan: {system_id}"
         elif collection_id is not None:
@@ -1113,7 +1117,7 @@ class MainWindow(QMainWindow):
     def _prompt_for_enrich_options(
         self,
         *,
-        game_ids: list[int] | None,
+        rom_ids: list[int] | None,
         system_id: str | None,
         collection_id: int | None,
     ) -> tuple[bool, bool, bool] | None:
@@ -1124,14 +1128,14 @@ class MainWindow(QMainWindow):
         progress dialog title so the user sees consistent wording in
         both places.
         """
-        if game_ids is not None:
+        if rom_ids is not None:
             scope_label = (
-                "the selected game"
-                if len(game_ids) == 1
-                else f"the {len(game_ids)} selected games"
+                "the selected ROM"
+                if len(rom_ids) == 1
+                else f"the {len(rom_ids)} selected ROMs"
             )
         elif system_id is not None:
-            scope_label = f"every game on {system_id}"
+            scope_label = f"every ROM on {system_id}"
         elif collection_id is not None:
             # No first-class get_collection_by_id helper; a one-shot SELECT
             # for the display name is fine and avoids adding a query for
@@ -1140,7 +1144,7 @@ class MainWindow(QMainWindow):
                 "SELECT name FROM collections WHERE id = ?", (collection_id,)
             ).fetchone()
             name = row["name"] if row is not None else f"collection {collection_id}"
-            scope_label = f'every game in the "{name}" collection'
+            scope_label = f'every ROM in the "{name}" collection'
         else:
             scope_label = "the entire library"
 
@@ -1155,7 +1159,7 @@ class MainWindow(QMainWindow):
 
     def _enrich_scoped(
         self,
-        game_ids: list[int] | None = None,
+        rom_ids: list[int] | None = None,
         system_id: str | None = None,
         collection_id: int | None = None,
         *,
@@ -1163,10 +1167,10 @@ class MainWindow(QMainWindow):
         include_already_enriched: bool = False,
         include_online: bool = True,
     ) -> None:
-        """Start enrichment, optionally scoped to a game / system / collection.
+        """Start enrichment, optionally scoped to a ROM / system / collection.
 
         Every entry point — global toolbar, system right-click, collection
-        right-click, single-game right-click — funnels through
+        right-click, single-ROM right-click — funnels through
         :meth:`_prompt_for_enrich_options` first so the user explicitly
         chooses fuzzy / re-enrich / online flags via the same checkbox
         dialog regardless of scope. Callers may still pass non-default
@@ -1183,7 +1187,7 @@ class MainWindow(QMainWindow):
             return
 
         chosen = self._prompt_for_enrich_options(
-            game_ids=game_ids,
+            rom_ids=rom_ids,
             system_id=system_id,
             collection_id=collection_id,
         )
@@ -1193,9 +1197,9 @@ class MainWindow(QMainWindow):
 
         # Pre-flight: count using the same filters the run will apply.
         # Without this the user could opt in to "re-enrich existing" and
-        # still hit the "no games" bail-out because the default filters
+        # still hit the "no ROMs" bail-out because the default filters
         # excluded everything.
-        eligible_rows = q.get_games_needing_enrichment(
+        eligible_rows = q.get_roms_needing_enrichment(
             self._conn,
             include_fuzzy=include_fuzzy,
             include_already_enriched=include_already_enriched,
@@ -1203,8 +1207,8 @@ class MainWindow(QMainWindow):
         # If the caller scoped to specific ids, narrow the eligibility
         # check to that scope too — otherwise a system-scoped run reports
         # eligibility for the whole library and may erroneously bail.
-        if game_ids is not None:
-            allowed = frozenset(game_ids)
+        if rom_ids is not None:
+            allowed = frozenset(rom_ids)
             eligible_rows = [r for r in eligible_rows if r["id"] in allowed]
         elif system_id is not None:
             eligible_rows = [
@@ -1212,14 +1216,14 @@ class MainWindow(QMainWindow):
             ]
         elif collection_id is not None:
             coll_ids = frozenset(
-                q.get_collection_games(self._conn, collection_id)
+                q.get_collection_roms(self._conn, collection_id)
             )
             eligible_rows = [r for r in eligible_rows if r["id"] in coll_ids]
         if not eligible_rows:
             QMessageBox.information(
                 self,
-                "No games ready for enrichment",
-                "No eligible games found for this scope and option set.\n\n"
+                "No ROMs ready for enrichment",
+                "No eligible ROMs found for this scope and option set.\n\n"
                 "Run Heavy Scan to match more ROMs against the DAT database, "
                 "or tick the looser-filter checkboxes when prompted.",
             )
@@ -1228,11 +1232,11 @@ class MainWindow(QMainWindow):
         cover_cache = get_config(self._conn, "cover_cache_path") or None
 
         # Build a human-readable scope label for the progress dialog title.
-        if game_ids is not None:
+        if rom_ids is not None:
             scope_label = (
-                f"Enriching game {game_ids[0]}..."
-                if len(game_ids) == 1
-                else f"Enriching {len(game_ids)} games..."
+                f"Enriching ROM {rom_ids[0]}..."
+                if len(rom_ids) == 1
+                else f"Enriching {len(rom_ids)} ROMs..."
             )
         elif system_id is not None:
             scope_label = f"Enriching {system_id}..."
@@ -1246,7 +1250,7 @@ class MainWindow(QMainWindow):
         self._enrich_worker = EnrichWorker(
             DEFAULT_DB_PATH,
             cover_cache,
-            game_ids=game_ids,
+            rom_ids=rom_ids,
             system_id=system_id,
             collection_id=collection_id,
             include_fuzzy=include_fuzzy,
@@ -1288,26 +1292,26 @@ class MainWindow(QMainWindow):
     def _prompt_for_cover_options(
         self,
         *,
-        game_id: int | None,
+        rom_id: int | None,
         system_id: str | None,
         collection_id: int | None,
     ) -> tuple[bool, bool] | None:
         """Show :class:`CoverOptionsDialog`; return (local, online) or None.
 
         ``None`` means the user cancelled. Shared by every find-covers
-        entry point — global, system, collection, and single-game —
+        entry point — global, system, collection, and single-ROM —
         so the wording and default state stay consistent.
         """
-        if game_id is not None:
-            scope_label = "the selected game"
+        if rom_id is not None:
+            scope_label = "the selected ROM"
         elif system_id is not None:
-            scope_label = f"every game on {system_id}"
+            scope_label = f"every ROM on {system_id}"
         elif collection_id is not None:
             row = self._conn.execute(
                 "SELECT name FROM collections WHERE id = ?", (collection_id,)
             ).fetchone()
             name = row["name"] if row is not None else f"collection {collection_id}"
-            scope_label = f'every game in the "{name}" collection'
+            scope_label = f'every ROM in the "{name}" collection'
         else:
             scope_label = "the entire library"
         dialog = CoverOptionsDialog(scope_label, parent=self)
@@ -1317,11 +1321,11 @@ class MainWindow(QMainWindow):
 
     def _find_local_covers_scoped(
         self,
-        game_id: int | None = None,
+        rom_id: int | None = None,
         system_id: str | None = None,
         collection_id: int | None = None,
     ) -> None:
-        """Start cover discovery, optionally scoped to a game/system/collection.
+        """Start cover discovery, optionally scoped to a ROM/system/collection.
 
         Always opens :class:`CoverOptionsDialog` first; the user picks
         whether to walk the library for local images, fetch libretro
@@ -1340,7 +1344,7 @@ class MainWindow(QMainWindow):
             return
 
         chosen = self._prompt_for_cover_options(
-            game_id=game_id,
+            rom_id=rom_id,
             system_id=system_id,
             collection_id=collection_id,
         )
@@ -1362,8 +1366,8 @@ class MainWindow(QMainWindow):
 
         # Resolve scope to ROM ids.
         scope_rom_ids: list[int] | None = None
-        if game_id is not None:
-            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, game_id=game_id)
+        if rom_id is not None:
+            scope_rom_ids = q.get_rom_ids_for_scope(self._conn, rom_id=rom_id)
         elif system_id is not None:
             scope_rom_ids = q.get_rom_ids_for_scope(self._conn, system_id=system_id)
         elif collection_id is not None:
@@ -1371,8 +1375,8 @@ class MainWindow(QMainWindow):
                 self._conn, collection_id=collection_id
             )
 
-        if game_id is not None:
-            scope_label = f"Finding covers: game {game_id}..."
+        if rom_id is not None:
+            scope_label = f"Finding covers: ROM {rom_id}..."
         elif system_id is not None:
             scope_label = f"Finding covers: {system_id}..."
         elif collection_id is not None:

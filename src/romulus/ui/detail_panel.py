@@ -1,4 +1,4 @@
-"""Game detail panel — cover art, metadata, action buttons."""
+"""ROM detail panel — cover art, metadata, action buttons."""
 
 from __future__ import annotations
 
@@ -16,16 +16,16 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from romulus.db import get_config
 from romulus.db import queries as q
-from romulus.db.queries import CONFIDENCE_RANK
+from romulus.db.queries import (
+    CONFIDENCE_RANK,  # noqa: F401  re-exported: test_db verifies single source
+)
 from romulus.models.system import SYSTEM_REGISTRY
 from romulus.ui.artwork import resolve_system_logo
 
@@ -60,7 +60,7 @@ def _format_bytes(n: int) -> str:
     """Format a byte count for human consumption.
 
     Decimal (1000-based) rather than binary — matches what most file
-    explorers show, and matches the size annotation in the ROM list block.
+    explorers show.
     """
     size = float(n)
     for unit in _BYTE_UNITS:
@@ -98,7 +98,7 @@ def _match_badge_stylesheet(bg: str, fg: str) -> str:
 
 
 class DetailPanel(QWidget):
-    """Right-side panel showing the currently-selected game's details."""
+    """Right-side panel showing the currently-selected ROM's details."""
 
     favorite_toggled = Signal(int, bool)
 
@@ -107,10 +107,10 @@ class DetailPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._conn = conn
-        self._game_id: int | None = None
+        self._rom_id: int | None = None
         self._favorites_id = q.ensure_favorites_collection(conn)
 
-        # Cover cycling state — all covers for the current game, current index.
+        # Cover cycling state — all covers for the current ROM, current index.
         self._covers: list[sqlite3.Row] = []
         self._cover_index: int = 0
 
@@ -157,7 +157,7 @@ class DetailPanel(QWidget):
 
         self.preferred_button = QPushButton("☆ Make preferred", self)
         self.preferred_button.setToolTip(
-            "Set this cover as the default for this game"
+            "Set this cover as the default for this ROM"
         )
         self.preferred_button.clicked.connect(self._on_make_preferred)
         nav_row.addWidget(self.preferred_button)
@@ -165,7 +165,7 @@ class DetailPanel(QWidget):
         outer.addLayout(nav_row)
 
         # Title (bold, large).
-        self.title_label = QLabel("Select a game", self)
+        self.title_label = QLabel("Select a ROM", self)
         title_font = self.title_label.font()
         title_font.setPointSize(title_font.pointSize() + 4)
         title_font.setBold(True)
@@ -202,7 +202,7 @@ class DetailPanel(QWidget):
         # Metadata grid — one QLabel per field, paired against a value
         # label in a two-column QFormLayout. Rows whose value is empty
         # are hidden in :meth:`_set_field` so the grid stays tight even
-        # for un-enriched games (which is the common case).
+        # for un-enriched ROMs (which is the common case).
         self._meta_grid = QFormLayout()
         self._meta_grid.setSpacing(2)
         self._meta_grid.setContentsMargins(0, 0, 0, 0)
@@ -214,7 +214,8 @@ class DetailPanel(QWidget):
         )
 
         # (key, display label) — order is the on-screen render order.
-        # Keys map to: game.region/revision, computed rom size + sha1,
+        # Keys map to: rom.region/revision, computed rom size + sha1,
+        # path (new — the full path to this specific ROM file),
         # and metadata.{genre,developer,publisher,release_date,players,rating}.
         self._meta_field_specs: tuple[tuple[str, str], ...] = (
             ("region", "Region"),
@@ -222,6 +223,7 @@ class DetailPanel(QWidget):
             ("size", "ROM size"),
             ("sha1", "SHA-1"),
             ("dat_name", "DAT name"),
+            ("path", "Path"),
             ("genre", "Genre"),
             ("developer", "Developer"),
             ("publisher", "Publisher"),
@@ -262,19 +264,6 @@ class DetailPanel(QWidget):
         self.description.hide()
         outer.addWidget(self.description, 1)
 
-        # ROM list (one row per linked ROM).
-        self.rom_list_label = QLabel("ROM files:", self)
-        self.rom_list_label.setStyleSheet("QLabel { color: #888; }")
-        outer.addWidget(self.rom_list_label)
-        self.rom_list = QTextEdit(self)
-        self.rom_list.setReadOnly(True)
-        self.rom_list.setMaximumHeight(80)
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.rom_list)
-        scroll.setMaximumHeight(90)
-        outer.addWidget(scroll)
-
         # Action buttons row.
         actions = QHBoxLayout()
         self.favorite_button = QPushButton("☆ Favorite", self)
@@ -294,40 +283,48 @@ class DetailPanel(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def update_game(self, game_id: int | None) -> None:
-        """Reload the panel for a new game id, or clear if None."""
-        if game_id is None:
-            self._game_id = None
+    def update_rom(self, rom_id: int | None) -> None:
+        """Reload the panel for a new ROM id, or clear if None."""
+        if rom_id is None:
+            self._rom_id = None
             self._render_empty()
             return
-        game = q.get_game_by_id(self._conn, game_id)
-        if game is None:
-            self._game_id = None
+        rom = q.get_rom_by_id(self._conn, rom_id)
+        if rom is None:
+            self._rom_id = None
             self._render_empty()
             return
-        self._game_id = int(game["id"])
-        metadata = q.get_metadata(self._conn, self._game_id)
+        self._rom_id = int(rom["id"])
+        metadata = q.get_metadata(self._conn, self._rom_id)
         # Cycle through Named_Boxarts only: the panel displays a single image
-        # slot and ``is_preferred`` is scoped per (game_id, cover_type), so
+        # slot and ``is_preferred`` is scoped per (rom_id, cover_type), so
         # mixing types into one cycle produces multiple "preferred" covers
         # (one per type) and the Make-preferred button stays disabled on most
         # of them. Snaps/Titles are still in the DB for the exporter to ship
         # to gamelist.xml; the UI just filters this view to boxarts.
-        all_covers = q.get_covers(self._conn, self._game_id)
+        all_covers = q.get_covers(self._conn, self._rom_id)
         covers = [c for c in all_covers if c["cover_type"] == "Named_Boxarts"]
-        # If a game somehow has no boxart but has other types, fall back so
+        # If a ROM somehow has no boxart but has other types, fall back so
         # the user still sees *something*.
         if not covers and all_covers:
             covers = list(all_covers)
-        roms = q.get_roms_for_game(self._conn, self._game_id)
         self._covers = covers
         self._cover_index = 0
-        self._render(game, metadata, covers, roms)
+        self._render(rom, metadata, covers)
+
+    def update_game(self, rom_id: int | None) -> None:
+        """Deprecated alias for :meth:`update_rom` kept for compatibility."""
+        self.update_rom(rom_id)
+
+    @property
+    def current_rom_id(self) -> int | None:
+        """ROM currently shown, or None when blank."""
+        return self._rom_id
 
     @property
     def current_game_id(self) -> int | None:
-        """Game currently shown, or None when blank."""
-        return self._game_id
+        """Deprecated alias for :attr:`current_rom_id` kept for compatibility."""
+        return self._rom_id
 
     # ------------------------------------------------------------------
     # Rendering helpers
@@ -340,14 +337,13 @@ class DetailPanel(QWidget):
         self.cover_label.clear()
         self.cover_label.setText(PLACEHOLDER_TEXT)
         self.cover_label.setToolTip("")
-        self.title_label.setText("Select a game")
+        self.title_label.setText("Select a ROM")
         self.system_label.clear()
         self.system_label.setText("")
         for key in self._meta_value_labels:
             self._set_field(key, None)
         self.description.clear()
         self.description.hide()
-        self.rom_list.clear()
         self.match_badge.setText("")
         self.match_badge.setStyleSheet("QLabel {}")
         self.favorite_button.setChecked(False)
@@ -357,25 +353,55 @@ class DetailPanel(QWidget):
 
     def _render(
         self,
-        game: sqlite3.Row,
+        rom: sqlite3.Row,
         metadata: sqlite3.Row | None,
         covers: list[sqlite3.Row],
-        roms: list[sqlite3.Row],
     ) -> None:
-        """Populate every label / image from DB rows."""
-        self.title_label.setText(str(game["title"]))
-        self._render_system_indicator(str(game["system_id"] or ""))
+        """Populate every label / image from DB rows.
 
-        self._set_field("region", game["region"])
-        self._set_field("revision", game["revision"])
-        # ROM-derived facts (size + DAT name) come straight off the linked
-        # rom rows; SHA-1 requires a hashes-table join, so look that up
-        # separately. SHA-1 row stays hidden until Heavy Scan populates it.
-        self._set_field("size", self._sum_rom_size(roms))
-        self._set_field(
-            "sha1", self._format_sha1(self._first_sha1_for_game(int(game["id"])))
+        With the 1:1 rom-keyed model every field is read directly from the
+        ``roms`` row — no LIMIT 1 ambiguity across multiple ROM files.
+        """
+        # Title: prefer the canonical_name from DAT matching when available;
+        # fall back to the parsed filename title, then the bare filename.
+        title = (
+            rom["canonical_name"]
+            or rom["title"]
+            or rom["filename"]
+            or ""
         )
-        self._set_field("dat_name", self._best_dat_match(roms, game["canonical_name"]))
+        self.title_label.setText(str(title))
+        self._render_system_indicator(str(rom["system_id"] or ""))
+
+        self._set_field("region", rom["region"])
+        self._set_field("revision", rom["revision"])
+
+        # ROM size — read directly from the roms row.
+        size_bytes = int(rom["size_bytes"] or 0)
+        self._set_field("size", _format_bytes(size_bytes) if size_bytes > 0 else None)
+
+        # SHA-1 — look up from hashes table for this specific rom_id.
+        sha1_row = self._conn.execute(
+            "SELECT sha1 FROM hashes WHERE rom_id = ? AND sha1 IS NOT NULL LIMIT 1",
+            (self._rom_id,),
+        ).fetchone()
+        sha1_raw = sha1_row[0] if sha1_row else None
+        self._set_field("sha1", self._format_sha1(sha1_raw))
+
+        # DAT name — unambiguous: this rom's dat_match if dat_verified,
+        # else canonical_name, else None.
+        confidence = str(rom["match_confidence"] or "")
+        if confidence == "dat_verified" and rom["dat_match"]:
+            dat_name: str | None = str(rom["dat_match"])
+        elif rom["canonical_name"]:
+            dat_name = str(rom["canonical_name"])
+        else:
+            dat_name = None
+        self._set_field("dat_name", dat_name)
+
+        # Path — full forward-slash path to this ROM file on disk.
+        rom_path = str(rom["path"] or "")
+        self._set_field("path", rom_path if rom_path else None)
 
         if metadata is not None:
             self._set_field("genre", metadata["genre"])
@@ -397,22 +423,18 @@ class DetailPanel(QWidget):
                 self._set_field(key, None)
             self._set_description(None)
 
-        # Match badge from the strongest match across linked ROMs.
-        best_confidence = self._best_confidence(roms)
-        label, bg, fg = _badge_text_for(best_confidence)
+        # Match badge — reads directly from this rom's match_confidence.
+        label, bg, fg = _badge_text_for(confidence)
         self.match_badge.setText(f"  {label}  ")
         self.match_badge.setStyleSheet(_match_badge_stylesheet(bg, fg))
-
-        # ROM list (filename + size on one line each).
-        self.rom_list.setPlainText(self._format_rom_list(roms))
 
         # Cover viewer — display current index and update nav controls.
         self._render_cover_at_index()
         self._update_cover_nav()
 
         # Favorites toggle reflects current membership.
-        is_fav = q.is_game_in_collection(
-            self._conn, self._favorites_id, int(game["id"])
+        is_fav = q.is_rom_in_collection(
+            self._conn, self._favorites_id, int(self._rom_id)  # type: ignore[arg-type]
         )
         self.favorite_button.blockSignals(True)
         self.favorite_button.setChecked(is_fav)
@@ -536,12 +558,12 @@ class DetailPanel(QWidget):
         if is_pref:
             self.preferred_button.setText("★ Preferred")
             self.preferred_button.setEnabled(False)
-            self.preferred_button.setToolTip("This cover is already the default for this game.")
+            self.preferred_button.setToolTip("This cover is already the default for this ROM.")
         else:
             self.preferred_button.setText("☆ Make preferred")
             self.preferred_button.setEnabled(True)
             self.preferred_button.setToolTip(
-                "Set this cover as the default for this game"
+                "Set this cover as the default for this ROM"
             )
 
     # ------------------------------------------------------------------
@@ -568,14 +590,14 @@ class DetailPanel(QWidget):
 
     def _on_make_preferred(self) -> None:
         """Mark the currently displayed cover as preferred, then reload."""
-        if not self._covers or self._game_id is None:
+        if not self._covers or self._rom_id is None:
             return
         idx = max(0, min(self._cover_index, len(self._covers) - 1))
         cover_id = int(self._covers[idx]["id"])
         q.set_preferred_cover(self._conn, cover_id)
         # Reload + re-filter to the same cover_type the cycle is restricted
-        # to. update_game()'s filter mirrors this logic; keep them in sync.
-        all_covers = q.get_covers(self._conn, self._game_id)
+        # to. update_rom()'s filter mirrors this logic; keep them in sync.
+        all_covers = q.get_covers(self._conn, self._rom_id)
         self._covers = [
             c for c in all_covers if c["cover_type"] == "Named_Boxarts"
         ] or list(all_covers)
@@ -584,19 +606,8 @@ class DetailPanel(QWidget):
         self._update_cover_nav()
 
     # ------------------------------------------------------------------
-    # Cover rendering (legacy single-cover path kept for _render call)
+    # Metadata grid helpers
     # ------------------------------------------------------------------
-
-    def _render_cover(self, covers: list[sqlite3.Row]) -> None:
-        """Load the first cover with a readable local file; else show placeholder.
-
-        .. deprecated::
-            Kept for backward compatibility with any callers that bypassed
-            ``update_game``. New code goes through ``_render_cover_at_index``.
-        """
-        self._covers = covers
-        self._cover_index = 0
-        self._render_cover_at_index()
 
     def _set_field(self, key: str, value: object | None) -> None:
         """Populate or hide the grid row for ``key``.
@@ -625,38 +636,6 @@ class DetailPanel(QWidget):
         self.description.show()
 
     @staticmethod
-    def _sum_rom_size(roms: list[sqlite3.Row]) -> str | None:
-        """Sum byte sizes across all linked ROMs into a human-readable string.
-
-        Returns ``None`` when there are no roms or the total is zero — that
-        hides the row entirely rather than rendering an awkward "0 B".
-        """
-        total = sum(int(rom["size_bytes"] or 0) for rom in roms)
-        if total <= 0:
-            return None
-        return _format_bytes(total)
-
-    def _first_sha1_for_game(self, game_id: int) -> str | None:
-        """Return one SHA-1 belonging to any hashed ROM for *game_id*, or None.
-
-        Heavy Scan is what populates ``hashes.sha1``, so this returns None
-        on quick-scan-only games. Pulled live each render rather than
-        carried on the rom rows because ``get_roms_for_game`` queries the
-        roms table alone.
-        """
-        row = self._conn.execute(
-            """
-            SELECT h.sha1
-            FROM roms r
-            JOIN hashes h ON h.rom_id = r.id
-            WHERE r.game_id = ? AND h.sha1 IS NOT NULL
-            LIMIT 1
-            """,
-            (game_id,),
-        ).fetchone()
-        return row[0] if row else None
-
-    @staticmethod
     def _format_sha1(sha1: str | None) -> str | None:
         """Truncate a 40-char SHA-1 into a 12-char display form."""
         if not sha1:
@@ -666,80 +645,29 @@ class DetailPanel(QWidget):
             return f"{value[:8]}…{value[-4:]}"
         return value
 
-    @staticmethod
-    def _best_dat_match(
-        roms: list[sqlite3.Row], canonical_name: str | None
-    ) -> str | None:
-        """Pick the canonical DAT-verified name for display.
-
-        Prefers any DAT-verified ROM's ``dat_match`` column over the
-        game's ``canonical_name`` (the latter can be set by L2 header
-        parsing without a DAT match). Returns None if neither is set.
-        """
-        for rom in roms:
-            try:
-                confidence = str(rom["match_confidence"] or "")
-                if confidence == "dat_verified":
-                    dat_match = rom["dat_match"]
-                    if dat_match:
-                        return str(dat_match)
-            except (IndexError, KeyError):
-                continue
-        if canonical_name:
-            return str(canonical_name)
-        return None
-
-    @staticmethod
-    def _best_confidence(roms: list[sqlite3.Row]) -> str:
-        """Pick the highest-ranked match_confidence across ROMs for the game.
-
-        Uses :data:`romulus.db.queries.CONFIDENCE_RANK` so the Python and SQL
-        sides cannot drift (see queries.upsert_rom for the matching SQL CASE).
-        """
-        if not roms:
-            return "unmatched"
-        return max(
-            (rom["match_confidence"] or "unmatched" for rom in roms),
-            key=lambda c: CONFIDENCE_RANK.get(c, 0),
-        )
-
-    @staticmethod
-    def _format_rom_list(roms: list[sqlite3.Row]) -> str:
-        """Format the ROM list using full absolute paths with size annotation."""
-        if not roms:
-            return ""
-        lines: list[str] = []
-        for rom in roms:
-            size = int(rom["size_bytes"] or 0)
-            # Prefer the full path column; fall back to filename only.
-            path = str(rom["path"] or rom["filename"] or "")
-            confidence = str(rom["match_confidence"] or "unmatched")
-            lines.append(f"{path}  ({size:,} B)  [{confidence}]")
-        return "\n".join(lines)
-
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
 
     def _on_favorite_clicked(self) -> None:
-        if self._game_id is None:
+        if self._rom_id is None:
             return
         if self.favorite_button.isChecked():
-            q.add_game_to_collection(
-                self._conn, self._favorites_id, self._game_id
+            q.add_rom_to_collection(
+                self._conn, self._favorites_id, self._rom_id
             )
             self.favorite_button.setText("★ Favorite")
-            self.favorite_toggled.emit(self._game_id, True)
+            self.favorite_toggled.emit(self._rom_id, True)
         else:
-            q.remove_game_from_collection(
-                self._conn, self._favorites_id, self._game_id
+            q.remove_rom_from_collection(
+                self._conn, self._favorites_id, self._rom_id
             )
             self.favorite_button.setText("☆ Favorite")
-            self.favorite_toggled.emit(self._game_id, False)
+            self.favorite_toggled.emit(self._rom_id, False)
 
     def _show_collection_menu(self) -> None:
         """Pop up an "Add to Collection..." menu with each user collection + New."""
-        if self._game_id is None:
+        if self._rom_id is None:
             return
         menu = QMenu(self)
         rows = q.get_collections(self._conn)
@@ -773,6 +701,6 @@ class DetailPanel(QWidget):
                 if existing is None:
                     return
                 collection_id = int(existing["id"])
-            q.add_game_to_collection(self._conn, collection_id, self._game_id)
+            q.add_rom_to_collection(self._conn, collection_id, self._rom_id)
         elif isinstance(payload, int):
-            q.add_game_to_collection(self._conn, payload, self._game_id)
+            q.add_rom_to_collection(self._conn, payload, self._rom_id)

@@ -130,7 +130,7 @@ class SystemSidebar(QTreeView):
             )
             self._model.appendRow(collections_header)
             for row in collections:
-                count = int(row["game_count"])
+                count = int(row["rom_count"])
                 item = QStandardItem(f"{row['name']} ({count})")
                 item.setData(KIND_COLLECTION, NODE_KIND_ROLE)
                 item.setData(int(row["id"]), SYSTEM_ID_ROLE)
