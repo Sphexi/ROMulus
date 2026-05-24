@@ -8,12 +8,12 @@ Batocera setups, MiSTer FPGAs, Analogue Pocket, RetroPie, muOS, Onion OS.
 No server. No cloud account. No external services to keep running. SQLite +
 files on disk, nothing else.
 
-**Project status:** v0.3.0 (in development). The full
+**Project status:** v0.4.0 (in development). The full
 scan → identify → enrich → organize → import / export / sync pipeline
-works end-to-end. Per-system summary dialog after Export and Sync, a
-reverse-direction **Verify Library** integrity check, and an
-artwork-only export mode for refreshing sidecars without re-copying
-ROMs. See [CHANGELOG.md](CHANGELOG.md) for the per-release breakdown.
+works end-to-end. v0.4.0 completes a strict 1:1 rom↔game data-model
+refactor: every ROM file is its own identity unit with its own metadata,
+covers, and collection memberships. See [CHANGELOG.md](CHANGELOG.md)
+for the per-release breakdown.
 
 **License:** [Apache License 2.0](LICENSE).
 
@@ -140,9 +140,9 @@ The first time you run ROMulus the window is empty. The recommended workflow:
    four buckets (missing-on-disk, outside-current-library, flagged-but-
    present, size/mtime drift) and lets you fix each one per-bucket.
 10. **Tools → Clean Missing Entries** — removes tombstoned rows the user
-    is confident are gone for good (and cascades to dependent
-    `hashes` / `dest_inventory` / `metadata` / `covers` /
-    `collection_games` rows + prunes orphan games).
+    is confident are gone for good. Cascades via `ON DELETE CASCADE` to
+    dependent `hashes` / `metadata` / `covers` / `collection_roms` /
+    `dest_inventory` rows automatically.
 
 **Right-click a game** in the table for: Add to Favorites / Add to
 Collection / Heavy Scan this game / Enrich this game / Find covers for
@@ -292,12 +292,12 @@ var beats the Settings value on startup.
 
 **The app froze during a long operation.** The end of Quick Scan now
 disables the Cancel button while it finalises the DB (the
-"Marking missing entries…" / "Linking ROMs to games…" /
-"Finalising scan history…" labels are post-walk phases that can't be
-safely cancelled). The Clean Missing Entries and Verify Library
-apply phases also disable cancel during chunked deletes. For other
-freezes, please open an issue with the worker name, library size, and
-the last log line.
+"Marking missing entries…" / "Finalising scan history…" labels are
+post-walk phases that can't be safely cancelled; the old "Linking ROMs
+to games…" phase is gone in v0.4.0). The Clean Missing Entries and
+Verify Library apply phases also disable cancel during chunked deletes.
+For other freezes, please open an issue with the worker name, library
+size, and the last log line.
 
 **Starting a second copy of ROMulus errors out about the log file.** Only
 one instance can hold `logs/romulus.log` at a time. Close the first
@@ -319,6 +319,7 @@ the Debian/Ubuntu list (even though CI itself now runs on
 | [docs/TECHNICAL_PLAN.md](docs/TECHNICAL_PLAN.md) | Full implementation spec — schema details, identifier pipeline, every subsystem in depth |
 | [docs/sync-design.md](docs/sync-design.md) | Destination sync engine spec (modes, identity matcher, dest_inventory, sync_plans, perf notes) |
 | [docs/import-design.md](docs/import-design.md) | Import ROMs feature reference (shipped) |
+| [docs/strict-1to1-design.md](docs/strict-1to1-design.md) | v0.4.0 strict 1:1 rom↔game data-model design doc |
 | [docs/forking-with-claude-code.md](docs/forking-with-claude-code.md) | How to fork this repo and continue building it with Claude Code |
 | [docs/ROM-FORMATS-REFERENCE.md](docs/ROM-FORMATS-REFERENCE.md) | Extension tables, naming conventions, folder aliases |
 | [docs/ROM-DEDUP-METHODOLOGY.md](docs/ROM-DEDUP-METHODOLOGY.md) | Three-layer identification pipeline methodology |
@@ -342,8 +343,8 @@ pip install -e ".[dev]"
 .venv/Scripts/python.exe -m ruff check src/ tests/
 ```
 
-Current state: **1,003 tests passing, 1 skipped** (POSIX-only chmod
-test; skipped on Windows because NTFS ACLs are inherited). CI runs on
+Current state: **1,015 tests passing, 8 skipped** (7 platform-specific
+cover-UI skips + 1 POSIX chmod skip on Windows). CI runs on
 `windows-latest`.
 
 See [docs/architecture.md](docs/architecture.md) for code-style notes,

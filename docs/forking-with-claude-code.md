@@ -39,8 +39,10 @@ will save you time.
 Plus the supporting docs:
 
 - [`docs/sync-design.md`](sync-design.md), [`docs/import-design.md`](import-design.md) — feature-specific references for the shipped Sync and Import workflows.
+- [`docs/strict-1to1-design.md`](strict-1to1-design.md) — the v0.4.0 strict 1:1 rom↔game data-model design doc (background, model, trade-offs, future work).
 - [`docs/ROM-FORMATS-REFERENCE.md`](ROM-FORMATS-REFERENCE.md), [`docs/ROM-DEDUP-METHODOLOGY.md`](ROM-DEDUP-METHODOLOGY.md), [`docs/ROM-LIBRARY-ANALYSIS-REPORT.md`](ROM-LIBRARY-ANALYSIS-REPORT.md) — domain knowledge.
 - [`docs/CREDITS.md`](CREDITS.md) — upstream attribution.
+- [`docs/KNOWN-ISSUES.md`](KNOWN-ISSUES.md) — open bugs triaged for later. Check before proposing new work.
 - [`CHANGELOG.md`](../CHANGELOG.md) — per-release log.
 
 The `Co-Authored-By: Claude Opus ...` trailers on commits are the
@@ -79,10 +81,10 @@ Sanity-check the test suite before you touch anything:
 .venv/Scripts/python.exe -m ruff check src/ tests/
 ```
 
-Current expected state: **1,003 tests passing, 1 skipped** (the
-POSIX-only chmod test, skipped on Windows). If anything else fails on
-a clean checkout, file an issue against upstream before assuming the
-fork is the problem.
+Current expected state: **1,015 tests passing, 8 skipped** (7
+platform-specific cover-UI skips + 1 POSIX chmod skip on Windows).
+If anything else fails on a clean checkout, file an issue against
+upstream before assuming the fork is the problem.
 
 ### What to change in `CLAUDE.md`
 
@@ -104,8 +106,10 @@ What **not** to weaken without thinking it through: the
 [Key Design Rules](../CLAUDE.md#key-design-rules-non-negotiable). They
 encode hard-won architectural decisions (single-library design,
 tombstone-don't-delete, atomic writes only, hacks-are-first-class,
-local-first). Re-read [`docs/architecture.md`](architecture.md) before
-deleting any of them.
+local-first, strict 1:1 rom identity, sibling-copy API gate).
+Re-read [`docs/architecture.md`](architecture.md) and
+[`docs/strict-1to1-design.md`](strict-1to1-design.md) before deleting
+any of them.
 
 ---
 

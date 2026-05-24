@@ -63,13 +63,17 @@ ROMulus replaces that with a single desktop app that:
 │                    Core Engine                           │
 │                                                          │
 │  Scanner ──→ Identifier ──→ SQLite DB                    │
-│  (+ missing  (L1 fuzzy,                                  │
-│   sweep +    L2 header,                                  │
-│   self-heal) L3 hash+DAT)                                │
+│  (+ missing  (L1 fuzzy,    Identity fields written       │
+│   sweep +    L2 header,    directly onto roms at         │
+│   self-heal) L3 hash+DAT)  upsert time; no grouping      │
+│                            phase post-walk)              │
 │                                                          │
 │  DAT Parser (bundled No-Intro DATs, ~106 systems)        │
+│  Heavy Scan: _update_identity_from_dat writes            │
+│  canonical_name / region / revision onto roms in place   │
 │                                                          │
 │  Enrich Metadata chain (local-first):                    │
+│    [sibling-copy gate: SHA-1 / canonical_name / fuzzy]   │
 │    libretro-database ──→ GameDB ──→ Hasheous ──→         │
 │    LaunchBox ──→ ScreenScraper ──→ TheGamesDB            │
 │    (online providers gated by per-batch checkbox)        │
@@ -79,12 +83,14 @@ ROMulus replaces that with a single desktop app that:
 │                                                          │
 │  Organizer  Export Engine    Sync Engine                 │
 │  (preview/  (dest profiles,  (5 modes: push merge/       │
-│   commit)   gamelist.xml,     mirror/wipe, pull merge,   │
-│             .m3u, artwork,    two-way; 4-tier identity   │
-│             include_roms      match; dest_inventory      │
-│             toggle for        cache; O(N+M) tier-2 via   │
-│             artwork-only      pre-indexed dest_by_fuzzy; │
-│             refreshes)        SAVEPOINT rollback)        │
+│   commit;   gamelist.xml,     mirror/wipe, pull merge,   │
+│   TOCTOU    .m3u, artwork,    two-way; 4-tier identity   │
+│   guard via include_roms      match; region from         │
+│   hash_rom) toggle;           roms.region directly;      │
+│             distinct_content  dest_inventory cache;      │
+│             _only toggle;     O(N+M) tier-2 via          │
+│             one <game> per    pre-indexed dest_by_fuzzy; │
+│             rom in gamelist)  SAVEPOINT rollback)        │
 │                                                          │
 │  Importer  (staging → identify → analyse → preview →     │
 │   commit)  per-action SAVEPOINT, three-level dupe        │
@@ -128,7 +134,7 @@ window and dispatches work via signals.
 | `BuildSyncPlanWorker` | Between DestInventory and SyncPreview | Runs `build_plan` on a worker thread (was on UI thread; froze on large libs) |
 | `ImportAnalyseWorker` | Import ROMs dialog (analyse phase) | Walks staging folder + builds ImportPlan |
 | `ImportApplyWorker` | Import ROMs dialog (apply phase) | Executes the approved ImportPlan with per-action SAVEPOINT |
-| `CleanMissingWorker` | Tools → Clean Missing Entries | Drops tombstoned rows + FK dependents + orphan-game prune |
+| `CleanMissingWorker` | Tools → Clean Missing Entries | Drops tombstoned rows; cascade on `ON DELETE CASCADE` handles metadata / covers / collection_roms |
 | `ScrubAnalyseWorker` | Tools → Verify Library (analyse phase) | Walks every roms row, classifies vs disk |
 | `ScrubApplyWorker` | Verify Library (apply phase) | Applies per-bucket fixes (SAVEPOINT-per-bucket) |
 
@@ -139,9 +145,9 @@ Worker conventions:
   never shared across threads.
 - **Cooperative cancellation** via a private exception raised inside the
   progress callback. Post-walk DB phases (`Marking missing entries…`,
-  `Linking ROMs to games: <system>…`, `Finalising scan history…`) ignore
-  cancel requests — interrupting mid-rebuild would leave the DB
-  inconsistent with disk.
+  `Finalising scan history…`) ignore cancel requests — interrupting
+  mid-rebuild would leave the DB inconsistent with disk. The old
+  `Linking ROMs to games…` phase is gone (no grouping phase in v0.4.0+).
 - **Atomic file writes** route through `core/atomic.py`
   (`tempfile.mkstemp` + `os.replace`). A cancelled or killed worker can
   never leave a half-written file on disk.
@@ -226,12 +232,14 @@ so the behavior doesn't surprise users or future contributors.
     a stray exception in a UI-thread DML chain left the implicit
     transaction open and held the write lock for the rest of the
     session.
-22. **`prune_orphan_games` clears FK-dependent rows first.** `metadata`
-    / `covers` / `collection_games` are deleted before the orphan game
-    rows themselves; `dest_inventory.game_id` is NULLed rather than
-    deleted (the inventory row is anchored on `rom_id`). Required
-    because none of those tables declare `ON DELETE CASCADE` — the
-    games delete fails with `IntegrityError` if dependents remain.
+22. **`ON DELETE CASCADE` cleans up rom dependents atomically.** All
+    tables that reference `roms(id)` — `metadata`, `covers`,
+    `collection_roms` — declare `ON DELETE CASCADE`. Deleting a rom
+    row automatically drops its metadata, covers, and collection
+    memberships without any explicit caller action. `prune_orphan_games`
+    and `_delete_game_dependents` are gone; cascade replaces them. The
+    old `dest_inventory.game_id` column is also gone — the inventory
+    row is anchored on `rom_id` alone.
 23. **Sync diff is O(N+M), not O(N·M).** `_build_inventory_fuzzy_index`
     pre-computes `(fuzzy_key, region, system_id) → InventoryEntry` once
     at the top of `_build_push_actions` / `_build_twoway_actions`. The
@@ -263,6 +271,33 @@ so the behavior doesn't surprise users or future contributors.
     flip a bucket with one click. Buckets whose every child is
     non-checkable (e.g. Organize Collisions) keep a plain non-checkable
     header.
+28. **Strict 1:1 model: the ROM file is the identity unit.** There is
+    no separate `games` table. Every ROM file is its own row in `roms`,
+    carrying its own `title`, `canonical_name`, `region`, `revision`,
+    `is_hack`, `is_homebrew`, and `is_bios` directly. Byte-identical
+    copies at two paths are two distinct rows — duplicates surface by
+    sorting on SHA-1 or by running Organize. Identity columns are
+    populated at Quick Scan time (from filename parsing) and updated
+    in place by Heavy Scan when a DAT match is found. The `games` table,
+    `game_id` FKs, grouping phase, and `prune_orphan_games` are all
+    gone. See `docs/strict-1to1-design.md` for rationale and trade-offs.
+29. **Sibling-copy gate preserves API quota.** Before any network
+    metadata source runs, `find_sibling_metadata` looks for a row in
+    `metadata` belonging to any *other* rom with the same identity
+    (SHA-1 first, then `(system_id, canonical_name)`, then
+    `(system_id, fuzzy_key)`). On a hit, `copy_metadata` writes a new
+    row for the target rom and short-circuits the chain. Five
+    byte-identical copies of the same title burn one TheGamesDB call,
+    not five. The same gate applies to covers via `find_sibling_covers`
+    / `copy_covers`; on-disk image files are shared (both rows point at
+    the same cached file path).
+30. **`distinct_content_only` export toggle.** `ExportOptions.distinct_content_only`
+    (default False) skips all-but-one rom per SHA-1 cluster when writing
+    `gamelist.xml` and copying ROM files. Keeper rank: `dat_verified` >
+    canonical extension > shorter filename > lower `rom_id`. ROMs with
+    no SHA-1 always export regardless of the toggle. Useful for keeping
+    device-side gamelists compact when the library intentionally holds
+    multiple copies of the same content.
 
 ---
 
@@ -307,9 +342,13 @@ per-system header offset tables.
 
 ## Metadata enrichment chain
 
-`enrich_library` walks games in scope (DAT-verified by default; fuzzy
+`enrich_library` walks ROMs in scope (DAT-verified by default; fuzzy
 and re-enrich are opt-in via `EnrichOptionsDialog`) and tries each
-source in order, stopping at the first one with user-facing data:
+source in order, stopping at the first one with user-facing data.
+Before any source runs, the **sibling-copy gate** checks for an
+existing metadata row belonging to another rom with the same identity
+(SHA-1 → `(system_id, canonical_name)` → `(system_id, fuzzy_key)`);
+on a hit the row is copied directly and the chain is skipped entirely:
 
 1. **libretro-database** (bundled, offline) — per-CRC32 clrmamepro DATs
    across 7 metadata dimensions (genre, developer, publisher, release
@@ -328,8 +367,8 @@ The `EnrichOptionsDialog` exposes three flags per batch:
 
 - **Also enrich fuzzy-matched games** — drops the
   `match_confidence='dat_verified'` filter.
-- **Re-attempt enrichment on games that already have metadata** —
-  drops the `m.game_id IS NULL` filter.
+- **Re-attempt enrichment on ROMs that already have metadata** —
+  drops the `m.rom_id IS NULL` filter.
 - **Also try online metadata sources** (default on) — gates Hasheous /
   ScreenScraper / TheGamesDB.
 
@@ -356,6 +395,8 @@ via `CoverOptionsDialog`. Two independent checkboxes per run:
 Four-tier identity matcher (in order): path equivalence →
 `(fuzzy_key, region, system_id)` → size sanity gate → SHA-1 deep verify.
 The `system_id` segment of tier 2 is the cross-platform guard.
+In v0.4.0+, `region` is read directly from `roms.region` — there is
+no joined `games` table.
 
 **Perf:** the tier-2 lookup is O(1) per local rom via the
 pre-built `dest_by_fuzzy` index — see
@@ -378,25 +419,29 @@ Tables:
 
 - `config` — key/value app configuration.
 - `systems` — system registry (seeded from `systems/builtin.yaml`).
-- `roms` — ROM files on disk. Includes `library_root` and `missing`
-  columns for the single-library / tombstone-missing design.
+- `roms` — ROM files on disk. In v0.4.0+ this table is the identity
+  unit: it carries `title`, `canonical_name`, `region`, `revision`,
+  `is_hack`, `is_homebrew`, `is_bios` directly (formerly on the now-
+  deleted `games` table), plus `library_root` and `missing` for the
+  tombstone-missing design.
 - `hashes` — hash cache, keyed by rom_id. Reused on rescan via
   `(path, mtime, size)` invalidation.
 - `dat_entries` — parsed No-Intro DAT entries; indexed on SHA-1 and
   CRC32+size.
-- `games` — logical games (one game may have multiple ROMs across
-  regions, revisions, formats).
-- `metadata` — enriched metadata per game (description, genre,
-  developer, publisher, release_date, release_year, players, rating,
-  source).
-- `covers` — cover art records (boxart / screenshot / title_screen)
-  pointing into the cover cache.
-- `collections` + `collection_games` — user collections (Favorites
-  seeded built-in).
+- `metadata` — enriched metadata per rom (1:1, rom_id PK, `ON DELETE
+  CASCADE`). Description, genre, developer, publisher, release_date,
+  players, rating, source.
+- `covers` — cover art records per rom (rom_id FK, `ON DELETE
+  CASCADE`). Boxart / screenshot / title_screen pointing into the
+  cover cache.
+- `collections` + `collection_roms` — user collections (Favorites
+  seeded built-in). `collection_roms(collection_id, rom_id)` replaces
+  the old `collection_games` table.
 - `scan_history` — scan run records.
 - `organize_plans` — JSON-persisted Organize plans.
 - `sync_destinations` — user's saved destination targets.
-- `dest_inventory` — cached per-destination filesystem state.
+- `dest_inventory` — cached per-destination filesystem state. Keyed
+  on `(dest_id, rel_path)`; `game_id` column removed in v0.4.0.
 - `sync_plans` — JSON-persisted Sync plans.
 
 [TECHNICAL_PLAN.md](TECHNICAL_PLAN.md#sqlite-schema) has the column-by-
@@ -589,8 +634,8 @@ Per the **CI/CD Local Validation Rule** in `CLAUDE.md`, the workflow's
 exact commands are run locally on Windows before any release tag is
 pushed.
 
-Current state: **1,003 tests passing, 1 skipped** (POSIX-only chmod
-test, skipped on Windows because NTFS ACLs are inherited).
+Current state: **1,015 tests passing, 8 skipped** (7 platform-specific
+cover-UI skips + 1 POSIX chmod skip on Windows).
 
 ---
 
@@ -640,12 +685,14 @@ ROMulous/
 │   ├── architecture.md           # This file
 │   ├── TECHNICAL_PLAN.md         # Full implementation spec
 │   ├── sync-design.md            # Destination sync engine spec
-│   ├── import-design.md          # Import ROMs feature design (future)
+│   ├── import-design.md          # Import ROMs feature reference (shipped)
+│   ├── strict-1to1-design.md     # v0.4.0 strict 1:1 rom↔game model design doc
 │   ├── CREDITS.md
+│   ├── KNOWN-ISSUES.md
 │   ├── ROM-FORMATS-REFERENCE.md
 │   ├── ROM-DEDUP-METHODOLOGY.md
 │   ├── ROM-LIBRARY-ANALYSIS-REPORT.md
-│   └── sessions/                 # Per-build-session task lists (00–11 done)
+│   └── sessions/                 # Per-build-session task lists (00–19 done)
 ├── src/romulus/
 │   ├── __main__.py               # Entry point
 │   ├── app.py                    # QApplication setup, DB init, log setup
@@ -654,17 +701,18 @@ ROMulous/
 │   │   ├── scanner.py            # FS walk + L1/L2 + missing sweep + self-heal
 │   │   ├── identifier.py         # L2 header extraction
 │   │   ├── hasher.py             # SHA-1/CRC32 + header stripping
-│   │   ├── dat_parser.py         # Logiqx XML DAT parser
-│   │   ├── organizer.py          # Library reorganization
-│   │   ├── exporter.py           # Destination profile export engine (incl. include_roms)
+│   │   ├── dat_parser.py         # Logiqx XML DAT parser + _update_identity_from_dat
+│   │   ├── organizer.py          # Library reorganization (no cross-ext detector; TOCTOU fix)
+│   │   ├── exporter.py           # Export engine (one <game> per rom; distinct_content_only toggle)
 │   │   ├── sync.py               # 5-mode sync + 4-tier identity + O(N+M) tier-2 index
 │   │   ├── dest_inventory.py     # Destination FS scanner + cache
 │   │   ├── importer.py           # Staging-folder import (analyse + apply)
 │   │   ├── scrub.py              # Reverse-direction DB ↔ disk verifier
 │   │   ├── local_cover_finder.py # Disk-side cover discovery + linking
-│   │   └── atomic.py             # tempfile.mkstemp + os.replace helpers
+│   │   ├── atomic.py             # tempfile.mkstemp + os.replace helpers
+│   │   └── _no_intro_tokens.py   # Shared parens/bracket token parser (filename + DAT names)
 │   ├── metadata/
-│   │   ├── __init__.py           # enrich_library + chain orchestrator
+│   │   ├── __init__.py           # enrich_library + chain orchestrator + sibling-copy gate
 │   │   ├── libretro_metadat.py   # Bundled libretro-database (1st in chain)
 │   │   ├── gamedb.py             # Bundled GameDB (2nd)
 │   │   ├── hasheous.py           # Hasheous (3rd)
@@ -698,7 +746,7 @@ ROMulous/
 │       ├── artwork/              # Bundled per-platform logos
 │       ├── icons/                # CD-ROM disc app icon
 │       └── themes/               # light / dark / wbm_classic .qss
-└── tests/                        # pytest, 1004 collected (1003 + 1 skipped)
+└── tests/                        # pytest, 1023 collected (1015 passing + 8 skipped)
 ```
 
 ---
@@ -712,10 +760,12 @@ they don't surprise you.
    offers to wipe the prior library's rows. There is no multi-library
    mode — by design.
 
-2. **No DB migrations for pre-v0.3.0 databases.** ROMulus is pre-1.0
-   with no shipped user base; users running an earlier alpha-state
-   database should wipe `data/romulus.db` and let v0.3.0 rebuild it. A
-   real migration framework will land when the project gets a real
+2. **No DB migrations for pre-v0.4.0 databases.** ROMulus is pre-1.0
+   with no shipped user base; users running an earlier database should
+   wipe `data/romulus.db` and let v0.4.0 rebuild it. On startup the
+   app detects a pre-1:1 DB by probing `PRAGMA table_info(games)` and
+   surfaces a clear error dialog rather than silently corrupting data.
+   A real migration framework will land when the project has a real
    user base.
 
 3. **ScreenScraper credentials are stored in plaintext in SQLite.** The

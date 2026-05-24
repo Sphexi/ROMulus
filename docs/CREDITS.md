@@ -6,7 +6,7 @@ on, fetches data from, ships data from, or targets — with links so you can
 go check those projects out and respect their own licenses, usage terms,
 and attribution requirements.
 
-Last updated: 2026-05-20 (v0.3.0 in development).
+Last updated: 2026-05-23 (v0.4.0 in development).
 
 ---
 

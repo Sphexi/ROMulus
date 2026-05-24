@@ -1,7 +1,7 @@
 # Destination Sync — Design Spec
 
-**Status:** implemented (v0.2.0), refined (v0.3.0).
-**Last updated:** 2026-05-20
+**Status:** implemented (v0.2.0), refined (v0.3.0), updated for strict 1:1 model (v0.4.0).
+**Last updated:** 2026-05-23
 **Authoritative reference:** this doc. Implementation diverging from it must update the doc in the same commit. Post-implementation fixes are recorded in [§12](#12-post-implementation-notes-v030).
 
 ---
@@ -133,13 +133,17 @@ CREATE TABLE dest_inventory (
     mtime         REAL NOT NULL,
     sha1          TEXT,                            -- NULL unless deep-verified
     rom_id        INTEGER REFERENCES roms(id),     -- matched local rom, if any
-    game_id       INTEGER REFERENCES games(id),
     last_seen_at  TEXT NOT NULL,
     PRIMARY KEY (dest_id, rel_path)
 );
 CREATE INDEX idx_dest_inventory_sha1 ON dest_inventory(sha1);
 CREATE INDEX idx_dest_inventory_rom ON dest_inventory(rom_id);
 ```
+
+> **v0.4.0 change:** the `game_id` column is removed. The `rom_id` column is the sole
+> identity anchor. Pre-v0.4.0 inventory rows become stale on the next destination
+> scan; the staleness check re-recognises them via `(rel_path, size, mtime)` as
+> before and the walker rebuilds the row without `game_id`.
 
 ### 4.3 `sync_plans`
 
@@ -328,9 +332,11 @@ ran on them. Specifically:
    detected).
 4. `queries.upsert_rom` inserts/updates with `match_confidence='fuzzy'` and
    `system_id` resolved from the pull source's folder or the profile's
-   reverse mapping.
-5. `group_into_games` runs to link to a Game record.
-6. The user can later run Heavy Scan to upgrade the match to `dat_verified`.
+   reverse mapping. Identity fields (`title`, `region`, etc.) are
+   populated from filename parsing at upsert time — no separate grouping
+   step.
+5. The user can later run Heavy Scan to upgrade the match to
+   `dat_verified` and populate canonical identity fields from the DAT.
 
 If a pulled file's identity matches an existing local ROM (by fuzzy_key OR
 hash), it's a "skip identical" — already in the library.
@@ -408,9 +414,9 @@ Deferred to v0.3.0+ (and explicitly NOT in this work):
   `_system_dest_dir`.
 - **Stale `dest_inventory` rows are rewritten, not preserved.** When the
   walker detects size/mtime drift for a cached row, it deletes the row
-  before the upsert so the stale SHA-1 / rom_id / game_id columns are
-  cleared. Without this the upsert's `COALESCE` would preserve identity
-  columns that no longer describe the file.
+  before the upsert so the stale SHA-1 / rom_id columns are cleared.
+  Without this the upsert's `COALESCE` would preserve identity columns
+  that no longer describe the file.
 
 ---
 
@@ -628,3 +634,33 @@ reads inconsistently:
    index construction. Tier-2 matches against them used to be
    silently impossible due to the system-folder requirement; now
    they're explicitly excluded.
+
+---
+
+### 12.8 Spec amendments from v0.4.0 strict 1:1 refactor
+
+**Shipped in commit `36f3496` (Session 16 of the strict 1:1 refactor).**
+
+These take precedence over earlier sections in this doc if anything
+reads inconsistently:
+
+1. **`SyncAction.game_id` is removed.** `rom_id` is the sole identity
+   anchor in every action and inventory write. Code that reads
+   `action.game_id` must be updated to use `action.rom_id`.
+
+2. **`dest_inventory.game_id` column is removed.** The FK to `games`
+   is gone. Inventory rows are anchored on `(dest_id, rel_path)` and
+   optionally `rom_id`. Existing databases are incompatible; wipe
+   `data/romulus.db` and rescan.
+
+3. **Tier-2 `region` reads from `roms.region` directly.** In v0.3.0
+   the region came from a joined `games` row. In v0.4.0 it comes
+   directly from `roms.region` (populated by scanner filename parsing
+   and updated by Heavy Scan DAT match). The match key shape
+   `(fuzzy_key, region, system_id)` is unchanged; only the source
+   of `region` differs.
+
+4. **Old `sync_plans` JSON is rejected at load time.** If a persisted
+   plan's JSON payload contains `game_id` keys, `load_plan` raises
+   `ValueError("plan was created against an old schema; re-run
+   preview")`. Pre-v0.4.0 plans must be re-generated.

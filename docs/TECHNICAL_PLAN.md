@@ -29,31 +29,59 @@
 
 ## Current State
 
-**As of v0.3.0 (in development; last reviewed 2026-05-20):**
+**As of v0.4.0 (in development; last reviewed 2026-05-23):**
 
-- **1,003 tests passing, 1 skipped** (1,004 collected total; the
-  POSIX-only chmod test is skipped on the `windows-latest` CI runner).
-  Ruff clean.
+- **1,015 tests passing, 8 skipped** (1,023 collected total; 7
+  platform-specific cover-UI skips + 1 POSIX chmod skip on
+  `windows-latest`). Ruff clean.
 - **CI runs on `windows-latest`.** ROMulus is a Windows-first desktop
   app; running CI on the same OS we ship for exercises the same
   Qt/SQLite/PySide6 stack end users will run. Also dodges a Linux
   PySide6+sqlite3 segfault in `test_worker_emits_progress_and_finishes`.
-- All 11 numbered build sessions (00–11) are complete. v0.1.0 shipped
-  the full Quick/Heavy/Enrich/Organize/Export pipeline. v0.2.0 added
-  portable Windows packaging + Heavy Scan UI + real bundled DATs.
-  v0.3.0 (in development) adds destination sync, library cleanup,
-  single-binary build, a debug-logging overhaul, bundled offline
-  metadata, a metadata/covers workflow split, scoped Quick Scan with
-  post-walk progress, per-game Reveal/Delete actions, inbound Import
-  ROMs, a reverse-direction Verify Library scrub, per-system summary
-  dialogs after Export + Sync, and an artwork-only export mode.
-- Subsequent work after Session 11 is committed directly via
-  `feat(scope):` / `fix(scope):` / `refactor(scope):` style commits
-  without a numbered session file.
+- Sessions 00–19 are complete. Sessions 00–11 built the v0.1.0–v0.3.0
+  pipeline; sessions 13–19 implemented the strict 1:1 rom↔game refactor.
+- Subsequent work is committed directly via Conventional Commits without
+  a numbered session file.
 - See `CHANGELOG.md` for the per-release feature + fix log.
 - For the cross-cutting "how is this built" view, see
   `docs/architecture.md` — this file is the deeper implementation
   reference.
+
+**v0.4.0 deltas worth knowing when reading the rest of this doc:**
+
+- **Strict 1:1 model.** The `games` table is gone. Identity columns
+  (`title`, `canonical_name`, `region`, `revision`, `is_hack`,
+  `is_homebrew`, `is_bios`) merged onto `roms`. All FKs to roms have
+  `ON DELETE CASCADE`. `prune_orphan_games` and `_delete_game_dependents`
+  are deleted; cascade does the work atomically.
+- **`metadata.game_id` → `metadata.rom_id` (PK, 1:1).** Same for
+  `covers.game_id` → `covers.rom_id`.
+- **`collection_games` → `collection_roms`.** New PK is
+  `(collection_id, rom_id)`.
+- **`dest_inventory.game_id` dropped.**
+- **Scanner grouping phase deleted.** `_group_unlinked_roms_into_games`
+  is gone. Identity writes directly onto roms at upsert time. Heavy
+  Scan updates `canonical_name/region/revision` in place after a DAT
+  match via `_update_identity_from_dat` in `core/dat_parser.py`.
+- **Shared parens-token parser.** `src/romulus/core/_no_intro_tokens.py
+  ::parse_no_intro_tokens` — used by both filename and DAT-name parsing.
+- **Sibling-copy gate.** Before any network source runs, the metadata
+  chain calls `find_sibling_metadata` / `find_sibling_covers`. On a
+  hit, the row is copied and the chain is skipped. Priority: SHA-1 →
+  `(system_id, canonical_name)` → `(system_id, fuzzy_key)`.
+- **`ExportOptions.distinct_content_only` toggle.** Exports one rom per
+  SHA-1 cluster; keeper rank: dat_verified > canonical ext > shorter
+  filename > lower rom_id.
+- **Organizer `find_cross_extension_dupes` deleted.** SHA-1-based
+  `find_duplicates` covers the same ground post-Bug 2 fix.
+- **Organizer Bug 2 fixed.** TOCTOU guard now calls
+  `hash_rom(path, header_rule)` not raw `_digest_stream`.
+- **Organizer Bug 3 fixed.** `detect_collisions` now also flags rename
+  targets occupied by an existing un-renamed rom row.
+- **Detail panel Bug 4 fixed.** `update_rom(rom_id)` reads SHA-1 /
+  DAT name / region directly from the selected rom — no LIMIT 1 ambiguity.
+
+See `docs/strict-1to1-design.md` for the full design rationale.
 
 **v0.3.0 deltas worth knowing when reading the rest of this doc:**
 
@@ -127,10 +155,10 @@
   pre-built `dest_by_fuzzy` index, and runs on `BuildSyncPlanWorker`
   with a "Computing diff…" progress dialog. Closes a multi-minute UI
   freeze on large libraries.
-- **`prune_orphan_games` clears FK-dependent metadata / covers /
-  collection_games / dest_inventory.game_id** before deleting from
-  `games`. Was raising `IntegrityError` on orphan games with
-  enrichment.
+- **`prune_orphan_games`** (v0.3.0 fix, now superseded). Was clearing
+  FK-dependent metadata / covers / collection_games before deleting
+  orphan game rows. In v0.4.0 this function is deleted entirely;
+  `ON DELETE CASCADE` on all rom-keyed tables replaces it.
 - **`CleanMissingWorker`** wraps Clean Missing Entries on a worker
   thread with `try/except/conn.rollback()/raise` — closes the
   "DB locked / silent rollback" footgun.
@@ -270,21 +298,31 @@ CREATE TABLE systems (
     dat_name        TEXT                  -- No-Intro DAT name pattern for matching
 );
 
--- ROM files on disk
+-- ROM files on disk (v0.4.0: identity unit; games table removed)
 CREATE TABLE roms (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    path        TEXT NOT NULL UNIQUE,    -- full filesystem path
-    filename    TEXT NOT NULL,           -- basename only
-    extension   TEXT NOT NULL,           -- lowercase, with dot: ".sfc"
-    size_bytes  INTEGER NOT NULL,
-    mtime       REAL NOT NULL,           -- file modification time (for hash cache invalidation)
-    system_id   TEXT REFERENCES systems(id),
-    game_id     INTEGER REFERENCES games(id),
-    scan_id     INTEGER REFERENCES scan_history(id),
-    fuzzy_key   TEXT,                    -- L1 normalized filename key
-    header_title TEXT,                   -- L2 internal header title (if extracted)
-    dat_match   TEXT,                    -- canonical name from DAT match (if matched)
-    match_confidence TEXT DEFAULT 'unmatched'  -- "unmatched" | "fuzzy" | "header" | "dat_verified"
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    path             TEXT NOT NULL UNIQUE,    -- full filesystem path
+    filename         TEXT NOT NULL,           -- basename only
+    extension        TEXT NOT NULL,           -- lowercase, with dot: ".sfc"
+    size_bytes       INTEGER NOT NULL,
+    mtime            REAL NOT NULL,           -- file modification time (for hash cache invalidation)
+    system_id        TEXT REFERENCES systems(id),
+    scan_id          INTEGER REFERENCES scan_history(id),
+    fuzzy_key        TEXT,                    -- L1 normalized filename key
+    header_title     TEXT,                    -- L2 internal header title (if extracted)
+    dat_match        TEXT,                    -- canonical name from DAT match (if matched)
+    match_confidence TEXT DEFAULT 'unmatched',-- "unmatched" | "fuzzy" | "header" | "dat_verified"
+    -- Identity columns (formerly on games table; set by scanner, updated by Heavy Scan):
+    title            TEXT,                    -- display title (parsed from filename)
+    canonical_name   TEXT,                    -- No-Intro canonical name if DAT-matched
+    region           TEXT,                    -- e.g. "USA", "Europe", "Japan"
+    revision         TEXT,                    -- e.g. "Rev 1", "Rev A"
+    is_hack          INTEGER NOT NULL DEFAULT 0,
+    is_homebrew      INTEGER NOT NULL DEFAULT 0,
+    is_bios          INTEGER NOT NULL DEFAULT 0,
+    -- Library / tombstone columns:
+    library_root     TEXT,                    -- canonical absolute path of the library root
+    missing          INTEGER NOT NULL DEFAULT 0  -- 0=present, 1=tombstoned
 );
 
 -- Hash cache (expensive to compute, reused if mtime unchanged)
@@ -314,22 +352,13 @@ CREATE TABLE dat_entries (
 CREATE INDEX idx_dat_sha1 ON dat_entries(sha1);
 CREATE INDEX idx_dat_crc32_size ON dat_entries(crc32, size_bytes);
 
--- Logical games (one game may have multiple ROMs: regions, revisions, formats)
-CREATE TABLE games (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    title           TEXT NOT NULL,           -- display title
-    system_id       TEXT REFERENCES systems(id),
-    canonical_name  TEXT,                    -- No-Intro canonical name if DAT-matched
-    region          TEXT,                    -- primary region
-    revision        TEXT,                    -- highest known revision
-    is_hack         INTEGER DEFAULT 0,
-    is_homebrew     INTEGER DEFAULT 0,
-    is_bios         INTEGER DEFAULT 0
-);
+-- NOTE: games table removed in v0.4.0. Identity columns merged onto roms.
+-- See the roms table definition above for title, canonical_name, region,
+-- revision, is_hack, is_homebrew, is_bios.
 
--- Game metadata (from enrichment sources)
+-- ROM metadata (from enrichment sources; 1:1 with roms; v0.4.0: rom_id PK)
 CREATE TABLE metadata (
-    game_id     INTEGER PRIMARY KEY REFERENCES games(id),
+    rom_id      INTEGER PRIMARY KEY REFERENCES roms(id) ON DELETE CASCADE,
     description TEXT,
     genre       TEXT,
     developer   TEXT,
@@ -340,13 +369,13 @@ CREATE TABLE metadata (
     source      TEXT NOT NULL            -- "hasheous" | "launchbox" | "screenscraper" | "gametdb"
 );
 
--- Cover art references
+-- Cover art references (v0.4.0: rom_id FK replaces game_id)
 CREATE TABLE covers (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    game_id     INTEGER REFERENCES games(id),
+    rom_id      INTEGER REFERENCES roms(id) ON DELETE CASCADE,
     cover_type  TEXT NOT NULL,           -- "boxart" | "screenshot" | "title_screen"
     source_url  TEXT,                    -- original download URL
-    local_path  TEXT,                    -- path in cover cache
+    local_path  TEXT,                    -- path in cover cache (shared across rom rows for same content)
     width       INTEGER,
     height      INTEGER
 );
@@ -359,10 +388,11 @@ CREATE TABLE collections (
     is_system   INTEGER DEFAULT 0       -- 1 for built-in collections like "Favorites"
 );
 
-CREATE TABLE collection_games (
+-- v0.4.0: renamed from collection_games; rom_id replaces game_id
+CREATE TABLE collection_roms (
     collection_id INTEGER REFERENCES collections(id),
-    game_id       INTEGER REFERENCES games(id),
-    PRIMARY KEY (collection_id, game_id)
+    rom_id        INTEGER REFERENCES roms(id) ON DELETE CASCADE,
+    PRIMARY KEY (collection_id, rom_id)
 );
 
 -- Scan history
@@ -416,17 +446,23 @@ The full extension table and folder alias table are in `docs/ROM-FORMATS-REFEREN
 3. For each file:
    a. Check extension against system's accepted extensions
    b. Skip side-files (.cue, .m3u, .sub, .txt, .nfo, .jpg, .png, etc.)
-   c. Parse filename for tags:
+   c. Parse filename for tags using parse_no_intro_tokens (shared parser):
       - Region: (USA), (Europe), (Japan), (World), etc.
       - Revision: (Rev 1), (Rev A), (v1.1), etc.
       - Status: [!] (verified), [b] (bad dump), [h] (hack), [T+Eng], etc.
    d. Generate fuzzy_key (Layer 1 normalization — see ROM-DEDUP-METHODOLOGY.md §3)
-   e. If system has header_rule, extract internal title (Layer 2)
-   f. Insert/update rom record in SQLite
-   g. Group into logical games by fuzzy_key + system_id
-4. Emit progress signals: files_scanned, files_total, current_file
-5. Write scan_history record
+   e. Populate identity fields directly on the rom row: title, region,
+      revision, is_hack, is_homebrew (from filename parse)
+   f. If system has header_rule, extract internal title (Layer 2)
+   g. Insert/update rom record in SQLite via upsert_rom (path-keyed UPSERT)
+      — no separate grouping phase; identity lives on the rom row
+4. Missing sweep: mark all roms not visited this scan as missing=1
+5. Emit progress signals: files_scanned, files_total, current_file
+6. Write scan_history record
 ```
+
+Note: The `_group_unlinked_roms_into_games` post-walk grouping phase
+that existed in v0.3.0 is gone. There is no `games` table to link to.
 
 ### Heavy Scan Flow
 
@@ -445,9 +481,11 @@ The full extension table and folder alias table are in `docs/ROM-FORMATS-REFEREN
    f. Store in hashes table with timestamp
 3. After hashing, run DAT matching:
    a. For each hash, look up in dat_entries by SHA-1 (primary) then CRC32+size (fallback)
-   b. If match: update rom.dat_match, rom.match_confidence = "dat_verified"
-   c. If match: create/link game record with canonical name
-   d. If no match: rom stays at previous confidence level
+   b. If match: call _update_identity_from_dat (dat_parser.py) which:
+      - Writes rom.dat_match, rom.match_confidence = "dat_verified"
+      - Writes rom.canonical_name, rom.region, rom.revision in place
+      (v0.4.0: no "create/link game record" step — identity is on roms directly)
+   c. If no match: rom stays at previous confidence level
 4. Emit progress signals per file
 5. Update scan_history record
 ```
@@ -750,9 +788,10 @@ For every dest file, `_match_dest_entry` tries (in order):
 - **`sync_destinations`** — user's saved destination targets (target_path,
   profile_id, last_synced_at, last_inventory_signature).
 - **`dest_inventory`** — cached filesystem state per destination
-  (`dest_id, rel_path, size_bytes, mtime, sha1, rom_id, game_id,
-  last_seen_at`). Primary key `(dest_id, rel_path)`. Signature-drift
-  detection invalidates the cache when the user has manually moved files.
+  (`dest_id, rel_path, size_bytes, mtime, sha1, rom_id, last_seen_at`).
+  Primary key `(dest_id, rel_path)`. Signature-drift detection invalidates
+  the cache when the user has manually moved files. The `game_id` column
+  is removed in v0.4.0; `rom_id` is the sole identity anchor.
 - **`sync_plans`** — persisted JSON payload of every preview + apply
   (`dest_id, mode, status, summary, plan_json, created_at`). Foundation
   for a history dialog (deferred).
@@ -789,8 +828,9 @@ def load_plan(conn, plan_id) -> SyncPlan | None
 `SyncPlan` carries `dest_id`, `mode`, list of `SyncAction`, and a
 `conflict_policy`. Each `SyncAction` has a kind (`copy_to_dest`,
 `delete_dest`, `copy_to_local`, `conflict`, `identical`), rel_path,
-local_path, dest_path, size_bytes, rom_id, game_id, system_id, and
-an `executed` flag set by `apply_plan` for partial-failure replay.
+local_path, dest_path, size_bytes, rom_id, system_id, and an
+`executed` flag set by `apply_plan` for partial-failure replay.
+In v0.4.0, `game_id` is removed from `SyncAction`.
 
 ### Tests
 
@@ -810,7 +850,14 @@ Added in v0.3.0. Lives in `src/romulus/core/scanner.py` (sweep step) and
 `src/romulus/db/queries.py` (`mark_missing_under_root`,
 `count_missing_roms`, `delete_missing_roms`, `_delete_rom_dependents`,
 `count_roms_with_other_library_root`,
-`delete_roms_with_other_library_root`, `prune_orphan_games`).
+`delete_roms_with_other_library_root`).
+
+In v0.4.0, `prune_orphan_games` is deleted. All tables that referenced
+`games` or carried dependent data (`metadata`, `covers`,
+`collection_roms`) now declare `ON DELETE CASCADE` on their `rom_id`
+FK. Deleting a rom row via `delete_missing_roms` or
+`delete_roms_with_other_library_root` automatically cleans all
+dependents without any explicit caller action.
 
 ### Schema additions
 
@@ -863,7 +910,8 @@ stale_count = q.count_roms_with_other_library_root(conn, chosen_canonical)
 if stale_count > 0:
     if user confirms "Switch library?":
         q.delete_roms_with_other_library_root(conn, chosen_canonical)
-        q.prune_orphan_games(conn)
+        # v0.4.0: ON DELETE CASCADE on metadata/covers/collection_roms handles cleanup;
+        # prune_orphan_games is removed.
         conn.commit()
 set_config(conn, "library_path", chosen)
 ```
@@ -875,17 +923,21 @@ set_config(conn, "library_path", chosen)
 count = q.count_missing_roms(conn)
 if count == 0: show "No missing entries"
 elif user confirms:
-    q.delete_missing_roms(conn)   # cascades hashes + dest_inventory
-    q.prune_orphan_games(conn)    # drops games whose roms are now all gone
+    q.delete_missing_roms(conn)
+    # v0.4.0: ON DELETE CASCADE on metadata/covers/collection_roms/hashes
+    # cleans all dependents; prune_orphan_games is removed.
     conn.commit()
 ```
 
 ### FK cascade
 
-`hashes.rom_id` and `dest_inventory.rom_id` both reference `roms(id)` and
-neither declares `ON DELETE CASCADE` (would require table-recreate on
-SQLite). `_delete_rom_dependents` deletes those rows in chunks of 500
-ids before the rom delete, so the FK constraint never triggers.
+In v0.4.0, `metadata`, `covers`, and `collection_roms` all declare
+`ON DELETE CASCADE` on their `rom_id` FK — deleting a roms row
+atomically removes all three. `hashes` and `dest_inventory` do not
+declare CASCADE (SQLite requires a table-recreate to add it to an
+existing table with data). `_delete_rom_dependents` still handles
+`hashes` and `dest_inventory` explicitly in chunks of 500 ids before
+the rom delete, so the FK constraint on those tables never triggers.
 
 ### Status bar surfacing
 
@@ -1054,6 +1106,14 @@ the Settings → Diagnostics tab surfacing of install + data dirs.
 
 ## Session Definitions
 
+> **Note:** Sessions 0–11 below are historical bootstrap definitions that built
+> v0.1.0–v0.3.0. They reference the old `games` table, `upsert_game`,
+> `link_rom_to_game`, `collection_games`, and `find_cross_extension_dupes` —
+> all of which were removed in the v0.4.0 strict 1:1 refactor (sessions 13–19
+> in `docs/sessions/`). These session files are preserved as an audit trail.
+> Do not implement them verbatim — consult the v0.4.0 schema sections above
+> and `docs/strict-1to1-design.md` for the current data model.
+
 ### Session Types
 
 **Build sessions:** Code → write new tests → run tests → completion summary → STOP.
@@ -1137,7 +1197,7 @@ pytest && ruff check src/ tests/
 
 You are building the foundation layer: Pydantic data models, SQLite schema, and the system registry that seeds the database with all supported platforms.
 
-SQLite schema — use the full schema from `docs/TECHNICAL_PLAN.md` §3 (SQLite Schema section). All tables: `config`, `systems`, `roms`, `hashes`, `dat_entries`, `games`, `metadata`, `covers`, `collections`, `collection_games`, `scan_history`, `organize_plans`.
+SQLite schema — use the full schema from `docs/TECHNICAL_PLAN.md` §4 (SQLite Schema section). **v0.4.0 schema note:** `games` table is removed; `collection_games` → `collection_roms`; all tables FK to `roms.id` with `ON DELETE CASCADE`. See the schema section above for the current DDL.
 
 System registry — define all supported systems as Python data. Each system needs: `id`, `display_name`, `short_name`, `manufacturer`, `extensions` (JSON array), `header_rule`, `libretro_name`, `folder_aliases` (JSON array), `dat_name`. Reference `docs/ROM-FORMATS-REFERENCE.md` §1 for extensions and §4 for folder aliases. Start with the ~30 most common systems (NES, SNES, N64, GB, GBC, GBA, DS, Genesis/MD, Master System, Game Gear, Saturn, Dreamcast, PSX, PSP, Atari 2600/7800/Lynx, PCE/TG16, Neo Geo, Arcade/MAME/FBNeo, MSX, Amiga, C64, Atari ST, ZX Spectrum, CPC).
 
@@ -1474,9 +1534,11 @@ Enrichment runs as a background QThread worker. User clicks "Enrich" button. Pro
   - For each DAT-matched game: try libretro-thumbnails for covers, Hasheous for metadata, LaunchBox as fallback
   - Skip games that already have metadata (don't re-fetch)
 - [ ] Add metadata/cover queries to `db/queries.py`:
-  - `upsert_metadata(conn, game_id, metadata_dict)`, `get_metadata(conn, game_id)`
-  - `insert_cover(conn, game_id, cover_type, source_url, local_path)`, `get_covers(conn, game_id)`
-  - `get_games_needing_enrichment(conn)` — games with match_confidence="dat_verified" but no metadata
+  - `upsert_metadata(conn, rom_id, metadata_dict)`, `get_metadata(conn, rom_id)`
+  - `insert_cover(conn, rom_id, cover_type, source_url, local_path)`, `get_covers(conn, rom_id)`
+  - `get_roms_needing_enrichment(conn)` — ROMs with match_confidence="dat_verified" but no metadata
+  - **v0.4.0 addition:** `find_sibling_metadata`, `copy_metadata`, `find_sibling_covers`, `copy_covers`
+    (sibling-copy gate — see architecture.md rule 29 and docs/strict-1to1-design.md §3)
 - [ ] Add EnrichWorker to `src/romulus/ui/workers.py`:
   - QThread worker that runs enrich_library, emits progress signals
 - [ ] Write tests:
@@ -1527,18 +1589,22 @@ Collections:
 
 - [ ] Create `src/romulus/ui/detail_panel.py`:
   - DetailPanel(QWidget) showing cover art, metadata, action buttons
-  - `update_game(game_id)` — fetch game, metadata, cover from SQLite, update display
+  - `update_rom(rom_id)` — fetch rom, metadata, cover from SQLite, update display
+    (v0.4.0: renamed from update_game; reads SHA-1 / DAT name / region directly from the selected rom)
   - Cover art: load from cache path, scale to fit panel width, show placeholder if missing
   - Match status: colored badge (green/yellow/gray)
 - [ ] Wire detail panel to game table selection:
-  - When user clicks a row in GameTable, emit game_selected(game_id) signal
-  - MainWindow connects signal to DetailPanel.update_game
+  - When user clicks a row in GameTable, emit rom_selected(rom_id) signal
+    (v0.4.0: renamed from game_selected(game_id))
+  - MainWindow connects signal to DetailPanel.update_rom
 - [ ] Add filter controls to game table:
   - Region filter dropdown (QComboBox) — filters GameTableModel
   - Match status filter (QComboBox) — filters by match_confidence
   - Wire search bar to filter by title (already exists, may need re-wiring)
 - [ ] Implement collections system:
-  - Add collection queries to `db/queries.py`: create_collection, delete_collection, add_game_to_collection, remove_game_from_collection, get_collection_games, get_collections
+  - Add collection queries to `db/queries.py`: create_collection, delete_collection,
+    add_rom_to_collection, remove_rom_from_collection, get_collection_roms, get_collections
+    (v0.4.0: renamed from add_game_to_collection, remove_game_from_collection, get_collection_games)
   - Create "Favorites" as a system collection on first run (is_system=1)
   - Add ★ Favorite toggle button in DetailPanel — adds/removes from Favorites collection
   - Add "Add to Collection..." button — shows dropdown of user collections
@@ -1635,7 +1701,11 @@ Action types:
   - `find_alias_merges(conn)` — identify folders that are aliases of the same system and have overlapping content
   - `find_renameable_roms(conn)` — ROMs with dat_match that differ from current filename
   - `find_duplicates(conn)` — ROMs with same SHA-1 in same or alias folders
-  - `find_cross_extension_dupes(conn)` — same game, same folder, different extensions (.smc + .sfc)
+  - `find_cross_extension_dupes(conn)` — **deleted in v0.4.0.** Was: same
+    game_id, same folder, different extensions (.smc + .sfc). Relied on a
+    shared game_id that no longer exists. SHA-1-based `find_duplicates`
+    covers the same ground post-Bug 2 fix (TOCTOU guard now uses
+    normalized hash via hash_rom). Do not re-add this function.
   - `detect_collisions(merge_pairs)` — files that would collide during a folder merge
   - `execute_plan(conn, approved_actions, progress_callback)` — execute filesystem changes and update DB
   - Rollback per-action on failure: if rename/move fails, skip it, log error, continue

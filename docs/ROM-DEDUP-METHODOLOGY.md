@@ -264,6 +264,18 @@ The project this document originated from contains four scripts implementing the
 
 Output schemas and CSV columns are documented in each script's docstring.
 
+### Integration into ROMulus (v0.4.0+)
+
+The three-layer pipeline is embedded in the ROMulus scanner and Heavy Scan pipeline. Some implementation notes specific to the ROMulus integration:
+
+- **Identity fields live on `roms` directly.** In earlier versions (v0.1.0–v0.3.0), the pipeline's output fed a separate `games` table that grouped N roms per logical game. In v0.4.0 the `games` table was removed. Every ROM file owns its own `title`, `canonical_name`, `region`, `revision`, `is_hack`, `is_homebrew`, and `is_bios` directly on the `roms` row. Two byte-identical files at different paths are two rows; hacks are never silently collapsed into their originals.
+
+- **Post-identification grouping phase is deleted.** The v0.3.0 scanner ran `_group_unlinked_roms_into_games` after the filesystem walk to link newly scanned rom rows to `games` rows by `(system_id, fuzzy_key)`. That phase is gone in v0.4.0. Identity writes happen at `upsert_rom` time; Heavy Scan then updates identity fields in-place via `_update_identity_from_dat` when a DAT match is found.
+
+- **Hacks are first-class.** This is unchanged. `is_hack = 1` is set by the filename parser when `[h]` or similar markers appear. The Organizer's `find_duplicates` excludes hacks from its SHA-1 dedup proposals — they are never treated as duplicates of their base titles.
+
+- **Cross-extension dedup.** The old `find_cross_extension_dupes` detector (which relied on shared `game_id` to link `.sfc` and `.smc` rows for the same logical game) was deleted in v0.4.0. Its role is fully covered by `find_duplicates`, which groups by SHA-1 — a byte-identical `.sfc` and `.zip` of the same ROM share a normalized SHA-1 after header stripping, so `find_duplicates` catches them. The TOCTOU re-hash guard in `_execute_delete_duplicate` was fixed simultaneously to call `hash_rom(path, header_rule)` (normalized) rather than `_digest_stream(path)` (raw bytes), so legitimate same-content pairs now apply cleanly.
+
 ---
 
 ## 9. Recommended order of operations

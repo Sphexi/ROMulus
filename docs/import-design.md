@@ -1,6 +1,6 @@
 # Import ROMs — Feature Reference
 
-**Status:** shipped in v0.3.0 (commit `d4d79e8`, later refined).
+**Status:** shipped in v0.3.0 (commit `d4d79e8`), updated for strict 1:1 model (v0.4.0).
 **Code:** [`src/romulus/core/importer.py`](../src/romulus/core/importer.py),
 [`src/romulus/ui/import_dialog.py`](../src/romulus/ui/import_dialog.py),
 [`src/romulus/ui/workers.py`](../src/romulus/ui/workers.py)
@@ -72,8 +72,17 @@ Triggered via **Tools → Import ROMs…** or the toolbar button.
    - On `move`: unlink source only after copy succeeds (NOT before —
      partial transfers must leave the source intact).
    - New ROM rows enrolled via the same path-keyed `upsert_rom` the
-     scanner uses, so importing a file whose target path matches a
-     `missing=1` row un-tombstones the row rather than duplicating it.
+     scanner uses. Identity fields (`title`, `region`, `revision`, etc.)
+     are written onto the `roms` row at upsert time from filename
+     parsing (and upgraded later by Heavy Scan from the DAT match).
+     No separate grouping phase runs post-import. Importing a file
+     whose target path matches a `missing=1` row un-tombstones the row
+     rather than duplicating it.
+   - **Sibling-copy gate applies post-import.** When the newly enrolled
+     rom's identity matches another rom that already has metadata or
+     covers (by SHA-1, then `(system_id, canonical_name)`), the next
+     Enrich Metadata / Find Covers run will copy that data for free
+     rather than re-fetching from remote sources.
 
 ---
 
