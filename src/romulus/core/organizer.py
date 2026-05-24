@@ -267,11 +267,27 @@ def find_alias_merges(conn: sqlite3.Connection) -> list[OrganizeAction]:
     return actions
 
 
-def find_renameable_roms(conn: sqlite3.Connection) -> list[OrganizeAction]:
-    """ROMs whose DAT-verified canonical name differs from their current name."""
+def find_renameable_roms(
+    conn: sqlite3.Connection,
+    exclude_rom_ids: set[int] | None = None,
+) -> list[OrganizeAction]:
+    """ROMs whose DAT-verified canonical name differs from their current name.
+
+    Args:
+        conn: Database connection.
+        exclude_rom_ids: Optional set of rom IDs to skip — used by
+            :func:`analyze_library` to suppress rename proposals for roms
+            already scheduled for deletion by :func:`find_duplicates`.
+            Without this, a rom that's about to be deleted as a hash dupe
+            would also get a redundant rename action and could end up as a
+            false collision.
+    """
+    skip = exclude_rom_ids or set()
     actions: list[OrganizeAction] = []
     for row in q.get_dat_matched_roms(conn):
         rom_id = int(row["id"])
+        if rom_id in skip:
+            continue
         path = str(row["path"]).replace("\\", "/")
         current_name = str(row["filename"])
         extension = str(row["extension"]) or ""
@@ -393,23 +409,36 @@ def detect_collisions(
     conn: sqlite3.Connection,
     actions: Iterable[OrganizeAction],
 ) -> list[OrganizeAction]:
-    """Augment a plan with ``collision`` actions for unsafe destinations.
+    """Augment a plan with collision or upgraded-dedup actions.
 
-    Three collision cases are detected:
+    Four cases are detected. The first three end up as ``ACTION_COLLISION``
+    rows (manual review). The fourth promotes a would-be collision into an
+    ``ACTION_DELETE_DUPLICATE`` when content equality is provable.
 
     1. Two distinct ``rename`` actions would land on the same target path.
     2. A ``rename`` target path is already the *source* of another rename in
        this plan (i.e. would overwrite a ROM that is itself being renamed).
     3. A ``rename`` target path matches an existing ``roms`` row that is NOT
-       itself being renamed in this plan (i.e. an un-renamed file already
-       occupies the destination).
+       itself being renamed in this plan. SHA-1 comparison decides:
+       3a. Both sides have a stored SHA-1 AND they match AND neither side is
+           a hack → upgrade to ``ACTION_DELETE_DUPLICATE``. The canonical-
+           named existing file is the keeper; the rename source becomes the
+           file to delete. Catches the case where ``find_duplicates`` would
+           normally pair them but didn't (typically because one side wasn't
+           Heavy-Scanned when ``find_duplicates`` ran, or an ``is_hack``
+           difference excluded the pair).
+       3b. Both sides have a stored SHA-1 AND they differ → real collision.
+           Two different ROMs want the same canonical name (e.g., a bad dump
+           sitting at the canonical filename + a DAT-verified source).
+       3c. One or both sides lack a stored SHA-1 → real collision. We can't
+           prove content equality without Heavy-Scanning the missing side.
 
-    The original conflicting rename actions are filtered out of the result and
-    replaced with ``ACTION_COLLISION`` entries — the user must resolve them
-    manually before re-running the organizer.
+    The conflicting rename actions are filtered out of the result; their
+    replacements (collision or upgraded delete_duplicate) take their place.
 
     Args:
-        conn: Database connection used for case-3 existence checks.
+        conn: Database connection used for case-3 lookups (path-keyed roms
+            + per-rom SHA-1 via :func:`romulus.db.queries.get_sha1_for_rom`).
         actions: Iterable of proposed :class:`OrganizeAction` objects.
     """
     actions_list = list(actions)
@@ -427,50 +456,121 @@ def detect_collisions(
     # Set of rom_ids that ARE being renamed — used to exclude them from case 3.
     renamed_rom_ids: set[int] = {a.rom_id for a in rename_actions if a.rom_id is not None}
 
-    colliding_targets: set[str] = set()
+    # Renames whose target is being replaced — either by a collision row OR
+    # by an upgraded delete_duplicate. Both classes filter the original
+    # rename out of the result, but they accumulate into different lists so
+    # the final action list keeps each kind's semantics distinct.
+    replaced_targets: set[str] = set()
     collisions: list[OrganizeAction] = []
+    upgraded_dupes: list[OrganizeAction] = []
 
     for target, group in target_to_sources.items():
-        reason: str | None = None
+        collision_reason: str | None = None
+        upgrade_to_delete: OrganizeAction | None = None
 
         # Case 1 — multiple renames competing for the same target.
         if len(group) > 1:
-            reason = f"{len(group)} rename(s) target this path"
+            collision_reason = f"{len(group)} rename(s) target this path"
 
         # Case 2 — rename target equals the source of a different rename.
         elif target in rename_sources and target != group[0].source_path:
-            reason = "target path already exists in library"
+            collision_reason = "target path already exists in library"
 
         # Case 3 — an un-renamed DB row already occupies the target path.
         else:
             existing = q.find_rom_by_path(conn, target)
             if existing is not None and int(existing["id"]) not in renamed_rom_ids:
-                reason = "target path already occupied by a different file in the library"
+                source_action = group[0]
+                source_rom_id = source_action.rom_id
+                target_rom_id = int(existing["id"])
+                source_is_hack = False  # source is dat_verified — query rom row for is_hack
+                target_is_hack = bool(existing["is_hack"] or 0)
 
-        if reason is not None:
-            colliding_targets.add(target)
+                source_sha1: str | None = None
+                target_sha1: str | None = None
+                if source_rom_id is not None:
+                    source_sha1 = q.get_sha1_for_rom(conn, source_rom_id)
+                    src_row = conn.execute(
+                        "SELECT is_hack FROM roms WHERE id = ?", (source_rom_id,)
+                    ).fetchone()
+                    if src_row is not None:
+                        source_is_hack = bool(src_row["is_hack"] or 0)
+                target_sha1 = q.get_sha1_for_rom(conn, target_rom_id)
+
+                if (
+                    source_sha1 is not None
+                    and target_sha1 is not None
+                    and source_sha1 == target_sha1
+                    and not source_is_hack
+                    and not target_is_hack
+                ):
+                    # 3a — content equality proven, neither is a hack.
+                    # Upgrade to delete_duplicate: keep the canonical-named
+                    # existing file (target), delete the rename source.
+                    upgrade_to_delete = OrganizeAction(
+                        kind=ACTION_DELETE_DUPLICATE,
+                        rom_id=source_rom_id,
+                        source_path=source_action.source_path,
+                        target_path=target,
+                        reason=(
+                            f"SHA-1 matches existing canonical-named file "
+                            f"{Path(target).name!r}"
+                        ),
+                    )
+                else:
+                    if source_sha1 is None or target_sha1 is None:
+                        # 3c — can't prove equality.
+                        collision_reason = (
+                            "target path already occupied; Heavy Scan both "
+                            "files to determine if duplicate"
+                        )
+                    elif source_is_hack or target_is_hack:
+                        # Hack on either side — never auto-merge.
+                        collision_reason = (
+                            "target path already occupied by a hack/non-hack "
+                            "pair; manual review required"
+                        )
+                    else:
+                        # 3b — different content.
+                        collision_reason = (
+                            "target path already occupied by a different "
+                            "file in the library"
+                        )
+
+        if collision_reason is not None:
+            replaced_targets.add(target)
             collisions.append(
                 OrganizeAction(
                     kind=ACTION_COLLISION,
                     source_path=group[0].source_path,
                     target_path=target,
-                    reason=reason,
+                    reason=collision_reason,
                 )
             )
             logger.debug(
                 "organize.collision: target=%s reason=%r",
                 target,
-                reason,
+                collision_reason,
+            )
+        elif upgrade_to_delete is not None:
+            replaced_targets.add(target)
+            upgraded_dupes.append(upgrade_to_delete)
+            logger.debug(
+                "organize.collision: upgraded to delete_duplicate target=%s "
+                "source=%s sha1_match=%s",
+                target,
+                upgrade_to_delete.source_path,
+                source_sha1,
             )
 
-    if not colliding_targets:
+    if not replaced_targets:
         return actions_list
     safe = [
         a
         for a in actions_list
-        if not (a.kind == ACTION_RENAME and a.target_path in colliding_targets)
+        if not (a.kind == ACTION_RENAME and a.target_path in replaced_targets)
     ]
-    return safe + collisions
+    return safe + upgraded_dupes + collisions
 
 
 # ---------------------------------------------------------------------------
@@ -481,32 +581,45 @@ def detect_collisions(
 def analyze_library(conn: sqlite3.Connection) -> OrganizePlan:
     """Run every detector against the current library state and assemble a plan.
 
-    Detectors run in this order:
+    Tiered ordering — each phase narrows the candidate set for the next:
 
     1. :func:`find_alias_merges` — non-canonical folder merges.
-    2. :func:`find_renameable_roms` — DAT-verified filename renames.
-    3. :func:`find_duplicates` — same-SHA-1 pairs; keeper by extension rank.
-    4. :func:`detect_collisions` — post-processing pass that replaces any
-       unsafe rename with an ``ACTION_COLLISION`` marker.
+    2. :func:`find_duplicates` — same-SHA-1 pairs. Wins first because content
+       equality is the strongest claim; the rom about to be deleted as a
+       hash duplicate should not also be considered for renaming.
+    3. :func:`find_renameable_roms` — DAT-verified filename renames, excluding
+       any rom_id already marked for deletion in step 2.
+    4. :func:`detect_collisions` — post-processing pass that either replaces
+       a rename with an ``ACTION_COLLISION`` (true conflict) or upgrades it
+       to ``ACTION_DELETE_DUPLICATE`` when content equality is provable
+       against the existing canonical-named file (catches pairs
+       :func:`find_duplicates` missed due to Heavy-Scan gaps).
 
     The returned plan is fully serializable (``to_json``). Callers typically
     pass the resulting list to ``OrganizePreviewDialog`` so the user can
     approve/reject individual actions before ``execute_plan`` is invoked.
     """
-    actions: list[OrganizeAction] = []
     merges = find_alias_merges(conn)
-    renames = find_renameable_roms(conn)
     dupes = find_duplicates(conn)
+    # Roms already scheduled for deletion (as hash dupes) should not get a
+    # competing rename action. Build the exclusion set before running the
+    # rename detector.
+    deleted_rom_ids: set[int] = {
+        a.rom_id for a in dupes if a.rom_id is not None
+    }
+    renames = find_renameable_roms(conn, exclude_rom_ids=deleted_rom_ids)
+    actions: list[OrganizeAction] = []
     actions.extend(merges)
-    actions.extend(renames)
     actions.extend(dupes)
+    actions.extend(renames)
     actions = detect_collisions(conn, actions)
     plan = OrganizePlan(actions=actions)
     logger.debug(
-        "analyze_library: merges=%d renames=%d dupes=%d final=%d",
+        "analyze_library: merges=%d dupes=%d renames=%d (skipped=%d) final=%d",
         len(merges),
-        len(renames),
         len(dupes),
+        len(renames),
+        len(deleted_rom_ids),
         len(plan.actions),
     )
     return plan

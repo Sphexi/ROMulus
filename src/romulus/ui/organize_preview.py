@@ -40,9 +40,9 @@ from romulus.core.organizer import (
 from romulus.ui._grouped_tree import GroupedCheckboxTreeMixin
 
 _ACTION_LABELS: dict[str, str] = {
-    ACTION_MERGE_FOLDER: "Merge folders",
-    ACTION_RENAME: "Renames",
-    ACTION_DELETE_DUPLICATE: "Duplicate removals",
+    ACTION_MERGE_FOLDER: "Folder merges",
+    ACTION_RENAME: "DAT-verified renames",
+    ACTION_DELETE_DUPLICATE: "Hash duplicate removals",
     ACTION_COLLISION: "Collisions (manual review)",
 }
 
@@ -140,9 +140,9 @@ class OrganizePreviewDialog(QDialog, GroupedCheckboxTreeMixin):
         if not self._plan.actions:
             return "Library is already organized — no changes needed."
         parts = [
-            f"{renames} file(s) to rename",
-            f"{merges} folder(s) to merge",
-            f"{dupes} duplicate(s) to remove",
+            f"{renames} DAT-verified rename(s)",
+            f"{merges} folder merge(s)",
+            f"{dupes} hash duplicate(s) to remove",
         ]
         text = ", ".join(parts) + "."
         if collisions:

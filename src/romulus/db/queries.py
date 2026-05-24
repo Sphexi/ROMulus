@@ -326,6 +326,22 @@ def find_rom_by_sha1(
     ).fetchone()
 
 
+def get_sha1_for_rom(conn: sqlite3.Connection, rom_id: int) -> str | None:
+    """Return the stored SHA-1 for ``rom_id`` or None if not yet Heavy-Scanned.
+
+    Used by the organizer's collision detector to decide whether a rename
+    that's being blocked by an existing file at the target path is actually
+    a hash-equal duplicate (auto-convertible to ``ACTION_DELETE_DUPLICATE``)
+    or a genuine different-content collision.
+    """
+    row = conn.execute(
+        "SELECT sha1 FROM hashes WHERE rom_id = ?", (rom_id,)
+    ).fetchone()
+    if row is None or row["sha1"] is None:
+        return None
+    return str(row["sha1"])
+
+
 # ---------------------------------------------------------------------------
 # Library cleanup — stale entries + library-root change handling
 # ---------------------------------------------------------------------------

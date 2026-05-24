@@ -322,6 +322,186 @@ class TestDetectCollisions:
         assert all(r.kind == ACTION_RENAME for r in result)
 
 
+class TestDetectCollisionsContentAware:
+    """Tier-3 logic: when a rename's target path is occupied by an existing
+    un-renamed rom, compare SHA-1s to decide collision vs upgraded dedup."""
+
+    def test_3a_matching_sha1_neither_hack_upgrades_to_delete_duplicate(
+        self, seeded_db
+    ) -> None:
+        """Both sides have the same SHA-1 and neither is a hack. The
+        canonical-named target is the keeper; the rename source becomes a
+        delete_duplicate. No collision surfaces."""
+        target_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/Wagyan Land 2 (Japan).nes",
+            system_id="nes",
+            match_confidence="fuzzy",
+        )
+        _insert_hash(seeded_db, target_id, sha1="a" * 40)
+
+        source_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/108 Wagan Land 2.nes",
+            system_id="nes",
+            match_confidence="dat_verified",
+            dat_match="Wagyan Land 2 (Japan)",
+        )
+        _insert_hash(seeded_db, source_id, sha1="a" * 40)
+
+        rename = OrganizeAction(
+            kind=ACTION_RENAME,
+            rom_id=source_id,
+            source_path="/lib/nes/108 Wagan Land 2.nes",
+            target_path="/lib/nes/Wagyan Land 2 (Japan).nes",
+        )
+        result = detect_collisions(seeded_db, [rename])
+        # Rename filtered, no collision row, one delete_duplicate added.
+        assert len(result) == 1
+        assert result[0].kind == ACTION_DELETE_DUPLICATE
+        assert result[0].rom_id == source_id
+        assert result[0].source_path == "/lib/nes/108 Wagan Land 2.nes"
+        assert result[0].target_path == "/lib/nes/Wagyan Land 2 (Japan).nes"
+        assert "SHA-1 matches" in result[0].reason
+
+    def test_3b_different_sha1_neither_hack_is_real_collision(
+        self, seeded_db
+    ) -> None:
+        """Both sides have SHA-1s but they differ. Two different ROMs want
+        the same canonical name. Real collision, no auto-upgrade."""
+        target_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/Mario.nes",
+            system_id="nes",
+            match_confidence="fuzzy",
+        )
+        _insert_hash(seeded_db, target_id, sha1="a" * 40)
+
+        source_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/123 Mario.nes",
+            system_id="nes",
+            match_confidence="dat_verified",
+            dat_match="Mario",
+        )
+        _insert_hash(seeded_db, source_id, sha1="b" * 40)
+
+        rename = OrganizeAction(
+            kind=ACTION_RENAME,
+            rom_id=source_id,
+            source_path="/lib/nes/123 Mario.nes",
+            target_path="/lib/nes/Mario.nes",
+        )
+        result = detect_collisions(seeded_db, [rename])
+        assert len(result) == 1
+        assert result[0].kind == ACTION_COLLISION
+        assert "different file" in result[0].reason
+
+    def test_3c_target_missing_sha1_is_real_collision(self, seeded_db) -> None:
+        """The existing target hasn't been Heavy-Scanned (no SHA-1). We can't
+        prove equality, so it's a real collision with a hint to Heavy Scan."""
+        _insert_rom(
+            seeded_db,
+            path="/lib/nes/Mario.nes",
+            system_id="nes",
+            match_confidence="fuzzy",
+        )  # no hash row
+        source_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/123 Mario.nes",
+            system_id="nes",
+            match_confidence="dat_verified",
+            dat_match="Mario",
+        )
+        _insert_hash(seeded_db, source_id, sha1="a" * 40)
+        rename = OrganizeAction(
+            kind=ACTION_RENAME,
+            rom_id=source_id,
+            source_path="/lib/nes/123 Mario.nes",
+            target_path="/lib/nes/Mario.nes",
+        )
+        result = detect_collisions(seeded_db, [rename])
+        assert len(result) == 1
+        assert result[0].kind == ACTION_COLLISION
+        assert "Heavy Scan" in result[0].reason
+
+    def test_3d_hack_on_target_does_not_auto_upgrade(self, seeded_db) -> None:
+        """Even with matching SHA-1, a hack on either side must never be
+        auto-converted to delete_duplicate (design rule #8: hacks are
+        first-class artifacts). Surface as a collision instead."""
+        target_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/Mario.nes",
+            system_id="nes",
+            match_confidence="fuzzy",
+            is_hack=True,
+        )
+        _insert_hash(seeded_db, target_id, sha1="a" * 40)
+        source_id = _insert_rom(
+            seeded_db,
+            path="/lib/nes/123 Mario.nes",
+            system_id="nes",
+            match_confidence="dat_verified",
+            dat_match="Mario",
+        )
+        _insert_hash(seeded_db, source_id, sha1="a" * 40)
+
+        rename = OrganizeAction(
+            kind=ACTION_RENAME,
+            rom_id=source_id,
+            source_path="/lib/nes/123 Mario.nes",
+            target_path="/lib/nes/Mario.nes",
+        )
+        result = detect_collisions(seeded_db, [rename])
+        assert len(result) == 1
+        assert result[0].kind == ACTION_COLLISION
+        assert "hack" in result[0].reason.lower()
+
+
+class TestAnalyzeLibraryTieredOrdering:
+    """Verify dupes run before renames and that roms scheduled for deletion
+    don't also get a competing rename action."""
+
+    def test_rom_scheduled_for_dedup_skips_rename(self, seeded_db, tmp_path) -> None:
+        """Two DAT-verified roms with identical SHA-1 in the same folder.
+        find_duplicates picks one as keeper, the other as dup-to-delete.
+        find_renameable_roms must NOT propose a rename for the dup. The
+        keeper may still get a rename if its filename differs from its
+        dat_match; that's correct."""
+        # Keeper: filename matches canonical, so no rename will be proposed.
+        keeper_id = _insert_rom(
+            seeded_db,
+            path=str(tmp_path / "snes" / "Super Mario World.sfc"),
+            system_id="snes",
+            match_confidence="dat_verified",
+            dat_match="Super Mario World",
+        )
+        _insert_hash(seeded_db, keeper_id, sha1="a" * 40)
+
+        # Dup: longer filename loses the keeper tiebreak; would normally
+        # also be a rename candidate (filename != dat_match) but should be
+        # suppressed because it's about to be deleted.
+        dup_id = _insert_rom(
+            seeded_db,
+            path=str(tmp_path / "snes" / "Super Mario World (USA) (Rev 1).sfc"),
+            system_id="snes",
+            match_confidence="dat_verified",
+            dat_match="Super Mario World",
+        )
+        _insert_hash(seeded_db, dup_id, sha1="a" * 40)
+
+        plan = analyze_library(seeded_db)
+        # Exactly one delete_duplicate for the dup_id.
+        dupe_actions = [a for a in plan.actions if a.kind == ACTION_DELETE_DUPLICATE]
+        assert len(dupe_actions) == 1
+        assert dupe_actions[0].rom_id == dup_id
+        # No rename action targets the dup_id.
+        rename_actions = [a for a in plan.actions if a.kind == ACTION_RENAME]
+        assert all(a.rom_id != dup_id for a in rename_actions), (
+            f"rom scheduled for deletion got a competing rename: {rename_actions}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Plan analysis (end-to-end)
 # ---------------------------------------------------------------------------
@@ -928,10 +1108,10 @@ class TestOrganizePreviewDialog:
                     continue
                 # Header label is "Renames (3)" or "Duplicate removals (3)" — index by row count.
                 if header.rowCount() == 3:
-                    label = header.text()
-                    if "Renames" in label:
+                    label = header.text().lower()
+                    if "rename" in label:
                         headers["renames"] = header
-                    elif "Duplicate" in label:
+                    elif "duplicate" in label:
                         headers["dupes"] = header
             assert "renames" in headers and "dupes" in headers, (
                 f"could not find both group headers: {list(headers)}"
@@ -1070,9 +1250,9 @@ class TestOrganizePreviewDialog:
             dupes_hdr = None
             for i in range(root.rowCount()):
                 header = root.child(i, 0)
-                if "Renames" in header.text():
+                if "rename" in header.text().lower():
                     renames_hdr = header
-                elif "Duplicate" in header.text():
+                elif "duplicate" in header.text().lower():
                     dupes_hdr = header
             assert renames_hdr is not None
             assert dupes_hdr is not None
