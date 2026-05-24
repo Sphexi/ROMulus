@@ -657,6 +657,56 @@ cover-UI skips + 1 POSIX chmod skip on Windows).
 
 ---
 
+## Path convention
+
+ROMulus stores filesystem paths in `roms.path` (and `dest_inventory.rel_path`,
+`covers.local_path`, etc.) in **whatever form the writer produced them** —
+not in a single canonical form. On Windows + UNC libraries that means
+backslash-form (`\\server\share\snes\Game.sfc`) because `os.walk` and
+`pathlib.Path.__str__` produce OS-native separators. On POSIX the same
+writers produce forward-slash. The DB is therefore not portable across
+OS families without a rescan, which is accepted (per design rule #14:
+pre-1.0, wipe-and-rescan instead of migrate).
+
+The convention has two consequences for code:
+
+1. **Filesystem operations don't care.** `Path(stored_path).exists()` /
+   `.open()` / `.stat()` work on Windows even when `stored_path` uses
+   forward-slashes, because `pathlib` normalises internally. So
+   `_execute_rename`, `_execute_delete_duplicate`, `atomic_copy`, the
+   exporter, and the sync apply step all just round-trip through
+   `Path()` and don't need to think about slashes.
+
+2. **DB lookups by `path` DO care.** SQLite's `WHERE path = ?` is exact
+   string match. Two callers in the codebase pre-normalise paths to
+   forward-slash before querying (`organizer.find_renameable_roms` and
+   `_execute_delete_duplicate._header_rule_for`), so a backslash-form
+   stored path silently MISSES.
+
+The fix in v0.4.0 lives entirely in [`queries.find_rom_by_path`](
+../src/romulus/db/queries.py): if the exact-match lookup misses, the
+function flips slash directions and retries once. Cheap (one indexed
+lookup, only fires on miss) and centralised, so every existing and
+future caller benefits without needing per-site changes. The mirror
+function `find_rom_by_sha1` doesn't need this treatment because SHA-1
+strings have no slashes.
+
+**Rule for new code:** any new query that does `WHERE path = ?` either
+goes through `find_rom_by_path` (preferred) OR normalises the input
+to match how the scanner wrote it. A test in `tests/test_importer.py`
+(`test_find_rom_by_path_tolerates_slash_direction`,
+`test_find_rom_by_path_tolerates_reverse_direction`) pins the tolerant
+behaviour and serves as the regression gate.
+
+If a future contributor wants a properly canonical convention (Option 2
+in the v0.4.0 design discussion), the touch list is ~12-15 sites
+across `db/queries.py`, `core/scanner.py`, `core/organizer.py`,
+`core/importer.py`, `core/sync.py`, `core/local_cover_finder.py`.
+Until that work lands, the tolerant `find_rom_by_path` is the
+documented single source of truth.
+
+---
+
 ## Project structure
 
 ```

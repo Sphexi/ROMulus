@@ -786,6 +786,60 @@ class TestImportQueries:
         assert q.find_rom_by_path(seeded_db, path) is not None
         assert q.find_rom_by_path(seeded_db, path + ".missing") is None
 
+    def test_find_rom_by_path_tolerates_slash_direction(
+        self, seeded_db: sqlite3.Connection
+    ) -> None:
+        """Regression: organizer's rename detector + ``_header_rule_for``
+        normalize paths to forward-slash before calling ``find_rom_by_path``,
+        but the scanner writes backslash-form paths on Windows / UNC libraries.
+        The exact-match query missed silently, causing 594 organize failures
+        in v0.4.0 — collision case 3 never fired, and ``_header_rule_for``
+        couldn't resolve the system rule for ZIP/SMC normalisation.
+
+        Store a path with one slash convention; verify lookup succeeds with
+        either convention.
+        """
+        bs_path = r"\\server\share\snes\Game.sfc"
+        _enrol_existing_rom(
+            seeded_db,
+            path=bs_path,
+            system_id="snes",
+            filename="Game.sfc",
+            extension=".sfc",
+            size_bytes=9,
+        )
+
+        # Direct lookup hits.
+        assert q.find_rom_by_path(seeded_db, bs_path) is not None
+
+        # Flipped-slash form must also hit.
+        fwd_path = "//server/share/snes/Game.sfc"
+        row = q.find_rom_by_path(seeded_db, fwd_path)
+        assert row is not None
+        assert row["path"] == bs_path  # we found the stored row, slashes and all
+
+        # Sanity: a real miss still returns None.
+        assert q.find_rom_by_path(seeded_db, "//server/share/snes/Other.sfc") is None
+
+    def test_find_rom_by_path_tolerates_reverse_direction(
+        self, seeded_db: sqlite3.Connection
+    ) -> None:
+        """The mirror case: rom stored with forward-slash form (POSIX scanner
+        output), lookup arrives with backslash form. Same fallback path."""
+        fwd_path = "/srv/library/snes/Game.sfc"
+        _enrol_existing_rom(
+            seeded_db,
+            path=fwd_path,
+            system_id="snes",
+            filename="Game.sfc",
+            extension=".sfc",
+            size_bytes=9,
+        )
+        bs_path = r"\srv\library\snes\Game.sfc"
+        row = q.find_rom_by_path(seeded_db, bs_path)
+        assert row is not None
+        assert row["path"] == fwd_path
+
     def test_find_rom_by_sha1(
         self, seeded_db: sqlite3.Connection, tmp_path: Path
     ) -> None:

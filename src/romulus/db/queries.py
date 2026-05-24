@@ -265,12 +265,41 @@ def find_rom_by_path(
 ) -> sqlite3.Row | None:
     """Return the ``roms`` row for ``abs_path`` or None if not enrolled.
 
-    Used by :mod:`romulus.core.importer` for path-level dupe detection.
-    Path comparison is a direct ``=`` against the UNIQUE column — callers
-    that need cross-platform normalisation should resolve before calling.
+    Used by :mod:`romulus.core.importer` for path-level dupe detection and
+    by :mod:`romulus.core.organizer` for collision detection + header-rule
+    lookup at delete-duplicate execute time.
+
+    Tolerates either slash direction in ``abs_path``. The DB stores paths in
+    whatever form the scanner wrote them — on Windows that's backslash
+    (``\\\\server\\share\\file.ext``) because ``os.walk`` + ``Path`` produce
+    OS-native form. Various callers further downstream (the organizer's
+    rename detector, ``_header_rule_for``) normalize to forward-slash before
+    handing the path back to this function, which would otherwise produce a
+    silent MISS — the exact bug that caused 594 organize failures in v0.4.0
+    against UNC libraries. A direct ``=`` lookup is tried first (the common
+    case); on miss we flip slashes and try once more. The "single canonical
+    convention everywhere" rewrite is deferred (see Option 2 in
+    docs/architecture.md §"Path convention") — this function is the chokepoint
+    every path lookup goes through, so a tolerant lookup here covers every
+    caller without per-site changes.
     """
-    return conn.execute(
+    row = conn.execute(
         "SELECT * FROM roms WHERE path = ? LIMIT 1", (abs_path,)
+    ).fetchone()
+    if row is not None:
+        return row
+    # Try the opposite slash direction. Cheap (one indexed lookup) and only
+    # fires when the first lookup missed.
+    if "\\" in abs_path:
+        alt = abs_path.replace("\\", "/")
+    elif "/" in abs_path:
+        alt = abs_path.replace("/", "\\")
+    else:
+        return None
+    if alt == abs_path:
+        return None
+    return conn.execute(
+        "SELECT * FROM roms WHERE path = ? LIMIT 1", (alt,)
     ).fetchone()
 
 
