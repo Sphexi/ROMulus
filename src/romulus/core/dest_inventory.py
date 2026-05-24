@@ -67,6 +67,9 @@ class InventoryEntry:
     ``rel_path`` is forward-slash, relative to the destination root. ``sha1``
     is populated when the caller passed ``deep_verify=True`` OR a previous
     deep-verify cached the hash in ``dest_inventory.sha1``.
+
+    v0.4.0: ``game_id`` removed — the strict 1:1 model anchors everything
+    on ``rom_id``.
     """
 
     rel_path: str
@@ -74,7 +77,6 @@ class InventoryEntry:
     mtime: float
     sha1: str | None = None
     rom_id: int | None = None
-    game_id: int | None = None
 
 
 @dataclass(slots=True)
@@ -267,7 +269,6 @@ def scan_destination(
         mtime = stat_result.st_mtime
         sha1: str | None = None
         rom_id: int | None = None
-        game_id: int | None = None
         cached_is_fresh = (
             cached is not None
             and int(cached["size_bytes"]) == size
@@ -279,9 +280,6 @@ def scan_destination(
             )
             rom_id = (
                 int(cached["rom_id"]) if cached["rom_id"] is not None else None
-            )
-            game_id = (
-                int(cached["game_id"]) if cached["game_id"] is not None else None
             )
         elif cached is not None:
             # Drift detected — the cached identity columns can't be trusted
@@ -311,7 +309,6 @@ def scan_destination(
                 "mtime": mtime,
                 "sha1": sha1,
                 "rom_id": rom_id,
-                "game_id": game_id,
             },
         )
         entries.append(
@@ -321,7 +318,6 @@ def scan_destination(
                 mtime=mtime,
                 sha1=sha1,
                 rom_id=rom_id,
-                game_id=game_id,
             )
         )
         total_size += size

@@ -182,7 +182,24 @@ class PerSystemSummaryDialog(QDialog):
         table of empty rows. Even in normal full-export mode it
         surfaces the cover-copy work that used to be invisible in the
         aggregate ``artwork_copied`` total.
+
+        The "Skipped duplicates" column is added conditionally — only when
+        at least one system has a non-zero count — so the dialog stays tight
+        for the common case where ``distinct_content_only`` is off.
         """
+        rows_by_system: dict[str, object] = dict(summary.per_system.items())
+        # If a system somehow ended up with zero rows in per_system but is
+        # listed in ``systems`` (shouldn't happen, but defensive), add a
+        # blank bucket so it still shows up.
+        for system_id in summary.systems:
+            rows_by_system.setdefault(system_id, PerSystemExportCounts())
+
+        # Only render the skipped_duplicates column when the distinct-content
+        # filter actually ran and produced skips.
+        any_skipped_dupes = any(
+            int(getattr(bucket, "skipped_duplicates", 0) or 0) > 0
+            for bucket in rows_by_system.values()
+        )
         columns = [
             _Column("copied", "Copied"),
             _Column("bytes_copied", "Bytes", is_bytes=True),
@@ -192,12 +209,9 @@ class PerSystemSummaryDialog(QDialog):
             _Column("skipped_refused", "Refused", error_like=True),
             _Column("errors", "Errors", error_like=True),
         ]
-        rows_by_system: dict[str, object] = dict(summary.per_system.items())
-        # If a system somehow ended up with zero rows in per_system but is
-        # listed in ``systems`` (shouldn't happen, but defensive), add a
-        # blank bucket so it still shows up.
-        for system_id in summary.systems:
-            rows_by_system.setdefault(system_id, PerSystemExportCounts())
+        if any_skipped_dupes:
+            columns.append(_Column("skipped_duplicates", "Skipped (dup)"))
+
         intro = (
             f"Exported {summary.files_copied} file(s) "
             f"({_format_bytes(summary.bytes_copied)}) across "

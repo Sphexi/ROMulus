@@ -21,10 +21,14 @@ The flow:
    ``atomic_copy`` to publish the file. Optional steps generate gamelist.xml,
    .m3u playlists, and copy artwork into the profile's ``artwork_subdir``.
 
-Session 10 carry-forward:
+v0.4.0 strict 1:1 model:
 
-* ``games.canonical_name`` is NULL for nearly every game until real No-Intro
-  DATs are committed — gamelist.xml generation falls back to ``games.title``.
+* Every ROM becomes its own ``<game>`` element in gamelist.xml — no
+  game-level deduplication.
+* ``ExportOptions.distinct_content_only`` (default ``False``) lets users
+  who want a compact gamelist opt in to SHA-1-cluster filtering: only one
+  ROM per byte-identical set is exported.  ROMs with no SHA-1 always pass
+  through.
 * Cooperative cancel is handled by the caller's ``progress_callback``: if it
   raises, the exporter propagates the exception out so the wrapping worker
   can surface it as a normal cancel.
@@ -47,6 +51,7 @@ from typing import Any
 import yaml
 
 from romulus.core import atomic
+from romulus.core.organizer import _EXTENSION_PREFERENCE, _UNRANKED_SORT_KEY
 from romulus.models.profile import DestinationProfile, SystemMapping
 
 logger = logging.getLogger(__name__)
@@ -131,12 +136,21 @@ class ExportOptions:
     can target the right systems. Use case: after enrichment, push the
     fresh covers + rebuild gamelist.xml without re-copying gigabytes
     of already-synced ROMs.
+
+    ``distinct_content_only`` enables SHA-1-cluster filtering before the
+    gamelist write loop. When True, for each cluster of ROMs that share a
+    SHA-1 only the highest-ranked one (dat_verified > canonical extension >
+    shorter filename > lower rom_id) is exported; the rest are counted in
+    ``PerSystemExportCounts.skipped_duplicates``. ROMs with no SHA-1 always
+    pass through regardless.  Composes with ``include_roms=False``: the
+    artwork-only path still walks the (potentially filtered) keeper set.
     """
 
     include_roms: bool = True
     include_artwork: bool = True
     generate_gamelist: bool = True
     generate_m3u: bool = True
+    distinct_content_only: bool = False
 
 
 @dataclass(slots=True)
@@ -174,6 +188,9 @@ class PerSystemExportCounts:
     skipped_refused: int = 0
     errors: int = 0
     artwork_copied: int = 0
+    #: Number of ROMs excluded by the ``distinct_content_only`` filter.
+    #: Only non-zero when :attr:`ExportOptions.distinct_content_only` is True.
+    skipped_duplicates: int = 0
 
 
 @dataclass(slots=True)
@@ -286,6 +303,10 @@ def _build_rom_query(filters: ExportFilters) -> tuple[str, list[Any]]:
     Returns ``(sql, params)``. Filters are applied as ``AND`` clauses and use
     safe placeholders — never string-interpolation — so user-supplied region
     strings can't injection.
+
+    v0.4.0: games table removed.  All identity columns (title, canonical_name,
+    region) read directly from ``roms``.  Collection membership is via
+    ``collection_roms.rom_id``.
     """
     clauses: list[str] = ["r.system_id IS NOT NULL"]
     params: list[Any] = []
@@ -296,23 +317,23 @@ def _build_rom_query(filters: ExportFilters) -> tuple[str, list[Any]]:
     if filters.regions:
         placeholders = ",".join("?" for _ in filters.regions)
         clauses.append(
-            f"(g.region IS NULL OR g.region IN ({placeholders}))"
+            f"(r.region IS NULL OR r.region IN ({placeholders}))"
             if "Other" in filters.regions
-            else f"g.region IN ({placeholders})"
+            else f"r.region IN ({placeholders})"
         )
         params.extend(filters.regions)
     if filters.collection_id is not None:
         clauses.append(
-            "r.game_id IN (SELECT game_id FROM collection_games "
+            "r.id IN (SELECT rom_id FROM collection_roms "
             "WHERE collection_id = ?)"
         )
         params.append(filters.collection_id)
     sql = (
         "SELECT r.id, r.path, r.filename, r.extension, r.size_bytes, "
-        "       r.system_id, r.game_id, r.dat_match, "
-        "       g.title AS title, g.canonical_name AS canonical_name, "
-        "       g.region AS region "
-        "FROM roms r LEFT JOIN games g ON g.id = r.game_id "
+        "       r.system_id, r.dat_match, r.match_confidence, "
+        "       r.title AS title, r.canonical_name AS canonical_name, "
+        "       r.region AS region "
+        "FROM roms r "
         f"WHERE {' AND '.join(clauses)} "
         "ORDER BY r.system_id, r.filename"
     )
@@ -324,6 +345,24 @@ def _candidate_roms(
 ) -> list[sqlite3.Row]:
     """Run the candidate query and return the matching ROM rows."""
     sql, params = _build_rom_query(filters)
+    return list(conn.execute(sql, params).fetchall())
+
+
+def _candidate_roms_with_hashes(
+    conn: sqlite3.Connection, filters: ExportFilters
+) -> list[sqlite3.Row]:
+    """Candidate ROMs augmented with their SHA-1 from the hashes table.
+
+    Used by :func:`_select_distinct_keepers` so the distinct-content filter
+    can group by SHA-1 without a second round-trip per row.
+    """
+    base_sql, params = _build_rom_query(filters)
+    # Wrap the base query as a CTE and join hashes.
+    sql = (
+        f"WITH base AS ({base_sql}) "
+        "SELECT base.*, h.sha1 AS sha1 "
+        "FROM base LEFT JOIN hashes h ON h.rom_id = base.id"
+    )
     return list(conn.execute(sql, params).fetchall())
 
 
@@ -341,6 +380,57 @@ _MULTI_DISC_RE: re.Pattern[str] = re.compile(
 def _multi_disc_basename(filename: str) -> str:
     """Strip a ``(Disc N)`` segment from a filename for grouping into m3u."""
     return _MULTI_DISC_RE.sub("", filename)
+
+
+def _select_distinct_keepers(
+    rows: list[sqlite3.Row],
+) -> tuple[list[sqlite3.Row], int]:
+    """Filter a candidate row list to one keeper per SHA-1 cluster.
+
+    For rows that share a SHA-1 only the highest-ranked one is retained.
+    Ranking mirrors :func:`romulus.core.organizer._pick_duplicate_keeper`:
+
+    1. ``match_confidence == 'dat_verified'`` first (lower rank = better).
+    2. Extension preference from :data:`romulus.core.organizer._EXTENSION_PREFERENCE`.
+    3. Shorter filename.
+    4. Lower ``rom_id`` (deterministic tiebreak).
+
+    Rows with no SHA-1 (``None`` or empty string) are always kept — we
+    cannot prove byte-equality without a hash, so each is treated as unique
+    content.
+
+    Returns ``(kept_rows, skipped_count)``.
+    """
+    # Split: rows with sha1 vs rows without.
+    with_hash: defaultdict[str, list[sqlite3.Row]] = defaultdict(list)
+    without_hash: list[sqlite3.Row] = []
+    for row in rows:
+        sha1 = row["sha1"]
+        if sha1:
+            with_hash[str(sha1).lower()].append(row)
+        else:
+            without_hash.append(row)
+
+    def _sort_key(row: sqlite3.Row) -> tuple[int, int, int, int]:
+        # Prefer dat_verified (rank 0) over anything else (rank 1).
+        confidence = str(row["match_confidence"] or "").lower()
+        conf_rank = 0 if confidence == "dat_verified" else 1
+        ext = str(row["extension"] or "").lower()
+        ext_rank = _EXTENSION_PREFERENCE.get(ext, _UNRANKED_SORT_KEY)
+        filename_len = len(str(row["filename"]))
+        rom_id = int(row["id"])
+        return (conf_rank, ext_rank, filename_len, rom_id)
+
+    kept: list[sqlite3.Row] = list(without_hash)
+    skipped = 0
+    for cluster in with_hash.values():
+        if len(cluster) == 1:
+            kept.append(cluster[0])
+        else:
+            ordered = sorted(cluster, key=_sort_key)
+            kept.append(ordered[0])
+            skipped += len(ordered) - 1
+    return kept, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -462,7 +552,29 @@ def export_collection(
     target = Path(target_path)
     target.mkdir(parents=True, exist_ok=True)
 
-    candidates = _candidate_roms(conn, filters)
+    all_candidates = _candidate_roms(conn, filters)
+
+    # Distinct-content filtering: group by SHA-1 and keep one keeper per
+    # cluster. The filter runs before the copy loop so the gamelist + artwork
+    # paths only ever see the keeper set.  Skipped-duplicate counts are
+    # accumulated into per_system buckets as we process each ROM.
+    if options.distinct_content_only:
+        # We need hashes for this; join against the hashes table.
+        candidates = _candidate_roms_with_hashes(conn, filters)
+        candidates, total_skipped_dupes = _select_distinct_keepers(candidates)
+        # Build a set of kept rom ids for fast lookup in the skip loop below.
+        _keeper_ids: set[int] = {int(r["id"]) for r in candidates}
+        # Re-query original candidates to assign skipped_duplicates per system.
+        _all_for_skip = _candidate_roms_with_hashes(conn, filters)
+        _skipped_by_system: defaultdict[str, int] = defaultdict(int)
+        for _row in _all_for_skip:
+            if int(_row["id"]) not in _keeper_ids:
+                _skipped_by_system[str(_row["system_id"])] += 1
+        del _all_for_skip, _keeper_ids
+    else:
+        candidates = all_candidates
+        _skipped_by_system = defaultdict(int)
+
     logger.debug(
         "export_collection: start profile=%s target=%s candidates=%d",
         profile.id,
@@ -477,6 +589,10 @@ def export_collection(
 
     def _bucket(system_id: str) -> PerSystemExportCounts:
         return summary.per_system.setdefault(system_id, PerSystemExportCounts())
+
+    # Stamp per-system skipped_duplicates counts from the pre-computed map.
+    for _sys_id, _n_skipped in _skipped_by_system.items():
+        _bucket(_sys_id).skipped_duplicates += _n_skipped
 
     total = len(candidates)
     # Phase 1 label is verb-prefixed ("Copying foo.sfc") so the dialog
@@ -670,21 +786,20 @@ def generate_gamelist_xml(
 ) -> Path:
     """Write an EmulationStation gamelist.xml into ``system_dir``.
 
-    Per game we emit ``<path>``, ``<name>``, and any metadata available via
-    the ``metadata`` table. ``games.canonical_name`` is preferred for the
-    ``<name>`` element but we fall back to ``games.title`` whenever the
-    canonical name is NULL — true for nearly every game until real No-Intro
-    DATs are committed (session-10 carry-forward).
+    v0.4.0 strict 1:1 model: one ``<game>`` element per ROM row.  Cover
+    and metadata are keyed on ``rom_id`` (``roms.id``) rather than a
+    game-level aggregate.  ``roms.canonical_name`` is preferred for the
+    ``<name>`` element and falls back to ``roms.title``, then filename stem.
     """
     root = ET.Element("gameList")
-    seen_game_ids: set[int] = set()
+    games_written = 0
     for row in rows:
         filename = str(row["filename"])
         game_node = ET.SubElement(root, "game")
         ET.SubElement(game_node, "path").text = f"./{filename}"
         # Prefer canonical name; otherwise the parsed title; otherwise the
-        # filename without its extension as a last resort. ``sqlite3.Row``'s
-        # ``in`` operator iterates values rather than keys, so we materialize
+        # filename without its extension as a last resort.  ``sqlite3.Row``'s
+        # ``in`` operator iterates values rather than keys, so we materialise
         # the column list explicitly.
         row_columns = set(row.keys())
         canonical = row["canonical_name"] if "canonical_name" in row_columns else None
@@ -692,17 +807,16 @@ def generate_gamelist_xml(
         display = canonical or title or Path(filename).stem
         ET.SubElement(game_node, "name").text = str(display)
 
-        # Reference the artwork that ``copy_artwork`` will write. EmulationStation
-        # uses this relative path to find the image; without it the launcher
-        # shows no cover even when the file is on disk.
-        game_id = row["game_id"]
+        # Reference the artwork that ``copy_artwork`` will write.
+        # Cover lookup is now keyed on rom_id (roms.id column).
+        rom_id = row["id"] if "id" in row_columns else None
         image_ext: str | None = None
-        if profile is not None and profile.artwork_subdir and game_id is not None:
+        if profile is not None and profile.artwork_subdir and rom_id is not None:
             cover_row = conn.execute(
-                "SELECT local_path FROM covers WHERE game_id = ? "
+                "SELECT local_path FROM covers WHERE rom_id = ? "
                 "AND local_path IS NOT NULL "
                 "ORDER BY is_preferred DESC, id ASC LIMIT 1",
-                (int(game_id),),
+                (int(rom_id),),
             ).fetchone()
             if cover_row is not None:
                 local_path = Path(str(cover_row["local_path"]))
@@ -714,30 +828,31 @@ def generate_gamelist_xml(
             if image_ref:
                 ET.SubElement(game_node, "image").text = image_ref
 
-        if game_id is None or game_id in seen_game_ids:
+        # Metadata lookup is now keyed on rom_id.
+        if rom_id is None:
+            games_written += 1
             continue
-        seen_game_ids.add(int(game_id))
         meta = conn.execute(
             "SELECT description, genre, developer, publisher, release_date, "
-            "players, rating FROM metadata WHERE game_id = ?",
-            (int(game_id),),
+            "players, rating FROM metadata WHERE rom_id = ?",
+            (int(rom_id),),
         ).fetchone()
-        if meta is None:
-            continue
-        for tag, value in (
-            ("desc", meta["description"]),
-            ("releasedate", meta["release_date"]),
-            ("developer", meta["developer"]),
-            ("publisher", meta["publisher"]),
-            ("genre", meta["genre"]),
-            ("players", meta["players"]),
-            ("rating", meta["rating"]),
-        ):
-            if value:
-                ET.SubElement(game_node, tag).text = str(value)
+        if meta is not None:
+            for tag, value in (
+                ("desc", meta["description"]),
+                ("releasedate", meta["release_date"]),
+                ("developer", meta["developer"]),
+                ("publisher", meta["publisher"]),
+                ("genre", meta["genre"]),
+                ("players", meta["players"]),
+                ("rating", meta["rating"]),
+            ):
+                if value:
+                    ET.SubElement(game_node, tag).text = str(value)
+        games_written += 1
 
     # Pretty-print the XML so it's human-readable when the user opens it
-    # in a text editor. ``ET.indent`` rewrites the tree in place with 2-space
+    # in a text editor.  ``ET.indent`` rewrites the tree in place with 2-space
     # nesting; ``\n`` line endings are fine on Android/Linux (where gamelist
     # files actually live) and modern Windows editors handle them too.
     ET.indent(root, space="  ")
@@ -750,7 +865,7 @@ def generate_gamelist_xml(
         system_id,
         dest,
         len(payload),
-        len(seen_game_ids),
+        games_written,
     )
     atomic.atomic_write_bytes(payload, dest)
     return dest
@@ -832,34 +947,31 @@ def copy_artwork(
     )
 
     copied = 0
-    seen_game_ids: set[int] = set()
     for row in rows:
-        game_id = row["game_id"]
-        if game_id is None or int(game_id) in seen_game_ids:
+        # v0.4.0: cover lookup keyed on rom_id (roms.id).
+        rom_id = row["id"]
+        if rom_id is None:
             continue
-        seen_game_ids.add(int(game_id))
         # Honor the user's "Make preferred" choice from the detail panel:
-        # is_preferred=1 sorts first, then by id. Without this the exporter
-        # picked the lowest-id cover regardless of which one the user chose
-        # to display.
+        # is_preferred=1 sorts first, then by id.
         cover_row = conn.execute(
-            "SELECT local_path FROM covers WHERE game_id = ? "
+            "SELECT local_path FROM covers WHERE rom_id = ? "
             "AND local_path IS NOT NULL "
             "ORDER BY is_preferred DESC, id ASC LIMIT 1",
-            (int(game_id),),
+            (int(rom_id),),
         ).fetchone()
         if cover_row is None:
             logger.debug(
-                "artwork: no cover for game_id=%d filename=%s",
-                int(game_id),
+                "artwork: no cover for rom_id=%d filename=%s",
+                int(rom_id),
                 row["filename"],
             )
             continue
         local_path = Path(str(cover_row["local_path"]))
         if not local_path.exists():
             logger.debug(
-                "artwork: cover missing on disk game_id=%d local_path=%s",
-                int(game_id),
+                "artwork: cover missing on disk rom_id=%d local_path=%s",
+                int(rom_id),
                 local_path,
             )
             continue
@@ -873,14 +985,14 @@ def copy_artwork(
         dest = artwork_dir / filename
         if _artwork_already_current(local_path, dest):
             logger.debug(
-                "artwork: skip-current game_id=%d dest=%s",
-                int(game_id),
+                "artwork: skip-current rom_id=%d dest=%s",
+                int(rom_id),
                 dest,
             )
             continue
         logger.debug(
-            "artwork: copy game_id=%d src=%s dest=%s",
-            int(game_id),
+            "artwork: copy rom_id=%d src=%s dest=%s",
+            int(rom_id),
             local_path,
             dest,
         )

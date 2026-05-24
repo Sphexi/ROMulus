@@ -99,7 +99,11 @@ def _stage_local_rom(
     title: str | None = None,
     sha1: str | None = None,
 ) -> int:
-    """Write a ROM file under ``library/<system_id>/`` and enrol it."""
+    """Write a ROM file under ``library/<system_id>/`` and enrol it.
+
+    v0.4.0: identity columns (title, region) live directly on the roms row.
+    No game row or link is created.
+    """
     rom_path = library / system_id / filename
     rom_path.parent.mkdir(parents=True, exist_ok=True)
     rom_path.write_bytes(content)
@@ -108,14 +112,6 @@ def _stage_local_rom(
 
     parsed = parse_filename(filename)
     fuzzy = generate_fuzzy_key(parsed.clean_name, parsed.release_type)
-    game_id = q.upsert_game(
-        conn,
-        {
-            "title": title or parsed.display_title or filename,
-            "system_id": system_id,
-            "region": region or parsed.region,
-        },
-    )
     rom_id = q.upsert_rom(
         conn,
         {
@@ -127,9 +123,10 @@ def _stage_local_rom(
             "system_id": system_id,
             "fuzzy_key": fuzzy,
             "match_confidence": "fuzzy",
+            "title": title or parsed.display_title or filename,
+            "region": region or parsed.region,
         },
     )
-    q.link_rom_to_game(conn, rom_id, game_id)
     if sha1:
         q.upsert_hash(conn, rom_id, None, sha1, None)
     conn.commit()

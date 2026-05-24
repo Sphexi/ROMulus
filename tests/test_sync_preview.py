@@ -45,7 +45,6 @@ def _add_action(rel: str = "snes/A.sfc") -> SyncAction:
         dest_path=f"/dest/{rel}",
         size_bytes=1024,
         rom_id=1,
-        game_id=1,
         system_id="snes",
     )
 
@@ -58,7 +57,6 @@ def _delete_action(rel: str = "snes/Orphan.sfc") -> SyncAction:
         dest_path=f"/dest/{rel}",
         size_bytes=2048,
         rom_id=None,
-        game_id=None,
         system_id="snes",
     )
 
@@ -73,7 +71,6 @@ def _conflict_action(
         dest_path=f"/dest/{rel}",
         size_bytes=512,
         rom_id=2,
-        game_id=2,
         system_id="snes",
         conflict_resolution=resolution,
     )

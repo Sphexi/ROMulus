@@ -208,6 +208,22 @@ class ExportDialog(QDialog):
         )
         self._deep_verify_cb.setChecked(False)
         options_layout.addWidget(self._deep_verify_cb)
+        self._distinct_content_cb = QCheckBox(
+            "Export distinct content only (skip byte-identical duplicates)",
+            options_group,
+        )
+        self._distinct_content_cb.setChecked(False)
+        self._distinct_content_cb.setToolTip(
+            "When checked, for each cluster of ROMs that share the same SHA-1 "
+            "only the highest-ranked one is exported. Ranking: "
+            "dat_verified > canonical extension (.sfc over .smc, etc.) > "
+            "shorter filename > lower internal id.  "
+            "ROMs with no SHA-1 (Quick-Scan-only) always pass through.  "
+            "Useful if you copied your library twice and want a compact gamelist "
+            "on the device without duplicate entries."
+        )
+        self._distinct_content_cb.stateChanged.connect(self._on_options_changed)
+        options_layout.addWidget(self._distinct_content_cb)
         layout.addWidget(options_group)
 
         # ---- Preview output -------------------------------------------
@@ -305,6 +321,7 @@ class ExportDialog(QDialog):
             include_artwork=self._include_artwork_cb.isChecked(),
             generate_gamelist=self._generate_gamelist_cb.isChecked(),
             generate_m3u=self._generate_m3u_cb.isChecked(),
+            distinct_content_only=self._distinct_content_cb.isChecked(),
         )
 
     def selected_sync_mode(self) -> SyncMode:
@@ -445,6 +462,17 @@ class ExportDialog(QDialog):
             )
             return
         self._populate_destination_combo(select_dest_id=new_id)
+
+    def _on_options_changed(self, _state: int) -> None:
+        """Slot — refresh the preview whenever a non-structural option changes.
+
+        Called when the distinct-content toggle (and any future checkbox that
+        doesn't require a Scan destination first) flips. If the preview pane
+        already has content we re-run it so the user immediately sees the
+        projected skip count change.
+        """
+        if self._preview_text.toPlainText().strip():
+            self._on_preview()
 
     def _on_include_roms_changed(self, _state: int) -> None:
         """Disable Scan destination + adjust UX when the user opts out of ROMs.

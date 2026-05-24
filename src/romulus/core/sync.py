@@ -97,10 +97,12 @@ class SyncAction:
     """One proposed step in a sync plan.
 
     Every action carries the source/dest paths needed to apply it without
-    re-running the diff. ``rom_id`` and ``game_id`` are forwarded so the
-    apply step can keep ``dest_inventory`` rows in sync without a second
-    lookup. ``conflict_resolution`` is populated only for
-    ``ACTION_CONFLICT`` actions.
+    re-running the diff. ``rom_id`` is forwarded so the apply step can keep
+    ``dest_inventory`` rows in sync without a second lookup.
+    ``conflict_resolution`` is populated only for ``ACTION_CONFLICT`` actions.
+
+    v0.4.0: ``game_id`` has been removed — the strict 1:1 model anchors
+    everything on ``rom_id``.
     """
 
     kind: str
@@ -109,7 +111,6 @@ class SyncAction:
     dest_path: str = ""
     size_bytes: int = 0
     rom_id: int | None = None
-    game_id: int | None = None
     system_id: str | None = None
     conflict_resolution: str = ""
     reason: str = ""
@@ -216,7 +217,12 @@ class SyncSummary:
 
 @dataclass(frozen=True, slots=True)
 class LocalRom:
-    """Lightweight view of a local ``roms``+``games``+``hashes`` row."""
+    """Lightweight view of a local ``roms`` + ``hashes`` row.
+
+    v0.4.0: ``game_id`` has been removed — identity anchors on ``rom_id``.
+    Region reads directly from ``roms.region`` (populated by scanner +
+    Heavy Scan) rather than from the removed ``games`` table.
+    """
 
     rom_id: int
     path: str
@@ -225,7 +231,6 @@ class LocalRom:
     size_bytes: int
     fuzzy_key: str
     region: str
-    game_id: int | None
     sha1: str | None
 
 
@@ -238,7 +243,6 @@ def _row_to_local_rom(row: sqlite3.Row) -> LocalRom:
         size_bytes=int(row["size_bytes"] or 0),
         fuzzy_key=str(row["fuzzy_key"]) if row["fuzzy_key"] else "",
         region=str(row["region"]) if row["region"] else "",
-        game_id=int(row["game_id"]) if row["game_id"] is not None else None,
         sha1=str(row["sha1"]).lower() if row["sha1"] else None,
     )
 
@@ -425,15 +429,17 @@ def _copy_cover_for_game(
     target: Path,
     rom: LocalRom,
 ) -> None:
-    """Copy the game's preferred cover to the destination (best-effort).
+    """Copy the ROM's preferred cover to the destination (best-effort).
 
     Reuses :func:`romulus.core.exporter.copy_artwork` so the filename
     template, artwork_subdir, and atomic-write semantics stay identical
     between Export and Sync. Missing covers are silent — the metadata
-    pipeline is best-effort and a sync should never fail because a game has
+    pipeline is best-effort and a sync should never fail because a ROM has
     no cover.
+
+    v0.4.0: keyed on ``rom_id`` rather than a game-level id.
     """
-    if not profile.artwork_subdir or rom.game_id is None:
+    if not profile.artwork_subdir:
         return
     mapping = profile.systems.get(rom.system_id)
     if mapping is None or not mapping.is_supported:
@@ -444,8 +450,8 @@ def _copy_cover_for_game(
         copy_artwork(conn, rom.system_id, profile, target, [rom_row])
     except OSError as exc:
         logger.debug(
-            "sync: cover copy failed for game_id=%d: %s",
-            rom.game_id,
+            "sync: cover copy failed for rom_id=%d: %s",
+            rom.rom_id,
             exc,
         )
 
@@ -453,8 +459,11 @@ def _copy_cover_for_game(
 class _SyntheticRomRow:
     """Adapter that mimics :class:`sqlite3.Row` for ``copy_artwork``.
 
-    ``copy_artwork`` reads ``game_id`` and ``filename`` off the row. Building
-    a thin wrapper is cheaper than re-querying the DB inside the apply loop.
+    ``copy_artwork`` reads ``id`` (rom_id) and ``filename`` off the row.
+    Building a thin wrapper is cheaper than re-querying the DB inside the
+    apply loop.
+
+    v0.4.0: exposes ``id`` instead of ``game_id``.
     """
 
     __slots__ = ("_rom",)
@@ -463,11 +472,15 @@ class _SyntheticRomRow:
         self._rom = rom
 
     def __getitem__(self, key: str) -> object:
-        if key == "game_id":
-            return self._rom.game_id
+        if key == "id":
+            return self._rom.rom_id
         if key == "filename":
             return self._rom.filename
         raise KeyError(key)
+
+    def keys(self) -> list[str]:  # noqa: D401 - sqlite3.Row API mirror
+        """Return column names so ``copy_artwork`` can check for ``id``."""
+        return ["id", "filename"]
 
 
 def _delete_cover_for_filename(
@@ -606,7 +619,6 @@ def _build_push_actions(
                         dest_path=str(target / tier2_entry.rel_path),
                         size_bytes=tier2_entry.size_bytes,
                         rom_id=rom.rom_id,
-                        game_id=rom.game_id,
                         system_id=rom.system_id,
                         reason="already on dest (tier-2 match)",
                     )
@@ -620,7 +632,6 @@ def _build_push_actions(
                     dest_path=str(target / rel),
                     size_bytes=rom.size_bytes,
                     rom_id=rom.rom_id,
-                    game_id=rom.game_id,
                     system_id=rom.system_id,
                     reason="local-only — push to dest",
                 )
@@ -638,7 +649,6 @@ def _build_push_actions(
                 dest_path=str(target / rel),
                 size_bytes=entry.size_bytes,
                 rom_id=rom.rom_id,
-                game_id=rom.game_id,
                 system_id=rom.system_id,
                 reason="already on dest",
             )
@@ -674,7 +684,6 @@ def _build_push_actions(
                     dest_path=str(target / entry.rel_path),
                     size_bytes=entry.size_bytes,
                     rom_id=None,
-                    game_id=None,
                     system_id=_system_id_from_rel_path(entry.rel_path, profile),
                     reason="dest-only — remove",
                 )
@@ -773,7 +782,6 @@ def _build_pull_actions(
                     dest_path=str(target / entry.rel_path),
                     size_bytes=entry.size_bytes,
                     rom_id=matched.rom_id,
-                    game_id=matched.game_id,
                     system_id=matched.system_id,
                     reason="already in local library",
                 )
@@ -793,7 +801,6 @@ def _build_pull_actions(
                 dest_path=str(target / entry.rel_path),
                 size_bytes=entry.size_bytes,
                 rom_id=None,
-                game_id=None,
                 system_id=system_id,
                 reason="dest-only — pull to local",
             )
@@ -854,7 +861,6 @@ def _build_twoway_actions(
                     dest_path=str(target / rel),
                     size_bytes=rom.size_bytes,
                     rom_id=rom.rom_id,
-                    game_id=rom.game_id,
                     system_id=rom.system_id,
                     reason="local-only — push to dest",
                 )
@@ -872,7 +878,6 @@ def _build_twoway_actions(
                     dest_path=str(target / entry.rel_path),
                     size_bytes=max(rom.size_bytes, entry.size_bytes),
                     rom_id=rom.rom_id,
-                    game_id=rom.game_id,
                     system_id=rom.system_id,
                     conflict_resolution=resolution,
                     reason="same identity, different content",
@@ -887,7 +892,6 @@ def _build_twoway_actions(
                 dest_path=str(target / entry.rel_path),
                 size_bytes=entry.size_bytes,
                 rom_id=rom.rom_id,
-                game_id=rom.game_id,
                 system_id=rom.system_id,
                 reason="already synchronized",
             )
@@ -914,7 +918,6 @@ def _build_twoway_actions(
                 dest_path=str(target / entry.rel_path),
                 size_bytes=entry.size_bytes,
                 rom_id=None,
-                game_id=None,
                 system_id=system_id,
                 reason="dest-only — pull to local",
             )
@@ -1120,7 +1123,6 @@ def _execute_copy_to_dest(
             "mtime": stat_result.st_mtime,
             "sha1": None,
             "rom_id": action.rom_id,
-            "game_id": action.game_id,
         },
     )
     # Cover follows the ROM (§2.2).
@@ -1240,7 +1242,6 @@ def _execute_conflict(
             dest_path=action.dest_path,
             size_bytes=action.size_bytes,
             rom_id=action.rom_id,
-            game_id=action.game_id,
             system_id=action.system_id,
         )
         # Tombstone the existing dest file first so a crash mid-copy leaves
@@ -1259,7 +1260,6 @@ def _execute_conflict(
             dest_path=action.dest_path,
             size_bytes=action.size_bytes,
             rom_id=action.rom_id,
-            game_id=action.game_id,
             system_id=action.system_id,
         )
         _execute_copy_to_local(conn, pull_action, library_path, summary)
@@ -1420,27 +1420,20 @@ def _build_synthetic_gamelist_row(
 ) -> sqlite3.Row:
     """Manufacture an sqlite3.Row that ``generate_gamelist_xml`` accepts.
 
-    The exporter's gamelist generator reads ``filename``, ``game_id``,
-    ``canonical_name``, ``title``, and ``system_id`` off the row. We fetch
-    them with one extra SELECT per file when the inventory cache has a
-    ``rom_id``.
+    v0.4.0: the gamelist generator reads ``id`` (rom_id), ``canonical_name``,
+    ``title``, and ``system_id`` off the row.  We fetch them directly from the
+    ``roms`` table when the inventory cache has a ``rom_id``.
     """
-    game_id = None
+    rom_id: int | None = None
     canonical_name: str | None = None
     title: str | None = None
     if inv_row is not None and inv_row["rom_id"] is not None:
         rom_row = conn.execute(
-            """
-            SELECT g.id            AS game_id,
-                   g.canonical_name AS canonical_name,
-                   g.title          AS title
-            FROM roms r LEFT JOIN games g ON g.id = r.game_id
-            WHERE r.id = ?
-            """,
+            "SELECT id, canonical_name, title FROM roms WHERE id = ?",
             (int(inv_row["rom_id"]),),
         ).fetchone()
         if rom_row is not None:
-            game_id = rom_row["game_id"]
+            rom_id = int(rom_row["id"])
             canonical_name = rom_row["canonical_name"]
             title = rom_row["title"]
     # Wrap the dict in a tiny row-shaped adapter so ``generate_gamelist_xml``
@@ -1448,10 +1441,12 @@ def _build_synthetic_gamelist_row(
     return _DictRow(
         {
             "filename": filename,
-            "game_id": game_id,
+            "id": rom_id,
             "canonical_name": canonical_name,
             "title": title,
             "system_id": system_id,
+            "match_confidence": None,
+            "extension": None,
         }
     )  # type: ignore[return-value]
 
@@ -1632,12 +1627,26 @@ def persist_plan(
 
 
 def load_plan(conn: sqlite3.Connection, plan_id: int) -> SyncPlan | None:
-    """Re-hydrate a persisted plan into a :class:`SyncPlan` instance."""
+    """Re-hydrate a persisted plan into a :class:`SyncPlan` instance.
+
+    Raises :class:`ValueError` if the serialised JSON contains a ``game_id``
+    key — that signals the plan was created against the old schema (pre-v0.4.0)
+    and cannot be applied without a fresh preview run.
+    """
     row = q.get_sync_plan(conn, plan_id)
     if row is None:
         return None
     payload = json.loads(str(row["plan_json"]))
-    actions = [SyncAction(**a) for a in payload.get("actions", [])]
+    raw_actions = payload.get("actions", [])
+    # Old-schema guard: any action that carries a ``game_id`` key means the
+    # plan was serialised before the strict 1:1 migration.  Re-running preview
+    # regenerates the plan with the current schema.
+    if any("game_id" in a for a in raw_actions):
+        raise ValueError(
+            "plan was created against an old schema (pre-v0.4.0); "
+            "re-run preview to regenerate"
+        )
+    actions = [SyncAction(**a) for a in raw_actions]
     return SyncPlan(
         dest_id=int(payload.get("dest_id", row["dest_id"])),
         mode=str(payload.get("mode", row["mode"])),  # type: ignore[arg-type]

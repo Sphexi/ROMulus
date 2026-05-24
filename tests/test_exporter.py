@@ -42,6 +42,45 @@ def _make_rom_file(path: Path, content: bytes = b"rom-bytes") -> None:
     path.write_bytes(content)
 
 
+def _insert_rom(
+    conn: sqlite3.Connection,
+    *,
+    path: str,
+    system_id: str,
+    extension: str,
+    filename: str,
+    size_bytes: int,
+    title: str,
+    region: str | None = None,
+    canonical_name: str | None = None,
+    match_confidence: str = "fuzzy",
+) -> int:
+    """Insert a roms row directly (v0.4.0 1:1 model) and return its id.
+
+    All identity columns live on the roms row itself.
+    """
+    rom_id = q.upsert_rom(
+        conn,
+        {
+            "path": path,
+            "filename": filename,
+            "extension": extension,
+            "size_bytes": size_bytes,
+            "mtime": time.time(),
+            "system_id": system_id,
+            "fuzzy_key": filename.lower(),
+            "match_confidence": match_confidence,
+            "title": title,
+            "canonical_name": canonical_name,
+            "region": region,
+        },
+    )
+    conn.commit()
+    return rom_id
+
+
+# Back-compat alias used in tests that still unpack two values — the second
+# element is now always ``None`` (no game_id in the 1:1 model).
 def _insert_rom_with_game(
     conn: sqlite3.Connection,
     *,
@@ -53,33 +92,24 @@ def _insert_rom_with_game(
     title: str,
     region: str | None = None,
     canonical_name: str | None = None,
-) -> tuple[int, int]:
-    """Insert a games row and the matching roms row; return both ids."""
-    game_id = q.upsert_game(
+) -> tuple[int, None]:
+    """Compatibility shim — returns (rom_id, None).
+
+    The second element was ``game_id`` before the strict 1:1 migration.
+    Tests that only need the rom_id should migrate to :func:`_insert_rom`.
+    """
+    rom_id = _insert_rom(
         conn,
-        {
-            "title": title,
-            "system_id": system_id,
-            "canonical_name": canonical_name,
-            "region": region,
-        },
+        path=path,
+        system_id=system_id,
+        extension=extension,
+        filename=filename,
+        size_bytes=size_bytes,
+        title=title,
+        region=region,
+        canonical_name=canonical_name,
     )
-    rom_id = q.upsert_rom(
-        conn,
-        {
-            "path": path,
-            "filename": filename,
-            "extension": extension,
-            "size_bytes": size_bytes,
-            "mtime": time.time(),
-            "system_id": system_id,
-            "fuzzy_key": filename.lower(),
-            "match_confidence": "fuzzy",
-        },
-    )
-    q.link_rom_to_game(conn, rom_id, game_id)
-    conn.commit()
-    return rom_id, game_id
+    return rom_id, None
 
 
 def _build_minimal_profile(
@@ -426,7 +456,7 @@ class TestPreviewExport:
         b_path = tmp_path / "lib" / "snes" / "b.sfc"
         _make_rom_file(a_path)
         _make_rom_file(b_path)
-        _rom_a, game_a = _insert_rom_with_game(
+        rom_a = _insert_rom(
             seeded_db,
             path=str(a_path).replace("\\", "/"),
             system_id="snes",
@@ -435,7 +465,7 @@ class TestPreviewExport:
             size_bytes=10,
             title="A",
         )
-        _insert_rom_with_game(
+        _insert_rom(
             seeded_db,
             path=str(b_path).replace("\\", "/"),
             system_id="snes",
@@ -444,9 +474,9 @@ class TestPreviewExport:
             size_bytes=20,
             title="B",
         )
-        # Put only game A in a "Favorites"-style collection.
+        # Put only ROM A in a "Favorites"-style collection.
         coll_id = q.create_collection(seeded_db, "MyCollection")
-        q.add_game_to_collection(seeded_db, coll_id, game_a)
+        q.add_rom_to_collection(seeded_db, coll_id, rom_a)
 
         profile = _build_minimal_profile()
         preview = preview_export(
@@ -636,7 +666,7 @@ class TestGamelistXml:
     ) -> None:
         rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
         _make_rom_file(rom_path)
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -647,7 +677,7 @@ class TestGamelistXml:
         )
         q.upsert_metadata(
             seeded_db,
-            game_id,
+            rom_id,
             {
                 "description": "A platformer.",
                 "genre": "Platform",
@@ -717,7 +747,7 @@ class TestGamelistXml:
     ) -> None:
         rom_path = tmp_path / "lib" / "snes" / "Y.sfc"
         _make_rom_file(rom_path)
-        _insert_rom_with_game(
+        _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -726,11 +756,13 @@ class TestGamelistXml:
             size_bytes=5,
             title="Direct",
         )
+        # v0.4.0: query reads identity columns directly from roms.
         rows = list(
             seeded_db.execute(
-                "SELECT r.id, r.filename, r.game_id, "
-                "g.title AS title, g.canonical_name AS canonical_name "
-                "FROM roms r LEFT JOIN games g ON g.id = r.game_id"
+                "SELECT r.id, r.filename, r.system_id, "
+                "r.title AS title, r.canonical_name AS canonical_name, "
+                "r.match_confidence, r.extension "
+                "FROM roms r"
             ).fetchall()
         )
         out_dir = tmp_path / "direct"
@@ -810,7 +842,7 @@ class TestArtworkCopy:
         cover_path = tmp_path / "covers" / "snes" / "Mario.png"
         _make_rom_file(rom_path)
         _make_rom_file(cover_path, content=b"\x89PNG")
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -821,7 +853,7 @@ class TestArtworkCopy:
         )
         q.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             "boxart",
             source_url=None,
             local_path=str(cover_path).replace("\\", "/"),
@@ -859,7 +891,7 @@ class TestArtworkCopy:
         cover_path = tmp_path / "covers" / "snes" / "Mario.png"
         _make_rom_file(rom_path)
         _make_rom_file(cover_path, content=b"\x89PNG")
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -869,7 +901,7 @@ class TestArtworkCopy:
             title="Mario",
         )
         q.insert_cover(
-            seeded_db, game_id, "Named_Boxarts", None,
+            seeded_db, rom_id, "Named_Boxarts", None,
             str(cover_path).replace("\\", "/"),
         )
         seeded_db.commit()
@@ -918,7 +950,7 @@ class TestGamelistImageEmission:
         cover_path = tmp_path / "covers" / "snes" / "Mario.png"
         _make_rom_file(rom_path)
         _make_rom_file(cover_path, content=b"\x89PNG")
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -928,7 +960,7 @@ class TestGamelistImageEmission:
             title="Mario",
         )
         q.insert_cover(
-            seeded_db, game_id, "Named_Boxarts", None,
+            seeded_db, rom_id, "Named_Boxarts", None,
             str(cover_path).replace("\\", "/"),
         )
         seeded_db.commit()
@@ -952,7 +984,7 @@ class TestGamelistImageEmission:
         cover_path = tmp_path / "covers" / "snes" / "Mario.png"
         _make_rom_file(rom_path)
         _make_rom_file(cover_path, content=b"\x89PNG")
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -962,7 +994,7 @@ class TestGamelistImageEmission:
             title="Mario",
         )
         q.insert_cover(
-            seeded_db, game_id, "Named_Boxarts", None,
+            seeded_db, rom_id, "Named_Boxarts", None,
             str(cover_path).replace("\\", "/"),
         )
         seeded_db.commit()
@@ -1431,10 +1463,10 @@ class TestIncludeRomsToggle:
     def _stage_game_with_cover(
         self, conn: sqlite3.Connection, tmp_path: Path
     ) -> tuple[int, Path]:
-        """Seed one snes game + on-disk cover. Returns (game_id, cover_path)."""
+        """Seed one snes game + on-disk cover. Returns (rom_id, cover_path)."""
         rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
         _make_rom_file(rom_path, content=b"snes-bytes")
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             conn,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -1448,13 +1480,13 @@ class TestIncludeRomsToggle:
         cover_path.write_bytes(b"COVER-PNG")
         q.insert_cover(
             conn,
-            game_id,
+            rom_id,
             cover_type="Named_Boxarts",
             source_url=None,
             local_path=str(cover_path),
         )
         conn.commit()
-        return game_id, cover_path
+        return rom_id, cover_path
 
     def test_include_roms_false_skips_rom_copy_but_runs_sidecars(
         self, seeded_db, tmp_path: Path
@@ -1580,7 +1612,7 @@ class TestArtworkFreshnessSkip:
 
         rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
         _make_rom_file(rom_path)
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -1594,7 +1626,7 @@ class TestArtworkFreshnessSkip:
         cover_path.write_bytes(b"COVER-PNG-BYTES")
         q.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             cover_type="Named_Boxarts",
             source_url=None,
             local_path=str(cover_path),
@@ -1633,7 +1665,7 @@ class TestArtworkFreshnessSkip:
 
         rom_path = tmp_path / "lib" / "snes" / "Mario.sfc"
         _make_rom_file(rom_path)
-        _rom_id, game_id = _insert_rom_with_game(
+        rom_id = _insert_rom(
             seeded_db,
             path=str(rom_path).replace("\\", "/"),
             system_id="snes",
@@ -1647,7 +1679,7 @@ class TestArtworkFreshnessSkip:
         cover_path.write_bytes(b"OLD-COVER")
         q.insert_cover(
             seeded_db,
-            game_id,
+            rom_id,
             cover_type="Named_Boxarts",
             source_url=None,
             local_path=str(cover_path),
@@ -1675,3 +1707,264 @@ class TestArtworkFreshnessSkip:
         second = copy_artwork(seeded_db, "snes", profile, target, rows)
         assert second == 1
         assert dest_cover.read_bytes() == b"NEW-COVER-WITH-DIFFERENT-SIZE"
+
+
+# ---------------------------------------------------------------------------
+# Distinct-content toggle (ExportOptions.distinct_content_only)
+# ---------------------------------------------------------------------------
+
+
+class TestDistinctContentOnly:
+    """``distinct_content_only=True`` exports one keeper per SHA-1 cluster.
+
+    Acceptance criteria (from session 16 spec):
+
+    - 3 byte-identical roms (same SHA-1) + 1 distinct rom, toggle OFF → 4 entries.
+    - Same with toggle ON → 2 entries (one per SHA-1 cluster).
+    - Keeper preference: dat_verified > canonical extension > shorter filename
+      > lower rom_id.
+    - ROMs without a SHA-1 row always pass through regardless of toggle.
+    - Composition: artwork-only mode (include_roms=False) + distinct-content
+      suppresses gamelist duplicates just as in the full-copy mode.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _seed_identical_cluster(
+        self,
+        conn: sqlite3.Connection,
+        tmp_path: Path,
+        *,
+        sha1: str = "aabbcc001122334455667788990011223344",
+    ) -> list[int]:
+        """Seed three roms that all share the same SHA-1.
+
+        Returns ``[rom_id_dat, rom_id_smc, rom_id_long]``.
+
+        Ranking: dat_verified beats fuzzy regardless of ext, so
+        ``rom_id_dat`` is the expected keeper when toggle is ON.
+        """
+        lib = tmp_path / "lib"
+        # ROM 1 — dat_verified, canonical .sfc extension, short name.
+        p1 = lib / "snes" / "Mario World (USA).sfc"
+        _make_rom_file(p1, content=b"IDENTICAL-CONTENT")
+        rid_dat = _insert_rom(
+            conn,
+            path=str(p1).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Mario World (USA).sfc",
+            size_bytes=17,
+            title="Mario World",
+            match_confidence="dat_verified",
+        )
+        q.upsert_hash(conn, rid_dat, None, sha1, None)
+
+        # ROM 2 — fuzzy, non-canonical .smc extension (ext_rank > .sfc).
+        p2 = lib / "snes" / "Mario World (USA).smc"
+        _make_rom_file(p2, content=b"IDENTICAL-CONTENT")
+        rid_smc = _insert_rom(
+            conn,
+            path=str(p2).replace("\\", "/"),
+            system_id="snes",
+            extension=".smc",
+            filename="Mario World (USA).smc",
+            size_bytes=17,
+            title="Mario World",
+            match_confidence="fuzzy",
+        )
+        q.upsert_hash(conn, rid_smc, None, sha1, None)
+
+        # ROM 3 — fuzzy, .sfc but longer filename than ROM 1.
+        p3 = lib / "snes" / "Super Mario World - The Complete Version (USA).sfc"
+        _make_rom_file(p3, content=b"IDENTICAL-CONTENT")
+        rid_long = _insert_rom(
+            conn,
+            path=str(p3).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Super Mario World - The Complete Version (USA).sfc",
+            size_bytes=17,
+            title="Mario World",
+            match_confidence="fuzzy",
+        )
+        q.upsert_hash(conn, rid_long, None, sha1, None)
+
+        conn.commit()
+        return [rid_dat, rid_smc, rid_long]
+
+    def _seed_distinct_rom(
+        self, conn: sqlite3.Connection, tmp_path: Path
+    ) -> int:
+        """One SNES rom with a different SHA-1 — distinct content."""
+        p = tmp_path / "lib" / "snes" / "Donkey Kong Country (USA).sfc"
+        _make_rom_file(p, content=b"DIFFERENT-CONTENT")
+        rid = _insert_rom(
+            conn,
+            path=str(p).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Donkey Kong Country (USA).sfc",
+            size_bytes=17,
+            title="Donkey Kong Country",
+        )
+        q.upsert_hash(
+            conn, rid, None, "deadbeef0011223344556677889900112233", None
+        )
+        conn.commit()
+        return rid
+
+    def _seed_no_hash_rom(
+        self, conn: sqlite3.Connection, tmp_path: Path
+    ) -> int:
+        """A Quick-Scan-only rom — no hashes row at all."""
+        p = tmp_path / "lib" / "snes" / "Unknown Game.sfc"
+        _make_rom_file(p, content=b"UNKNOWN-CONTENT")
+        rid = _insert_rom(
+            conn,
+            path=str(p).replace("\\", "/"),
+            system_id="snes",
+            extension=".sfc",
+            filename="Unknown Game.sfc",
+            size_bytes=15,
+            title="Unknown Game",
+        )
+        conn.commit()
+        return rid
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def test_toggle_off_exports_all_roms(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Default (toggle OFF) — all 4 roms get their own <game> entry."""
+        self._seed_identical_cluster(seeded_db, tmp_path)
+        self._seed_distinct_rom(seeded_db, tmp_path)
+
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(distinct_content_only=False, generate_m3u=False),
+        )
+        assert summary.files_copied == 4
+
+        import xml.etree.ElementTree as ET
+        gamelist = tmp_path / "out" / "roms" / "snes" / "gamelist.xml"
+        tree = ET.parse(gamelist)
+        games = list(tree.getroot().iter("game"))
+        assert len(games) == 4
+
+    def test_toggle_on_exports_one_per_sha1_cluster(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Toggle ON — 3 identical roms collapse to 1 keeper + 1 distinct = 2."""
+        self._seed_identical_cluster(seeded_db, tmp_path)
+        self._seed_distinct_rom(seeded_db, tmp_path)
+
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(distinct_content_only=True, generate_m3u=False),
+        )
+        # 1 keeper from the identical cluster + 1 distinct = 2.
+        assert summary.files_copied == 2
+
+        import xml.etree.ElementTree as ET
+        gamelist = tmp_path / "out" / "roms" / "snes" / "gamelist.xml"
+        tree = ET.parse(gamelist)
+        games = list(tree.getroot().iter("game"))
+        assert len(games) == 2
+
+    def test_keeper_prefers_dat_verified(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """The dat_verified rom must win over fuzzy-confidence peers."""
+        rid_dat, rid_smc, rid_long = self._seed_identical_cluster(
+            seeded_db, tmp_path
+        )
+
+        export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(distinct_content_only=True, generate_m3u=False),
+        )
+
+        import xml.etree.ElementTree as ET
+        gamelist = tmp_path / "out" / "roms" / "snes" / "gamelist.xml"
+        tree = ET.parse(gamelist)
+        games = list(tree.getroot().iter("game"))
+        assert len(games) == 1
+        # The <path> element encodes the filename on dest.
+        path_text = games[0].findtext("path") or ""
+        assert "Mario World (USA).sfc" in path_text
+
+    def test_roms_without_sha1_always_export(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Quick-scan-only ROMs (no hashes row) always pass through."""
+        self._seed_no_hash_rom(seeded_db, tmp_path)
+
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(distinct_content_only=True, generate_m3u=False),
+        )
+        assert summary.files_copied == 1
+
+    def test_skipped_duplicates_counter_populated(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """``skipped_duplicates`` on the per-system bucket must equal 2
+        when 3 identical roms are exported with toggle ON (3 - 1 kept = 2 skipped).
+        """
+        self._seed_identical_cluster(seeded_db, tmp_path)
+
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(distinct_content_only=True, generate_m3u=False),
+        )
+        bucket = summary.per_system["snes"]
+        assert bucket.skipped_duplicates == 2
+        assert bucket.copied == 1
+
+    def test_distinct_content_composes_with_include_roms_false(
+        self, seeded_db, tmp_path: Path
+    ) -> None:
+        """Artwork-only mode + distinct-content: gamelist gets 1 entry, no ROM copy."""
+        self._seed_identical_cluster(seeded_db, tmp_path)
+        self._seed_distinct_rom(seeded_db, tmp_path)
+
+        summary = export_collection(
+            seeded_db,
+            _build_minimal_profile(),
+            tmp_path / "out",
+            ExportFilters(),
+            ExportOptions(
+                include_roms=False,
+                distinct_content_only=True,
+                generate_m3u=False,
+            ),
+        )
+        # No roms copied in artwork-only mode.
+        assert summary.files_copied == 0
+        # gamelist should only contain 2 entries (one per SHA-1 cluster).
+        import xml.etree.ElementTree as ET
+        gamelist = tmp_path / "out" / "roms" / "snes" / "gamelist.xml"
+        tree = ET.parse(gamelist)
+        games = list(tree.getroot().iter("game"))
+        assert len(games) == 2

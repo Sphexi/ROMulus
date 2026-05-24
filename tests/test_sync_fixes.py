@@ -109,7 +109,6 @@ class TestEnsureSyncDestinationByPath:
                 "mtime": 0.0,
                 "sha1": None,
                 "rom_id": None,
-                "game_id": None,
             },
         )
         db.commit()
@@ -339,7 +338,6 @@ def _add_action(rel: str = "snes/A.sfc", size: int = 1024) -> SyncAction:
         dest_path=f"/dest/{rel}",
         size_bytes=size,
         rom_id=1,
-        game_id=1,
         system_id="snes",
     )
 

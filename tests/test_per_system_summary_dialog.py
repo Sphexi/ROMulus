@@ -194,3 +194,59 @@ class TestSyncSummaryDialog:
             assert table.item(totals_row, 7).text() == "2"
         finally:
             dialog.close()
+
+
+class TestSkippedDuplicatesColumn:
+    """The ``skipped_duplicates`` column renders only when any system has
+    a non-zero count — keeps the dialog tight for normal (non-distinct) runs.
+    """
+
+    def test_column_hidden_when_no_duplicates_skipped(self, qapp) -> None:
+        """When all skipped_duplicates are 0 the column must not appear."""
+        summary = ExportSummary(
+            files_copied=2,
+            systems=["snes"],
+            per_system={
+                "snes": PerSystemExportCounts(copied=2, skipped_duplicates=0),
+            },
+        )
+        dialog = PerSystemSummaryDialog.for_export(summary)
+        try:
+            table = dialog.findChild(QTableWidget)
+            assert table is not None
+            # 7 numeric columns (no skipped_duplicates) + System label = 8.
+            assert table.columnCount() == 8
+        finally:
+            dialog.close()
+
+    def test_column_shown_when_any_system_has_skipped_duplicates(
+        self, qapp
+    ) -> None:
+        """When at least one system has skipped_duplicates > 0 the column appears."""
+        summary = ExportSummary(
+            files_copied=1,
+            systems=["snes"],
+            per_system={
+                "snes": PerSystemExportCounts(
+                    copied=1, skipped_duplicates=2
+                ),
+            },
+        )
+        dialog = PerSystemSummaryDialog.for_export(summary)
+        try:
+            table = dialog.findChild(QTableWidget)
+            assert table is not None
+            # 8 numeric columns (includes skipped_duplicates) + System = 9.
+            assert table.columnCount() == 9
+            # Confirm the header label.
+            headers = [
+                table.horizontalHeaderItem(i).text()
+                for i in range(table.columnCount())
+            ]
+            assert "Skipped (dup)" in headers
+            # Totals row value should be "2".
+            totals_row = table.rowCount() - 1
+            dup_col = headers.index("Skipped (dup)")
+            assert table.item(totals_row, dup_col).text() == "2"
+        finally:
+            dialog.close()
