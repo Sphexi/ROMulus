@@ -1305,6 +1305,197 @@ class TestOrganizePreviewDialog:
         finally:
             dialog.close()
 
+    def test_apply_disables_both_buttons_during_run(self, qapp) -> None:
+        """Apply, Cancel, Select/Deselect All, checkboxes, and collision
+        combos all get locked when the user clicks Apply — the work is
+        in-flight to the worker and the dialog snapshot is frozen."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="DAT-verified",
+                ),
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    rom_id=10,
+                    target_rom_id=20,
+                    source_path="/lib/nes/108 X.nes",
+                    target_path="/lib/nes/X (Japan).nes",
+                    reason="case 3",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            dialog._on_apply_clicked()
+            assert dialog._apply_btn.isEnabled() is False
+            assert dialog._cancel_btn.isEnabled() is False
+            assert dialog._select_all_btn.isEnabled() is False
+            assert dialog._deselect_all_btn.isEnabled() is False
+            for _, combo in dialog._iter_collision_combos():
+                assert combo.isEnabled() is False
+            for item in dialog._iter_action_items():
+                assert item.isEnabled() is False
+        finally:
+            dialog.close()
+
+    def test_on_finished_swaps_to_close_button(self, qapp) -> None:
+        """After the worker reports back, the Apply button is hidden and
+        Cancel is renamed to Close + re-enabled + wired to accept()."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="DAT-verified",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            dialog._on_apply_clicked()
+            dialog.on_finished(applied=1, skipped=0, failed=0)
+            assert dialog._apply_btn.isVisible() is False
+            assert dialog._cancel_btn.isEnabled() is True
+            assert dialog._cancel_btn.text() == "Close"
+        finally:
+            dialog.close()
+
+    def test_on_finished_success_removes_submitted_rows(self, qapp) -> None:
+        """On a clean apply (failed=0) every row that was acted upon is
+        removed from the model. Rows that were unchecked / Do-nothing
+        stay visible so the user can see what remains to address."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                # Will be checked + submitted.
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="DAT-verified",
+                ),
+                # Will be submitted via collision combo Delete source.
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    rom_id=10,
+                    target_rom_id=20,
+                    source_path="/lib/nes/108 X.nes",
+                    target_path="/lib/nes/X (Japan).nes",
+                    reason="case 3",
+                ),
+                # Stays — user leaves this collision on Do nothing.
+                OrganizeAction(
+                    kind=ACTION_COLLISION,
+                    rom_id=30,
+                    target_rom_id=40,
+                    source_path="/lib/nes/200 Y.nes",
+                    target_path="/lib/nes/Y (Japan).nes",
+                    reason="case 3",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            # Pick "Delete source" on the first collision combo, leave
+            # the second on Do nothing.
+            combos = dialog._iter_collision_combos()
+            assert len(combos) == 2
+            first_action, first_combo = combos[0]
+            assert first_action.rom_id == 10
+            for i in range(first_combo.count()):
+                if first_combo.itemData(i) == RESOLUTION_DELETE_SOURCE:
+                    first_combo.setCurrentIndex(i)
+                    break
+            dialog._on_apply_clicked()
+            dialog.on_finished(applied=2, skipped=0, failed=0)
+            # Two rows should be gone (the rename + the resolved collision).
+            # The second collision (Do nothing) should remain.
+            from romulus.ui.organize_preview import _ACTION_ROLE
+
+            remaining_actions: list[OrganizeAction] = []
+            root = dialog._model.invisibleRootItem()
+            for i in range(root.rowCount()):
+                header = root.child(i, 0)
+                for j in range(header.rowCount()):
+                    child = header.child(j, 0)
+                    if child is not None:
+                        a = child.data(_ACTION_ROLE)
+                        if isinstance(a, OrganizeAction):
+                            remaining_actions.append(a)
+            assert len(remaining_actions) == 1
+            assert remaining_actions[0].rom_id == 30
+        finally:
+            dialog.close()
+
+    def test_on_finished_with_failures_keeps_rows(self, qapp) -> None:
+        """If any action failed, submitted rows STAY visible so the
+        user can review what was involved when investigating."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="DAT-verified",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            dialog._on_apply_clicked()
+            dialog.on_finished(applied=0, skipped=0, failed=1)
+            # Row should still be there.
+            root = dialog._model.invisibleRootItem()
+            total_children = 0
+            for i in range(root.rowCount()):
+                header = root.child(i, 0)
+                total_children += header.rowCount()
+            assert total_children == 1
+        finally:
+            dialog.close()
+
+    def test_on_failed_also_swaps_to_close_button(self, qapp) -> None:
+        """A worker exception (on_failed path) must also reach the
+        done-state swap so the user isn't left with a disabled Cancel
+        button after a fatal error."""
+        from romulus.ui.organize_preview import OrganizePreviewDialog
+
+        plan = OrganizePlan(
+            actions=[
+                OrganizeAction(
+                    kind=ACTION_RENAME,
+                    rom_id=1,
+                    source_path="/lib/snes/a.sfc",
+                    target_path="/lib/snes/A.sfc",
+                    reason="DAT-verified",
+                ),
+            ]
+        )
+        dialog = OrganizePreviewDialog(plan)
+        try:
+            dialog._on_apply_clicked()
+            dialog.on_failed("disk full")
+            assert dialog._cancel_btn.isEnabled() is True
+            assert dialog._cancel_btn.text() == "Close"
+            assert dialog._apply_btn.isVisible() is False
+        finally:
+            dialog.close()
+
     def test_group_header_toggle_cascades_to_children(self, qapp) -> None:
         """Tri-state header toggle from GroupedCheckboxTreeMixin must
         flip only that group's children, leaving sibling groups alone.

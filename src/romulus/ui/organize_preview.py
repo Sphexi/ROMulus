@@ -131,7 +131,10 @@ class OrganizePreviewDialog(QDialog, GroupedCheckboxTreeMixin):
         self._progress.setVisible(False)
         layout.addWidget(self._progress)
 
-        # Apply / Cancel
+        # Apply / Cancel — Cancel becomes Close after apply completes
+        # (see ``_enter_done_state``). While apply is running, BOTH buttons
+        # are disabled so the user can't double-click Apply or yank the
+        # dialog out from under the worker mid-flight.
         button_box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Apply
             | QDialogButtonBox.StandardButton.Cancel,
@@ -139,11 +142,18 @@ class OrganizePreviewDialog(QDialog, GroupedCheckboxTreeMixin):
         )
         self._apply_btn = button_box.button(QDialogButtonBox.StandardButton.Apply)
         self._apply_btn.clicked.connect(self._on_apply_clicked)
+        self._cancel_btn = button_box.button(QDialogButtonBox.StandardButton.Cancel)
         button_box.rejected.connect(self.reject)
         layout.addWidget(button_box)
 
         if not self._plan.actions:
             self._apply_btn.setEnabled(False)
+
+        # Items submitted in the most recent Apply click — used to clean
+        # them out of the list once the worker reports back. Populated by
+        # ``_on_apply_clicked``, consumed by ``on_finished``.
+        self._submitted_items: list[QStandardItem] = []
+        self._done_state = False
 
     # ------------------------------------------------------------------
     # Build helpers
@@ -322,18 +332,150 @@ class OrganizePreviewDialog(QDialog, GroupedCheckboxTreeMixin):
         return pairs
 
     def _on_apply_clicked(self) -> None:
-        """Switch into 'executing' mode and emit ``actions_approved``."""
+        """Switch into 'executing' mode and emit ``actions_approved``.
+
+        Locks Apply, Cancel, Select All / Deselect All, and every
+        collision resolution combo so the input state matches the
+        snapshot that's now in-flight to the worker. The dialog stays
+        open with the progress bar visible until the worker reports
+        back via :meth:`on_finished` or :meth:`on_failed`, both of
+        which call :meth:`_enter_done_state` to swap the button row.
+        """
         approved = self.approved_actions()
         if not approved:
             self.reject()
             return
+        # Capture which model rows contributed to this submission so
+        # ``on_finished`` can clean them up after a successful apply.
+        self._submitted_items = self._collect_submitted_items()
+        # Lock every input on the dialog. Cancel goes back to enabled
+        # in ``_enter_done_state`` (renamed to "Close") once the work
+        # finishes.
         self._select_all_btn.setEnabled(False)
         self._deselect_all_btn.setEnabled(False)
         self._apply_btn.setEnabled(False)
+        if self._cancel_btn is not None:
+            self._cancel_btn.setEnabled(False)
+        for _action, combo in self._iter_collision_combos():
+            combo.setEnabled(False)
+        # Also disable every checkbox so the user can't toggle while
+        # the worker is running.
+        for item in self._iter_action_items():
+            item.setEnabled(False)
         self._progress.setVisible(True)
         self._progress.setRange(0, len(approved))
         self._progress.setValue(0)
         self.actions_approved.emit(approved)
+
+    def _collect_submitted_items(self) -> list[QStandardItem]:
+        """Return the model items whose action(s) were just emitted.
+
+        Includes:
+        - Checkable items currently in the Checked state.
+        - Collision rows whose resolution combo is NOT "Do nothing".
+
+        These items are the ones the worker is acting on. We remove them
+        from the model in :meth:`_remove_submitted_rows` when apply
+        succeeds, leaving the residual list showing only un-actioned
+        items the user might still want to review.
+        """
+        items: list[QStandardItem] = []
+        for item in self._iter_action_items():
+            if item.checkState() == Qt.CheckState.Checked:
+                items.append(item)
+        for action, combo in self._iter_collision_combos():
+            if combo.currentData() == RESOLUTION_DO_NOTHING:
+                continue
+            # Locate the row item for this collision action.
+            row_item = self._find_item_for_action(action)
+            if row_item is not None:
+                items.append(row_item)
+        return items
+
+    def _find_item_for_action(
+        self, target: OrganizeAction
+    ) -> QStandardItem | None:
+        """Return the column-0 model item carrying ``target`` as its
+        :data:`_ACTION_ROLE` data, or None if not found."""
+        root = self._model.invisibleRootItem()
+        for i in range(root.rowCount()):
+            header = root.child(i, 0)
+            if header is None:
+                continue
+            for j in range(header.rowCount()):
+                child = header.child(j, 0)
+                if child is None:
+                    continue
+                if child.data(_ACTION_ROLE) is target:
+                    return child
+        return None
+
+    def _remove_submitted_rows(self) -> None:
+        """Drop every row that was submitted from the model.
+
+        Group items by parent and remove in descending row order so
+        sibling indices don't shift mid-loop. Empty header groups are
+        removed too — a section with zero remaining children just
+        clutters the view. Combos referenced by removed rows are
+        cleared from ``_collision_combos``.
+        """
+        # Build a {parent_item_id: (parent_item, [row_indexes])} map.
+        by_parent: defaultdict[int, list[tuple[QStandardItem, int]]] = (
+            defaultdict(list)
+        )
+        for item in self._submitted_items:
+            parent = item.parent()
+            if parent is None:
+                parent = self._model.invisibleRootItem()
+            by_parent[id(parent)].append((parent, item.row()))
+        # Remove rows in descending order so earlier removals don't
+        # invalidate later row indices.
+        for entries in by_parent.values():
+            parent = entries[0][0]
+            for _, row in sorted(entries, key=lambda x: -x[1]):
+                # Drop combo references for collision rows on this row.
+                child = parent.child(row, 0)
+                if child is not None:
+                    action = child.data(_ACTION_ROLE)
+                    if isinstance(action, OrganizeAction):
+                        self._collision_combos.pop(id(action), None)
+                parent.removeRow(row)
+        # Sweep empty header groups.
+        root = self._model.invisibleRootItem()
+        for i in reversed(range(root.rowCount())):
+            header = root.child(i, 0)
+            if header is not None and header.rowCount() == 0:
+                root.removeRow(i)
+        self._submitted_items = []
+
+    def _enter_done_state(self) -> None:
+        """Once apply finishes (success or failure), swap the Apply/Cancel
+        button row for a single Close button.
+
+        Without this the user saw "Apply (disabled) / Cancel" after the work
+        had already finished — clicking Cancel after a completed organize
+        read as "cancel what?" and felt buggy. Now the dialog has exactly
+        one action after completion: dismiss. Mirrors the same pattern in
+        :class:`romulus.ui.sync_preview.SyncPreviewDialog._enter_done_state`.
+        """
+        if self._done_state:
+            return
+        self._done_state = True
+        if self._apply_btn is not None:
+            self._apply_btn.setVisible(False)
+        if self._cancel_btn is not None:
+            self._cancel_btn.setEnabled(True)
+            self._cancel_btn.setText("Close")
+            self._cancel_btn.setToolTip("Close this dialog.")
+            # Disconnect the rejected-path connection and wire directly
+            # to ``accept`` so the post-apply close exits with a
+            # successful status. Qt raises ``RuntimeError`` when there
+            # are no connections — harmless.
+            import contextlib
+
+            with contextlib.suppress(RuntimeError, TypeError):
+                self._cancel_btn.clicked.disconnect()
+            self._cancel_btn.clicked.connect(self.accept)
 
     # ------------------------------------------------------------------
     # Progress hooks used by the caller while a worker runs.
@@ -351,16 +493,30 @@ class OrganizePreviewDialog(QDialog, GroupedCheckboxTreeMixin):
     def on_finished(
         self, applied: int, skipped: int, failed: int, errors: list[str] | None = None  # noqa: ARG002
     ) -> None:
-        """Slot — fill the bar to 100% and show the post-apply summary."""
+        """Slot — fill the bar to 100% and show the post-apply summary.
+
+        On full success (``failed == 0``) the submitted rows are removed
+        from the list so the residual view only shows items the user
+        chose not to act on (unchecked actions, Do-nothing collisions).
+        On partial failure the rows stay visible so the user can see
+        which entries were involved when investigating.
+
+        Either way, the button row swaps to a single Close button via
+        :meth:`_enter_done_state`.
+        """
         self._progress.setRange(0, max(1, self._progress.maximum()))
         self._progress.setValue(self._progress.maximum())
         icon = "✓" if failed == 0 else "✗"
         self._summary_label.setText(
             f"{icon} Done. Applied {applied}, skipped {skipped}, failed {failed}."
         )
+        if failed == 0:
+            self._remove_submitted_rows()
+        self._enter_done_state()
 
     def on_failed(self, message: str) -> None:
         """Slot — fill bar to end, show an error message."""
         self._progress.setRange(0, 1)
         self._progress.setValue(0)
         self._summary_label.setText(f"✗ {message}")
+        self._enter_done_state()
